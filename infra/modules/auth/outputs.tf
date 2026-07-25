@@ -44,12 +44,3 @@ output "m2m_client_secret" {
   sensitive = true
 }
 
-output "cowork_client_id" {
-  value = var.enable_cowork ? aws_cognito_user_pool_client.cowork[0].id : null
-}
-
-output "cowork_client_secret" {
-  value     = var.enable_cowork ? aws_cognito_user_pool_client.cowork[0].client_secret : null
-  sensitive = true
-}
-

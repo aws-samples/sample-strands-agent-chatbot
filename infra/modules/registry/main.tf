@@ -11,8 +11,8 @@
 data "aws_caller_identity" "current" {}
 
 locals {
-  registry_name  = "${var.project_name}-${var.environment}-registry"
-  function_name  = "${var.project_name}-${var.environment}-registry-manager"
+  registry_name    = "${var.project_name}-${var.environment}-registry"
+  function_name    = "${var.project_name}-${var.environment}-registry-manager"
   definitions_root = "${path.module}/../../registry/definitions"
   skills_md_root   = "${var.repo_root}/chatbot-app/agentcore/skills"
 
@@ -44,7 +44,7 @@ locals {
       yamldecode(file("${local.definitions_root}/skills/${f}")),
       {
         descriptor_type = "AGENT_SKILLS"
-        skill_md = file("${local.skills_md_root}/${yamldecode(file("${local.definitions_root}/skills/${f}")).skill_md_path}")
+        skill_md        = file("${local.skills_md_root}/${yamldecode(file("${local.definitions_root}/skills/${f}")).skill_md_path}")
       }
     )
   }
@@ -72,8 +72,8 @@ locals {
   _skill_endpoint_url = {
     for k, v in local.records_to_register : k => (
       lookup(v, "source", "builtin") == "gateway" ? var.gateway_url :
-      lookup(v, "source", "builtin") == "mcp"     ? var.mcp_runtime_url :
-      lookup(v, "source", "builtin") == "a2a"      ? lookup(var.a2a_runtime_urls, k, "") :
+      lookup(v, "source", "builtin") == "mcp" ? var.mcp_runtime_url :
+      lookup(v, "source", "builtin") == "a2a" ? lookup(var.a2a_runtime_urls, k, "") :
       ""
     )
   }
@@ -236,7 +236,7 @@ resource "aws_cloudformation_stack" "records_skills" {
     AWSTemplateFormatVersion = "2010-09-09"
     Resources = {
       Record = {
-        Type = "Custom::AgentCoreRegistryRecord"
+        Type       = "Custom::AgentCoreRegistryRecord"
         Properties = local._record_properties[each.key]
       }
     }

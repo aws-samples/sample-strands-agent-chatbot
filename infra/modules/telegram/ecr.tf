@@ -132,8 +132,8 @@ resource "aws_codebuild_project" "telegram" {
   }
 
   source {
-    type     = "S3"
-    location = "${aws_s3_bucket.source.bucket}/${local.s3_source_key}"
+    type      = "S3"
+    location  = "${aws_s3_bucket.source.bucket}/${local.s3_source_key}"
     buildspec = <<-BUILDSPEC
       version: 0.2
       phases:

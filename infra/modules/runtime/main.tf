@@ -479,8 +479,8 @@ resource "aws_iam_role_policy" "a2a_agent_extra" {
         Resource = "*"
       }],
       var.artifact_bucket_arn != "" ? [{
-        Effect = "Allow"
-        Action = ["s3:PutObject", "s3:GetObject", "s3:ListBucket"]
+        Effect   = "Allow"
+        Action   = ["s3:PutObject", "s3:GetObject", "s3:ListBucket"]
         Resource = [var.artifact_bucket_arn, "${var.artifact_bucket_arn}/*"]
       }] : [],
     )

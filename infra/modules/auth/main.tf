@@ -123,59 +123,6 @@ resource "aws_cognito_user_pool_client" "m2m" {
   depends_on = [aws_cognito_resource_server.agentcore]
 }
 
-# Dedicated client for the Cowork sidecar. Kept on its own resource so
-# refresh tokens stay valid when the main app client is modified — Cognito
-# invalidates ALL outstanding refresh tokens for a client whenever its config
-# is updated. ignore_changes pins token validity post-create so future tweaks
-# to the main client won't drift Cowork users either.
-resource "aws_cognito_user_pool_client" "cowork" {
-  count = var.enable_cowork ? 1 : 0
-
-  name         = "${var.project_name}-cowork-client"
-  user_pool_id = aws_cognito_user_pool.main.id
-
-  generate_secret = true
-
-  explicit_auth_flows = [
-    "ALLOW_REFRESH_TOKEN_AUTH",
-    "ALLOW_USER_SRP_AUTH",
-  ]
-
-  allowed_oauth_flows                  = ["code"]
-  allowed_oauth_flows_user_pool_client = true
-  allowed_oauth_scopes                 = ["openid", "email", "profile", "agentcore/invoke"]
-  supported_identity_providers         = ["COGNITO"]
-
-  callback_urls = var.cowork_callback_urls
-  logout_urls   = var.cowork_callback_urls
-
-  id_token_validity      = 24
-  access_token_validity  = 24
-  refresh_token_validity = 30
-  token_validity_units {
-    id_token      = "hours"
-    access_token  = "hours"
-    refresh_token = "days"
-  }
-
-  enable_token_revocation = true
-
-  lifecycle {
-    # Mutating these after creation revokes every live refresh token; keep them
-    # frozen so an unrelated tfvars/policy edit can't sign Cowork users out.
-    ignore_changes = [
-      id_token_validity,
-      access_token_validity,
-      refresh_token_validity,
-      token_validity_units,
-      explicit_auth_flows,
-      allowed_oauth_scopes,
-    ]
-  }
-
-  depends_on = [aws_cognito_resource_server.agentcore]
-}
-
 resource "aws_ssm_parameter" "user_pool_id" {
   name  = "/${var.project_name}/${var.environment}/auth/user-pool-id"
   type  = "String"

@@ -122,7 +122,18 @@ _ensure_secret() {
 }
 
 prompt_api_keys() {
-  [ "$ACTION" != "apply" ] && return 0
+  local mantle_secret="${PROJECT_NAME}/bedrock/api-key"
+
+  # Plan must resolve optional resources exactly as apply does. Existing
+  # secrets enable their integrations; absent secrets disable them without
+  # prompting during non-interactive actions.
+  if [ "$ACTION" != "apply" ]; then
+    _secret_exists "${PROJECT_NAME}/mcp/tavily-api-key" || SKIP_TAVILY=true
+    _secret_exists "${PROJECT_NAME}/mcp/google-credentials" || SKIP_GOOGLE_SEARCH=true
+    _secret_exists "${PROJECT_NAME}/mcp/google-maps-credentials" || SKIP_GOOGLE_MAPS=true
+    _secret_exists "$mantle_secret" && ENABLE_MANTLE_MODELS=true
+    return 0
+  fi
 
   echo ""
   echo "============================================"
@@ -192,7 +203,6 @@ prompt_api_keys() {
   fi
 
   # Bedrock API key (for Mantle OpenAI-compatible models: gpt-5.x, grok, gemma-4)
-  local mantle_secret="${PROJECT_NAME}/bedrock/api-key"
   if _secret_exists "$mantle_secret"; then
     ENABLE_MANTLE_MODELS=true
     echo ""
@@ -411,49 +421,6 @@ export TF_VAR_enable_telegram="$ENABLE_TELEGRAM"
 export TF_VAR_telegram_bot_token="$TELEGRAM_BOT_TOKEN"
 
 # ------------------------------------------------------------
-# Cowork Gateway integration
-# ------------------------------------------------------------
-ENABLE_COWORK=false
-
-prompt_cowork() {
-  # Honor explicit override first (any action).
-  if [ -n "${TF_VAR_enable_cowork:-}" ]; then
-    ENABLE_COWORK="$TF_VAR_enable_cowork"
-    [ "$ACTION" = "apply" ] && echo "  Cowork: using TF_VAR_enable_cowork=$ENABLE_COWORK"
-    return 0
-  fi
-
-  # Check current terraform state for previously deployed value (plan + apply).
-  local current
-  current=$(terraform -chdir="$ENV_DIR" output -raw enable_cowork 2>/dev/null || echo "")
-  if [ "$current" = "true" ]; then
-    ENABLE_COWORK=true
-    [ "$ACTION" = "apply" ] && echo "  Cowork: already enabled (from terraform state)"
-    return 0
-  fi
-
-  # Interactive prompt only on apply.
-  [ "$ACTION" != "apply" ] && return 0
-
-  echo ""
-  echo "============================================"
-  echo "  Cowork (Claude Desktop 3P) integration"
-  echo "============================================"
-  read -rp "  Enable Cowork Gateway connector? (y/N): " answer
-  if [[ "${answer:-}" =~ ^[Yy] ]]; then
-    ENABLE_COWORK=true
-    echo "  -> Cognito app_client will include sidecar callback URL"
-    echo "  -> Run: cd cowork && ./setup.sh  (after deploy)"
-  else
-    echo "  (skipped)"
-  fi
-  echo ""
-}
-
-prompt_cowork
-export TF_VAR_enable_cowork="$ENABLE_COWORK"
-
-# ------------------------------------------------------------
 # Nova Act Workflow (browser automation)
 # ------------------------------------------------------------
 # Resolved after the shared deploy venv is set up below.
@@ -469,10 +436,19 @@ NOVA_ACT_WORKFLOW_NAME="${NOVA_ACT_WORKFLOW_NAME:-}"
 # Shared isolated venv for deploy-time Python work (Nova Act + Lambda build).
 # Avoids conflicts with the user's global site-packages (nova-act, google-adk, ...).
 DEPLOY_VENV="$INFRA_DIR/.deploy-venv"
+DEPLOY_PYTHON="${DEPLOY_PYTHON:-$(command -v python3.13 || command -v python3)}"
 ensure_deploy_venv() {
-  if [ ! -x "$DEPLOY_VENV/bin/python" ]; then
+  local desired_version current_version
+  desired_version="$("$DEPLOY_PYTHON" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+  current_version=""
+  if [ -x "$DEPLOY_VENV/bin/python" ]; then
+    current_version="$("$DEPLOY_VENV/bin/python" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+  fi
+
+  if [ "$current_version" != "$desired_version" ]; then
     echo ">>> Setting up isolated deploy venv (boto3 >= 1.42.89)..."
-    python3 -m venv "$DEPLOY_VENV"
+    rm -rf "$DEPLOY_VENV"
+    "$DEPLOY_PYTHON" -m venv "$DEPLOY_VENV"
     "$DEPLOY_VENV/bin/pip" install --quiet --upgrade pip
     "$DEPLOY_VENV/bin/pip" install --quiet "boto3>=1.42.89"
   fi

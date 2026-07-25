@@ -17,21 +17,21 @@ resource "aws_ecs_task_definition" "telegram" {
   task_role_arn            = aws_iam_role.ecs_task.arn
 
   container_definitions = jsonencode([{
-    name      = "telegram-adapter"
-    image     = "${aws_ecr_repository.telegram.repository_url}:${local.source_hash}"
-    essential = true
+    name         = "telegram-adapter"
+    image        = "${aws_ecr_repository.telegram.repository_url}:${local.source_hash}"
+    essential    = true
     portMappings = [{ containerPort = 8080, protocol = "tcp" }]
     environment = [
-      { name = "TELEGRAM_BOT_TOKEN",      value = var.telegram_bot_token },
-      { name = "RUNTIME_INVOCATION_URL",   value = var.runtime_invocation_url },
-      { name = "COGNITO_TOKEN_URL",        value = "${var.cognito_domain_url}/oauth2/token" },
-      { name = "M2M_CLIENT_ID",           value = var.m2m_client_id },
-      { name = "M2M_CLIENT_SECRET",       value = var.m2m_client_secret },
-      { name = "DEDUP_TABLE_NAME",        value = aws_dynamodb_table.dedup.name },
-      { name = "ALLOWED_USER_IDS",        value = var.allowed_user_ids },
-      { name = "OWNER_USER_ID",           value = var.owner_user_id },
-      { name = "ARTIFACT_BUCKET",        value = var.artifact_bucket_arn != "" ? regex("arn:aws:s3:::(.+)", var.artifact_bucket_arn)[0] : "" },
-      { name = "LOG_LEVEL",              value = "info" },
+      { name = "TELEGRAM_BOT_TOKEN", value = var.telegram_bot_token },
+      { name = "RUNTIME_INVOCATION_URL", value = var.runtime_invocation_url },
+      { name = "COGNITO_TOKEN_URL", value = "${var.cognito_domain_url}/oauth2/token" },
+      { name = "M2M_CLIENT_ID", value = var.m2m_client_id },
+      { name = "M2M_CLIENT_SECRET", value = var.m2m_client_secret },
+      { name = "DEDUP_TABLE_NAME", value = aws_dynamodb_table.dedup.name },
+      { name = "ALLOWED_USER_IDS", value = var.allowed_user_ids },
+      { name = "OWNER_USER_ID", value = var.owner_user_id },
+      { name = "ARTIFACT_BUCKET", value = var.artifact_bucket_arn != "" ? regex("arn:aws:s3:::(.+)", var.artifact_bucket_arn)[0] : "" },
+      { name = "LOG_LEVEL", value = "info" },
     ]
     logConfiguration = {
       logDriver = "awslogs"

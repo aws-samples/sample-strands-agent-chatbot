@@ -92,18 +92,6 @@ variable "network_mode" {
   }
 }
 
-variable "enable_cowork" {
-  description = "Register Cowork sidecar callback URL on Cognito app_client for OAuth login."
-  type        = bool
-  default     = false
-}
-
-variable "cowork_sidecar_callback_urls" {
-  description = "Loopback callback URLs the Cowork sidecar will receive the authorization_code on."
-  type        = list(string)
-  default     = ["http://127.0.0.1:8976/callback"]
-}
-
 variable "enable_telegram" {
   description = "Deploy Telegram bot adapter (ECS Fargate)."
   type        = bool

@@ -81,7 +81,6 @@ resource "aws_bedrockagentcore_gateway" "this" {
   protocol_configuration {
     mcp {
       instructions       = "MCP Gateway for ${var.project_name} tool integration"
-      search_type        = "SEMANTIC"
       supported_versions = ["2025-11-25"]
     }
   }
