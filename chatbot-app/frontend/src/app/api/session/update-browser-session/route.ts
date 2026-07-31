@@ -10,7 +10,7 @@ export const runtime = 'nodejs'
 
 export async function POST(request: NextRequest) {
   try {
-    const user = extractUserFromRequest(request)
+    const user = await extractUserFromRequest(request)
     const userId = user.userId
 
     const { sessionId, browserSession } = await request.json()

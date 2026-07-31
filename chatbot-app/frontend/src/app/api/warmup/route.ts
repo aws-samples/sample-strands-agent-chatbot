@@ -8,7 +8,7 @@ export async function POST(request: NextRequest) {
 
   try {
     const body = await request.json().catch(() => ({}))
-    const { userId } = extractUserFromRequest(request)
+    const { userId } = await extractUserFromRequest(request)
     const sessionId = body.sessionId
 
     const authHeader = request.headers.get('authorization') || ''

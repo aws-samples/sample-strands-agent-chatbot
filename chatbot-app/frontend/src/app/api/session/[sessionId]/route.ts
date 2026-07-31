@@ -20,7 +20,7 @@ export async function GET(
 ) {
   try {
     const { sessionId } = await params
-    const user = extractUserFromRequest(request)
+    const user = await extractUserFromRequest(request)
     const userId = user.userId
 
     console.log(`[API] Getting session ${sessionId} for user ${userId}`)
@@ -78,7 +78,7 @@ export async function PUT(
 ) {
   try {
     const { sessionId } = await params
-    const user = extractUserFromRequest(request)
+    const user = await extractUserFromRequest(request)
     const userId = user.userId
 
     const body = await request.json()
@@ -163,7 +163,7 @@ export async function POST(
 ) {
   try {
     const { sessionId } = await params
-    const user = extractUserFromRequest(request)
+    const user = await extractUserFromRequest(request)
     const userId = user.userId
 
     const body = await request.json()
@@ -235,7 +235,7 @@ export async function DELETE(
 ) {
   try {
     const { sessionId } = await params
-    const user = extractUserFromRequest(request)
+    const user = await extractUserFromRequest(request)
     const userId = user.userId
 
     console.log(`[API] Deleting session ${sessionId} for user ${userId}`)

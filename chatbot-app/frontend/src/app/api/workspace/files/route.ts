@@ -40,7 +40,7 @@ export async function GET(request: NextRequest) {
     }
 
     // Extract user and session
-    const user = extractUserFromRequest(request)
+    const user = await extractUserFromRequest(request)
     const userId = user.userId
     const { sessionId } = getSessionId(request, userId)
 

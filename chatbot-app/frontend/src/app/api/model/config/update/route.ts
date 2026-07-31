@@ -14,7 +14,7 @@ const IS_LOCAL = process.env.NEXT_PUBLIC_AGENTCORE_LOCAL === 'true'
 export async function POST(request: NextRequest) {
   try {
     // Extract user from Cognito JWT token
-    const user = extractUserFromRequest(request)
+    const user = await extractUserFromRequest(request)
     const userId = user.userId
 
     const body = await request.json()

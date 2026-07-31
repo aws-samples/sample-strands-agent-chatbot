@@ -13,7 +13,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'executionId is required' }, { status: 400 })
   }
 
-  const user = extractUserFromRequest(request)
+  const user = await extractUserFromRequest(request)
   const authToken = request.headers.get('authorization') || ''
 
   const result = await getExecutionStatus(executionId, user.userId, authToken)

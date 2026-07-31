@@ -1,6 +1,7 @@
 /**
  * Authentication utilities for extracting user info from Cognito JWT tokens
  */
+import { CognitoJwtVerifier } from 'aws-jwt-verify'
 
 interface CognitoUser {
   userId: string
@@ -8,34 +9,50 @@ interface CognitoUser {
   username?: string
 }
 
+let verifier: ReturnType<typeof CognitoJwtVerifier.create> | null = null
+let verifierConfig = ''
+
+function getVerifier() {
+  const userPoolId = process.env.NEXT_PUBLIC_COGNITO_USER_POOL_ID
+  const clientId = process.env.NEXT_PUBLIC_COGNITO_USER_POOL_CLIENT_ID
+  if (!userPoolId || !clientId) return null
+
+  const config = `${userPoolId}:${clientId}`
+  if (!verifier || verifierConfig !== config) {
+    verifier = CognitoJwtVerifier.create({
+      userPoolId,
+      tokenUse: 'access',
+      clientId,
+    })
+    verifierConfig = config
+  }
+  return verifier
+}
+
 /**
  * Extract user information from Cognito JWT token in Authorization header
  */
-export function extractUserFromRequest(request: Request): CognitoUser {
+export async function extractUserFromRequest(request: Request): Promise<CognitoUser> {
   try {
-    // Get Authorization header
     const authHeader = request.headers.get('authorization')
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
       return { userId: 'anonymous' }
     }
 
-    // Extract JWT token
-    const token = authHeader.substring(7)
-
-    // Decode JWT payload (base64)
-    const parts = token.split('.')
-    if (parts.length !== 3) {
-      console.warn('[Auth] Invalid JWT format')
+    const cognitoVerifier = getVerifier()
+    if (!cognitoVerifier) {
+      console.warn('[Auth] Cognito verifier is not configured')
       return { userId: 'anonymous' }
     }
 
-    const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8'))
+    const payload = await cognitoVerifier.verify(authHeader.substring(7))
 
     // Cognito access tokens: sub, username, client_id
-    // Cognito ID tokens: sub, email, cognito:username
-    const userId = payload.sub || payload['cognito:username'] || payload.username || 'anonymous'
-    const email = payload.email
-    const username = payload['cognito:username'] || payload.username
+    const userIdClaim = payload.sub || payload['cognito:username'] || payload.username
+    const userId = typeof userIdClaim === 'string' ? userIdClaim : 'anonymous'
+    const email = typeof payload.email === 'string' ? payload.email : undefined
+    const usernameClaim = payload['cognito:username'] || payload.username
+    const username = typeof usernameClaim === 'string' ? usernameClaim : undefined
 
     console.log(`[Auth] Authenticated user: ${userId} (${email || username || 'no email'})`)
 
@@ -45,7 +62,7 @@ export function extractUserFromRequest(request: Request): CognitoUser {
       username
     }
   } catch (error) {
-    console.error('[Auth] Error extracting user from token:', error)
+    console.warn('[Auth] JWT verification failed:', error instanceof Error ? error.message : error)
     return { userId: 'anonymous' }
   }
 }

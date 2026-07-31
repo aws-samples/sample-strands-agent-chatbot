@@ -55,7 +55,7 @@ function createMockNextRequest(options: {
   }
 }
 
-describe('Memory Reset API', () => {
+describe('Memory Reset API', async () => {
   beforeEach(() => {
     vi.clearAllMocks()
     // Reset environment
@@ -64,30 +64,30 @@ describe('Memory Reset API', () => {
     vi.stubEnv('AWS_REGION', 'us-west-2')
   })
 
-  describe('Authentication', () => {
-    it('should extract user from request', () => {
+  describe('Authentication', async () => {
+    it('should extract user from request', async () => {
       const mockExtract = extractUserFromRequest as ReturnType<typeof vi.fn>
       mockExtract.mockReturnValue({ userId: 'test-user-123', email: 'test@example.com' })
 
       const request = createMockNextRequest()
-      const user = extractUserFromRequest(request as any)
+      const user = await extractUserFromRequest(request as any)
 
       expect(user.userId).toBe('test-user-123')
       expect(mockExtract).toHaveBeenCalledWith(request)
     })
 
-    it('should reject anonymous users', () => {
+    it('should reject anonymous users', async () => {
       const mockExtract = extractUserFromRequest as ReturnType<typeof vi.fn>
       mockExtract.mockReturnValue({ userId: 'anonymous' })
 
       const request = createMockNextRequest()
-      const user = extractUserFromRequest(request as any)
+      const user = await extractUserFromRequest(request as any)
 
       expect(user.userId).toBe('anonymous')
       // API should return 401 for anonymous users
     })
 
-    it('should handle authenticated users with Cognito token', () => {
+    it('should handle authenticated users with Cognito token', async () => {
       const mockExtract = extractUserFromRequest as ReturnType<typeof vi.fn>
       mockExtract.mockReturnValue({
         userId: '18c1e380-6021-700d-3572-40d05568f4ce',
@@ -100,56 +100,56 @@ describe('Memory Reset API', () => {
           authorization: 'Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...',
         },
       })
-      const user = extractUserFromRequest(request as any)
+      const user = await extractUserFromRequest(request as any)
 
       expect(user.userId).toBe('18c1e380-6021-700d-3572-40d05568f4ce')
     })
   })
 
-  describe('Namespace Filtering', () => {
-    it('should accept valid namespace: preferences', () => {
+  describe('Namespace Filtering', async () => {
+    it('should accept valid namespace: preferences', async () => {
       const validNamespaces = ['preferences', 'facts', 'summaries', 'all']
       const namespace = 'preferences'
 
       expect(validNamespaces).toContain(namespace)
     })
 
-    it('should accept valid namespace: facts', () => {
+    it('should accept valid namespace: facts', async () => {
       const validNamespaces = ['preferences', 'facts', 'summaries', 'all']
       const namespace = 'facts'
 
       expect(validNamespaces).toContain(namespace)
     })
 
-    it('should accept valid namespace: summaries', () => {
+    it('should accept valid namespace: summaries', async () => {
       const validNamespaces = ['preferences', 'facts', 'summaries', 'all']
       const namespace = 'summaries'
 
       expect(validNamespaces).toContain(namespace)
     })
 
-    it('should accept valid namespace: all', () => {
+    it('should accept valid namespace: all', async () => {
       const validNamespaces = ['preferences', 'facts', 'summaries', 'all']
       const namespace = 'all'
 
       expect(validNamespaces).toContain(namespace)
     })
 
-    it('should reject invalid namespace', () => {
+    it('should reject invalid namespace', async () => {
       const validNamespaces = ['preferences', 'facts', 'summaries', 'all']
       const invalidNamespace = 'invalid-namespace'
 
       expect(validNamespaces).not.toContain(invalidNamespace)
     })
 
-    it('should default to all when no namespace specified', () => {
+    it('should default to all when no namespace specified', async () => {
       const request = createMockNextRequest()
       const namespace = request.nextUrl.searchParams.get('namespace') || 'all'
 
       expect(namespace).toBe('all')
     })
 
-    it('should use specified namespace from query params', () => {
+    it('should use specified namespace from query params', async () => {
       const request = createMockNextRequest({
         searchParams: { namespace: 'preferences' },
       })
@@ -159,28 +159,28 @@ describe('Memory Reset API', () => {
     })
   })
 
-  describe('Namespace to Strategy Type Mapping', () => {
+  describe('Namespace to Strategy Type Mapping', async () => {
     const namespaceToType: Record<string, string> = {
       preferences: 'USER_PREFERENCE',
       facts: 'SEMANTIC',
       summaries: 'SUMMARIZATION',
     }
 
-    it('should map preferences to USER_PREFERENCE', () => {
+    it('should map preferences to USER_PREFERENCE', async () => {
       expect(namespaceToType['preferences']).toBe('USER_PREFERENCE')
     })
 
-    it('should map facts to SEMANTIC', () => {
+    it('should map facts to SEMANTIC', async () => {
       expect(namespaceToType['facts']).toBe('SEMANTIC')
     })
 
-    it('should map summaries to SUMMARIZATION', () => {
+    it('should map summaries to SUMMARIZATION', async () => {
       expect(namespaceToType['summaries']).toBe('SUMMARIZATION')
     })
   })
 
-  describe('Namespace Path Generation', () => {
-    it('should generate correct namespace path for user preferences', () => {
+  describe('Namespace Path Generation', async () => {
+    it('should generate correct namespace path for user preferences', async () => {
       const strategyId = 'user_preference_extraction-abc123'
       const userId = 'test-user-123'
       const namespace = `/strategies/${strategyId}/actors/${userId}`
@@ -188,7 +188,7 @@ describe('Memory Reset API', () => {
       expect(namespace).toBe('/strategies/user_preference_extraction-abc123/actors/test-user-123')
     })
 
-    it('should generate correct namespace path for semantic facts', () => {
+    it('should generate correct namespace path for semantic facts', async () => {
       const strategyId = 'semantic_fact_extraction-def456'
       const userId = 'test-user-123'
       const namespace = `/strategies/${strategyId}/actors/${userId}`
@@ -196,7 +196,7 @@ describe('Memory Reset API', () => {
       expect(namespace).toBe('/strategies/semantic_fact_extraction-def456/actors/test-user-123')
     })
 
-    it('should generate correct namespace path for summaries', () => {
+    it('should generate correct namespace path for summaries', async () => {
       const strategyId = 'conversation_summary-ghi789'
       const userId = 'test-user-123'
       const namespace = `/strategies/${strategyId}/actors/${userId}`
@@ -205,8 +205,8 @@ describe('Memory Reset API', () => {
     })
   })
 
-  describe('Local Mode Handling', () => {
-    it('should reject memory operations in local mode', () => {
+  describe('Local Mode Handling', async () => {
+    it('should reject memory operations in local mode', async () => {
       vi.stubEnv('NEXT_PUBLIC_AGENTCORE_LOCAL', 'true')
 
       const isLocal = process.env.NEXT_PUBLIC_AGENTCORE_LOCAL === 'true'
@@ -215,7 +215,7 @@ describe('Memory Reset API', () => {
       // API should return 400 for local mode
     })
 
-    it('should allow memory operations in cloud mode', () => {
+    it('should allow memory operations in cloud mode', async () => {
       vi.stubEnv('NEXT_PUBLIC_AGENTCORE_LOCAL', 'false')
 
       const isLocal = process.env.NEXT_PUBLIC_AGENTCORE_LOCAL === 'true'
@@ -224,8 +224,8 @@ describe('Memory Reset API', () => {
     })
   })
 
-  describe('Memory ID Configuration', () => {
-    it('should use MEMORY_ID from environment', () => {
+  describe('Memory ID Configuration', async () => {
+    it('should use MEMORY_ID from environment', async () => {
       vi.stubEnv('MEMORY_ID', 'test-memory-id-123')
 
       const memoryId = process.env.MEMORY_ID
@@ -233,7 +233,7 @@ describe('Memory Reset API', () => {
       expect(memoryId).toBe('test-memory-id-123')
     })
 
-    it('should handle missing MEMORY_ID', () => {
+    it('should handle missing MEMORY_ID', async () => {
       vi.stubEnv('MEMORY_ID', '')
 
       const memoryId = process.env.MEMORY_ID
@@ -243,8 +243,8 @@ describe('Memory Reset API', () => {
     })
   })
 
-  describe('Response Format - GET (Stats)', () => {
-    it('should format stats response correctly', () => {
+  describe('Response Format - GET (Stats)', async () => {
+    it('should format stats response correctly', async () => {
       const mockStats = {
         USER_PREFERENCE: { count: 67, namespace: '/strategies/user_pref-xxx/actors/user-123' },
         SEMANTIC: { count: 142, namespace: '/strategies/semantic-xxx/actors/user-123' },
@@ -269,8 +269,8 @@ describe('Memory Reset API', () => {
     })
   })
 
-  describe('Response Format - DELETE (Reset)', () => {
-    it('should format delete response correctly', () => {
+  describe('Response Format - DELETE (Reset)', async () => {
+    it('should format delete response correctly', async () => {
       const deleteResults = {
         USER_PREFERENCE: 67,
         SEMANTIC: 142,
@@ -295,7 +295,7 @@ describe('Memory Reset API', () => {
       expect(response.message).toBe('Deleted 224 memory records')
     })
 
-    it('should format partial delete response for single namespace', () => {
+    it('should format partial delete response for single namespace', async () => {
       const deleteResults = {
         USER_PREFERENCE: 67,
       }
@@ -319,18 +319,18 @@ describe('Memory Reset API', () => {
     })
   })
 
-  describe('Error Handling', () => {
-    it('should handle missing authentication', () => {
+  describe('Error Handling', async () => {
+    it('should handle missing authentication', async () => {
       const mockExtract = extractUserFromRequest as ReturnType<typeof vi.fn>
       mockExtract.mockReturnValue({ userId: 'anonymous' })
 
-      const user = extractUserFromRequest({} as any)
+      const user = await extractUserFromRequest({} as any)
 
       expect(user.userId).toBe('anonymous')
       // Should return 401 Unauthorized
     })
 
-    it('should handle invalid namespace parameter', () => {
+    it('should handle invalid namespace parameter', async () => {
       const request = createMockNextRequest({
         searchParams: { namespace: 'invalid' },
       })
@@ -373,8 +373,8 @@ describe('Memory Reset API', () => {
     })
   })
 
-  describe('Strategy Info Caching', () => {
-    it('should cache strategy info with TTL', () => {
+  describe('Strategy Info Caching', async () => {
+    it('should cache strategy info with TTL', async () => {
       const CACHE_TTL_MS = 5 * 60 * 1000 // 5 minutes
 
       const cache = {
@@ -394,7 +394,7 @@ describe('Memory Reset API', () => {
       expect(cache.strategies).toHaveLength(3)
     })
 
-    it('should invalidate expired cache', () => {
+    it('should invalidate expired cache', async () => {
       const CACHE_TTL_MS = 5 * 60 * 1000 // 5 minutes
 
       const cache = {
@@ -408,7 +408,7 @@ describe('Memory Reset API', () => {
       expect(isCacheValid).toBe(false)
     })
 
-    it('should invalidate cache on memory ID change', () => {
+    it('should invalidate cache on memory ID change', async () => {
       const cache = {
         memoryId: 'old-memory-id',
         strategies: [],
@@ -423,9 +423,9 @@ describe('Memory Reset API', () => {
   })
 })
 
-describe('Memory Record Operations', () => {
-  describe('List Records', () => {
-    it('should paginate through all records', () => {
+describe('Memory Record Operations', async () => {
+  describe('List Records', async () => {
+    it('should paginate through all records', async () => {
       // Simulate pagination logic
       const pages = [
         { records: Array(100).fill({ memoryRecordId: 'rec' }), nextToken: 'token1' },
@@ -442,8 +442,8 @@ describe('Memory Record Operations', () => {
     })
   })
 
-  describe('Delete Records', () => {
-    it('should delete each record individually', () => {
+  describe('Delete Records', async () => {
+    it('should delete each record individually', async () => {
       const records = [
         { memoryRecordId: 'rec-1' },
         { memoryRecordId: 'rec-2' },
@@ -460,7 +460,7 @@ describe('Memory Record Operations', () => {
       expect(deletedCount).toBe(3)
     })
 
-    it('should handle deletion failures gracefully', () => {
+    it('should handle deletion failures gracefully', async () => {
       const records = [
         { memoryRecordId: 'rec-1', deleteSuccess: true },
         { memoryRecordId: 'rec-2', deleteSuccess: false }, // Simulated failure

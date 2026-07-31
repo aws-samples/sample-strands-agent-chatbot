@@ -182,7 +182,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Extract user from Cognito JWT token in Authorization header
-    const user = extractUserFromRequest(request)
+    const user = await extractUserFromRequest(request)
     const userId = user.userId
 
     // Extract raw JWT token for forwarding to MCP Runtime (3LO OAuth user identity)

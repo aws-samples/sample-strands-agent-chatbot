@@ -24,14 +24,14 @@ vi.mock('@/lib/auth-utils', () => ({
 
 import { extractUserFromRequest } from '@/lib/auth-utils'
 
-describe('Documents Download API', () => {
+describe('Documents Download API', async () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.stubEnv('DOCUMENT_BUCKET', 'test-document-bucket')
   })
 
-  describe('Request Validation', () => {
-    it('should require sessionId', () => {
+  describe('Request Validation', async () => {
+    it('should require sessionId', async () => {
       const body: { filename: string; toolType: string; sessionId?: string } = {
         filename: 'report.docx',
         toolType: 'word_document'
@@ -42,7 +42,7 @@ describe('Documents Download API', () => {
       expect(isValid).toBeFalsy()
     })
 
-    it('should require filename', () => {
+    it('should require filename', async () => {
       const body: { sessionId: string; toolType: string; filename?: string } = {
         sessionId: 'session-123',
         toolType: 'word_document'
@@ -53,7 +53,7 @@ describe('Documents Download API', () => {
       expect(isValid).toBeFalsy()
     })
 
-    it('should require toolType', () => {
+    it('should require toolType', async () => {
       const body: { sessionId: string; filename: string; toolType?: string } = {
         sessionId: 'session-123',
         filename: 'report.docx'
@@ -64,7 +64,7 @@ describe('Documents Download API', () => {
       expect(isValid).toBeFalsy()
     })
 
-    it('should accept valid request body (no userId needed)', () => {
+    it('should accept valid request body (no userId needed)', async () => {
       const body = {
         sessionId: 'user123_abc_session456',
         filename: 'report.docx',
@@ -77,13 +77,13 @@ describe('Documents Download API', () => {
     })
   })
 
-  describe('User ID Extraction from Authorization Header', () => {
+  describe('User ID Extraction from Authorization Header', async () => {
     /**
      * The route uses extractUserFromRequest() to get userId from JWT.
      * This is the same pattern used by /api/workspace/files.
      */
 
-    it('should extract userId from authenticated request', () => {
+    it('should extract userId from authenticated request', async () => {
       const mockExtract = extractUserFromRequest as ReturnType<typeof vi.fn>
       mockExtract.mockReturnValue({ userId: '18c1e380-1234-5678-9abc-def012345678' })
 
@@ -93,13 +93,13 @@ describe('Documents Download API', () => {
         }
       }
 
-      const user = extractUserFromRequest(mockRequest as any)
+      const user = await extractUserFromRequest(mockRequest as any)
 
       expect(user.userId).toBe('18c1e380-1234-5678-9abc-def012345678')
       expect(mockExtract).toHaveBeenCalledWith(mockRequest)
     })
 
-    it('should return anonymous for unauthenticated request', () => {
+    it('should return anonymous for unauthenticated request', async () => {
       const mockExtract = extractUserFromRequest as ReturnType<typeof vi.fn>
       mockExtract.mockReturnValue({ userId: 'anonymous' })
 
@@ -109,12 +109,12 @@ describe('Documents Download API', () => {
         }
       }
 
-      const user = extractUserFromRequest(mockRequest as any)
+      const user = await extractUserFromRequest(mockRequest as any)
 
       expect(user.userId).toBe('anonymous')
     })
 
-    it('should use full UUID from JWT (not truncated sessionId prefix)', () => {
+    it('should use full UUID from JWT (not truncated sessionId prefix)', async () => {
       /**
        * This test verifies the fix for the NoSuchKey bug:
        * - S3 files are stored with full UUID: documents/18c1e380-xxxx-xxxx-xxxx-xxxxxxxxxxxx/...
@@ -131,7 +131,7 @@ describe('Documents Download API', () => {
         }
       }
 
-      const user = extractUserFromRequest(mockRequest as any)
+      const user = await extractUserFromRequest(mockRequest as any)
 
       // Full UUID (36 chars), not truncated prefix (8 chars)
       expect(user.userId).toBe(fullUUID)
@@ -140,26 +140,26 @@ describe('Documents Download API', () => {
     })
   })
 
-  describe('Tool Type to Document Type Mapping', () => {
+  describe('Tool Type to Document Type Mapping', async () => {
     const toolTypeToDocType: Record<string, string> = {
       'word_document': 'word',
       'excel_spreadsheet': 'excel',
       'powerpoint_presentation': 'powerpoint'
     }
 
-    it('should map word_document to word', () => {
+    it('should map word_document to word', async () => {
       expect(toolTypeToDocType['word_document']).toBe('word')
     })
 
-    it('should map excel_spreadsheet to excel', () => {
+    it('should map excel_spreadsheet to excel', async () => {
       expect(toolTypeToDocType['excel_spreadsheet']).toBe('excel')
     })
 
-    it('should map powerpoint_presentation to powerpoint', () => {
+    it('should map powerpoint_presentation to powerpoint', async () => {
       expect(toolTypeToDocType['powerpoint_presentation']).toBe('powerpoint')
     })
 
-    it('should use toolType as-is for unknown types', () => {
+    it('should use toolType as-is for unknown types', async () => {
       const unknownType = 'custom_document'
       const documentType = toolTypeToDocType[unknownType] || unknownType
 
@@ -167,8 +167,8 @@ describe('Documents Download API', () => {
     })
   })
 
-  describe('S3 Key Construction', () => {
-    it('should construct correct S3 key for word document', () => {
+  describe('S3 Key Construction', async () => {
+    it('should construct correct S3 key for word document', async () => {
       const bucket = 'test-document-bucket'
       const userId = '18c1e380-1234-5678-9abc-def012345678'  // Full UUID from JWT
       const sessionId = '18c1e380_timestamp_uuid'
@@ -180,7 +180,7 @@ describe('Documents Download API', () => {
       expect(s3Key).toBe('s3://test-document-bucket/documents/18c1e380-1234-5678-9abc-def012345678/18c1e380_timestamp_uuid/word/report.docx')
     })
 
-    it('should construct correct S3 key for excel document', () => {
+    it('should construct correct S3 key for excel document', async () => {
       const bucket = 'test-document-bucket'
       const userId = 'user-456-full-uuid-here'
       const sessionId = 'user456_xyz_session789'
@@ -192,7 +192,7 @@ describe('Documents Download API', () => {
       expect(s3Key).toBe('s3://test-document-bucket/documents/user-456-full-uuid-here/user456_xyz_session789/excel/data.xlsx')
     })
 
-    it('should construct correct S3 key for anonymous user', () => {
+    it('should construct correct S3 key for anonymous user', async () => {
       const bucket = 'test-document-bucket'
       const userId = 'anonymous'  // From extractUserFromRequest when no auth
       const sessionId = 'anon0000_abc_session123'
@@ -204,7 +204,7 @@ describe('Documents Download API', () => {
       expect(s3Key).toBe('s3://test-document-bucket/documents/anonymous/anon0000_abc_session123/word/anonymous-doc.docx')
     })
 
-    it('should handle filenames with spaces', () => {
+    it('should handle filenames with spaces', async () => {
       const bucket = 'test-document-bucket'
       const userId = 'user-123-full-uuid'
       const sessionId = 'session-456'
@@ -216,7 +216,7 @@ describe('Documents Download API', () => {
       expect(s3Key).toBe('s3://test-document-bucket/documents/user-123-full-uuid/session-456/word/My Report 2024.docx')
     })
 
-    it('should handle filenames with special characters', () => {
+    it('should handle filenames with special characters', async () => {
       const bucket = 'test-document-bucket'
       const userId = 'user-123-full-uuid'
       const sessionId = 'session-456'
@@ -229,8 +229,8 @@ describe('Documents Download API', () => {
     })
   })
 
-  describe('End-to-End Flow (with extractUserFromRequest)', () => {
-    it('should correctly process authenticated user download request', () => {
+  describe('End-to-End Flow (with extractUserFromRequest)', async () => {
+    it('should correctly process authenticated user download request', async () => {
       const mockExtract = extractUserFromRequest as ReturnType<typeof vi.fn>
       mockExtract.mockReturnValue({ userId: '18c1e380-1234-5678-9abc-def012345678' })
 
@@ -249,7 +249,7 @@ describe('Documents Download API', () => {
       }
 
       // Simulate route logic
-      const user = extractUserFromRequest({} as any)
+      const user = await extractUserFromRequest({} as any)
       const userId = user.userId
       const documentType = toolTypeToDocType[request.toolType] || request.toolType
       const s3Key = `s3://${bucket}/documents/${userId}/${request.sessionId}/${documentType}/${request.filename}`
@@ -259,7 +259,7 @@ describe('Documents Download API', () => {
       expect(s3Key).toBe('s3://test-document-bucket/documents/18c1e380-1234-5678-9abc-def012345678/18c1e380_timestamp_uuid/word/quarterly-report.docx')
     })
 
-    it('should correctly process anonymous user download request', () => {
+    it('should correctly process anonymous user download request', async () => {
       const mockExtract = extractUserFromRequest as ReturnType<typeof vi.fn>
       mockExtract.mockReturnValue({ userId: 'anonymous' })
 
@@ -277,7 +277,7 @@ describe('Documents Download API', () => {
       }
 
       // Simulate route logic
-      const user = extractUserFromRequest({} as any)
+      const user = await extractUserFromRequest({} as any)
       const userId = user.userId
       const documentType = toolTypeToDocType[request.toolType] || request.toolType
       const s3Key = `s3://${bucket}/documents/${userId}/${request.sessionId}/${documentType}/${request.filename}`
@@ -288,7 +288,7 @@ describe('Documents Download API', () => {
     })
   })
 
-  describe('Frontend Integration (Authorization Header)', () => {
+  describe('Frontend Integration (Authorization Header)', async () => {
     /**
      * Tests verifying that frontend sends proper Authorization header
      * so BFF can extract userId correctly.
@@ -322,8 +322,8 @@ describe('Documents Download API', () => {
     })
   })
 
-  describe('Error Handling', () => {
-    it('should handle missing DOCUMENT_BUCKET gracefully', () => {
+  describe('Error Handling', async () => {
+    it('should handle missing DOCUMENT_BUCKET gracefully', async () => {
       vi.stubEnv('DOCUMENT_BUCKET', '')
 
       const bucket = process.env.DOCUMENT_BUCKET

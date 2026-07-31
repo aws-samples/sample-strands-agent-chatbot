@@ -20,7 +20,7 @@ const AGENTCORE_URL = process.env.NEXT_PUBLIC_AGENTCORE_URL || 'http://localhost
 export async function POST(request: NextRequest) {
   try {
     // Extract user from request
-    const user = extractUserFromRequest(request)
+    const user = await extractUserFromRequest(request)
     const userId = user.userId
 
     // Get session ID from request body or header

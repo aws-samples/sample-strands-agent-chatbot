@@ -38,7 +38,7 @@ async function getMemoryId(): Promise<string | null> {
 
 export async function POST(request: NextRequest) {
   try {
-    const user = extractUserFromRequest(request)
+    const user = await extractUserFromRequest(request)
     const userId = user.userId
 
     const { sessionId, fromEventId, fromTimestamp } = await request.json()

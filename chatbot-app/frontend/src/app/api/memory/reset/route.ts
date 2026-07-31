@@ -219,7 +219,7 @@ export async function DELETE(request: NextRequest) {
     }
 
     // Extract user from Cognito JWT token
-    const user = extractUserFromRequest(request)
+    const user = await extractUserFromRequest(request)
     const userId = user.userId
 
     if (userId === 'anonymous') {
@@ -338,7 +338,7 @@ export async function GET(request: NextRequest) {
     }
 
     // Extract user from Cognito JWT token
-    const user = extractUserFromRequest(request)
+    const user = await extractUserFromRequest(request)
     const userId = user.userId
 
     if (userId === 'anonymous') {

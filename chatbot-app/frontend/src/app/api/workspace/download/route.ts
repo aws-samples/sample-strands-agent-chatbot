@@ -50,7 +50,7 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const user = extractUserFromRequest(request)
+    const user = await extractUserFromRequest(request)
     const userId = user.userId
 
     let bucket = process.env.ARTIFACT_BUCKET

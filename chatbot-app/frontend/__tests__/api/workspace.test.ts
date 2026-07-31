@@ -55,30 +55,30 @@ function createMockNextRequest(options: {
   }
 }
 
-describe('Workspace Files API', () => {
+describe('Workspace Files API', async () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.stubEnv('DOCUMENT_BUCKET', 'test-bucket')
   })
 
-  describe('Tool to Document Type Mapping', () => {
+  describe('Tool to Document Type Mapping', async () => {
     // Uses centralized TOOL_TO_DOC_TYPE from @/config/document-tools
 
-    it('should map Word tool names to word document type', () => {
+    it('should map Word tool names to word document type', async () => {
       expect(TOOL_TO_DOC_TYPE['create_word_document']).toBe('word')
       expect(TOOL_TO_DOC_TYPE['modify_word_document']).toBe('word')
       expect(TOOL_TO_DOC_TYPE['read_word_document']).toBe('word')
       expect(TOOL_TO_DOC_TYPE['list_my_word_documents']).toBe('word')
     })
 
-    it('should map Excel tool names to excel document type', () => {
+    it('should map Excel tool names to excel document type', async () => {
       expect(TOOL_TO_DOC_TYPE['create_excel_spreadsheet']).toBe('excel')
       expect(TOOL_TO_DOC_TYPE['modify_excel_spreadsheet']).toBe('excel')
       expect(TOOL_TO_DOC_TYPE['read_excel_spreadsheet']).toBe('excel')
       expect(TOOL_TO_DOC_TYPE['list_my_excel_spreadsheets']).toBe('excel')
     })
 
-    it('should map PowerPoint tool names to powerpoint document type', () => {
+    it('should map PowerPoint tool names to powerpoint document type', async () => {
       expect(TOOL_TO_DOC_TYPE['create_presentation']).toBe('powerpoint')
       expect(TOOL_TO_DOC_TYPE['update_slide_content']).toBe('powerpoint')
       expect(TOOL_TO_DOC_TYPE['add_slide']).toBe('powerpoint')
@@ -86,14 +86,14 @@ describe('Workspace Files API', () => {
       expect(TOOL_TO_DOC_TYPE['move_slide']).toBe('powerpoint')
     })
 
-    it('should return undefined for unknown tools', () => {
+    it('should return undefined for unknown tools', async () => {
       expect(TOOL_TO_DOC_TYPE['unknown_tool']).toBeUndefined()
       expect(TOOL_TO_DOC_TYPE['send_email']).toBeUndefined()
     })
   })
 
-  describe('Request Validation', () => {
-    it('should extract document type from toolName parameter', () => {
+  describe('Request Validation', async () => {
+    it('should extract document type from toolName parameter', async () => {
       const request = createMockNextRequest({
         searchParams: { toolName: 'create_word_document' }
       })
@@ -102,7 +102,7 @@ describe('Workspace Files API', () => {
       expect(toolName).toBe('create_word_document')
     })
 
-    it('should extract document type from docType parameter', () => {
+    it('should extract document type from docType parameter', async () => {
       const request = createMockNextRequest({
         searchParams: { docType: 'word' }
       })
@@ -111,7 +111,7 @@ describe('Workspace Files API', () => {
       expect(docType).toBe('word')
     })
 
-    it('should prefer docType over toolName when both provided', () => {
+    it('should prefer docType over toolName when both provided', async () => {
       const request = createMockNextRequest({
         searchParams: {
           toolName: 'create_excel_spreadsheet',
@@ -127,7 +127,7 @@ describe('Workspace Files API', () => {
       expect(finalDocType).toBe('word')
     })
 
-    it('should require either toolName or docType', () => {
+    it('should require either toolName or docType', async () => {
       const request = createMockNextRequest({
         searchParams: {} // No params
       })
@@ -144,19 +144,19 @@ describe('Workspace Files API', () => {
     })
   })
 
-  describe('Authentication', () => {
-    it('should extract user from request', () => {
+  describe('Authentication', async () => {
+    it('should extract user from request', async () => {
       const mockExtract = extractUserFromRequest as ReturnType<typeof vi.fn>
       mockExtract.mockReturnValue({ userId: 'user-123' })
 
       const request = createMockNextRequest({ searchParams: { docType: 'word' } })
-      const user = extractUserFromRequest(request as any)
+      const user = await extractUserFromRequest(request as any)
 
       expect(user.userId).toBe('user-123')
       expect(mockExtract).toHaveBeenCalledWith(request)
     })
 
-    it('should extract session ID from request', () => {
+    it('should extract session ID from request', async () => {
       const mockGetSession = getSessionId as ReturnType<typeof vi.fn>
       mockGetSession.mockReturnValue({ sessionId: 'session-456' })
 
@@ -166,7 +166,7 @@ describe('Workspace Files API', () => {
       expect(sessionId).toBe('session-456')
     })
 
-    it('should require session ID', () => {
+    it('should require session ID', async () => {
       const mockGetSession = getSessionId as ReturnType<typeof vi.fn>
       mockGetSession.mockReturnValue({ sessionId: null })
 
@@ -177,8 +177,8 @@ describe('Workspace Files API', () => {
     })
   })
 
-  describe('S3 Path Construction', () => {
-    it('should construct correct S3 prefix for word documents', () => {
+  describe('S3 Path Construction', async () => {
+    it('should construct correct S3 prefix for word documents', async () => {
       const userId = 'user-123'
       const sessionId = 'session-456'
       const docType = 'word'
@@ -188,7 +188,7 @@ describe('Workspace Files API', () => {
       expect(s3Prefix).toBe('documents/user-123/session-456/word/')
     })
 
-    it('should construct correct S3 prefix for excel documents', () => {
+    it('should construct correct S3 prefix for excel documents', async () => {
       const userId = 'user-abc'
       const sessionId = 'session-xyz'
       const docType = 'excel'
@@ -198,7 +198,7 @@ describe('Workspace Files API', () => {
       expect(s3Prefix).toBe('documents/user-abc/session-xyz/excel/')
     })
 
-    it('should construct correct S3 prefix for powerpoint documents', () => {
+    it('should construct correct S3 prefix for powerpoint documents', async () => {
       const userId = 'test-user'
       const sessionId = 'test-session'
       const docType = 'powerpoint'
@@ -209,8 +209,8 @@ describe('Workspace Files API', () => {
     })
   })
 
-  describe('Response Formatting', () => {
-    it('should format file response correctly', () => {
+  describe('Response Formatting', async () => {
+    it('should format file response correctly', async () => {
       // Mock S3 object
       const s3Object = {
         Key: 'documents/user-123/session-456/word/report.docx',
@@ -239,14 +239,14 @@ describe('Workspace Files API', () => {
       })
     })
 
-    it('should map doc type to correct tool_type format using DOC_TYPE_TO_TOOL_TYPE', () => {
+    it('should map doc type to correct tool_type format using DOC_TYPE_TO_TOOL_TYPE', async () => {
       // Uses centralized DOC_TYPE_TO_TOOL_TYPE from @/config/document-tools
       expect(DOC_TYPE_TO_TOOL_TYPE['word']).toBe('word_document')
       expect(DOC_TYPE_TO_TOOL_TYPE['excel']).toBe('excel_spreadsheet')
       expect(DOC_TYPE_TO_TOOL_TYPE['powerpoint']).toBe('powerpoint_presentation')
     })
 
-    it('should filter out hidden files', () => {
+    it('should filter out hidden files', async () => {
       const files = [
         { filename: 'report.docx', Key: 'path/report.docx' },
         { filename: '.template_metadata', Key: 'path/.template_metadata' },
@@ -260,7 +260,7 @@ describe('Workspace Files API', () => {
       expect(filteredFiles.map(f => f.filename)).toEqual(['report.docx', 'data.xlsx'])
     })
 
-    it('should sort files by last_modified descending (most recent first)', () => {
+    it('should sort files by last_modified descending (most recent first)', async () => {
       const files = [
         { filename: 'old.docx', last_modified: '2024-01-10T10:00:00Z' },
         { filename: 'newest.docx', last_modified: '2024-01-15T15:00:00Z' },
@@ -279,8 +279,8 @@ describe('Workspace Files API', () => {
     })
   })
 
-  describe('Error Handling', () => {
-    it('should handle missing DOCUMENT_BUCKET', () => {
+  describe('Error Handling', async () => {
+    it('should handle missing DOCUMENT_BUCKET', async () => {
       vi.stubEnv('DOCUMENT_BUCKET', '')
 
       const bucket = process.env.DOCUMENT_BUCKET
@@ -289,7 +289,7 @@ describe('Workspace Files API', () => {
       expect(bucket).toBe('')
     })
 
-    it('should handle S3 list errors gracefully', () => {
+    it('should handle S3 list errors gracefully', async () => {
       // Simulate S3 error scenario
       const s3Error = new Error('Access Denied')
 
@@ -297,7 +297,7 @@ describe('Workspace Files API', () => {
       expect(s3Error.message).toBe('Access Denied')
     })
 
-    it('should handle empty S3 response', () => {
+    it('should handle empty S3 response', async () => {
       const s3Response = {
         Contents: undefined
       }
@@ -310,40 +310,40 @@ describe('Workspace Files API', () => {
   })
 })
 
-describe('Workspace Download API', () => {
-  describe('Path to S3 key mapping (toS3Key)', () => {
+describe('Workspace Download API', async () => {
+  describe('Path to S3 key mapping (toS3Key)', async () => {
     const userId = 'user-123'
     const sessionId = 'session-456'
 
-    it('should map code-agent paths to code-agent-workspace prefix', () => {
+    it('should map code-agent paths to code-agent-workspace prefix', async () => {
       const path = 'code-agent/output.csv'
       const expected = `code-agent-workspace/${userId}/${sessionId}/output.csv`
       const result = toS3Key(userId, sessionId, path)
       expect(result).toBe(expected)
     })
 
-    it('should map code-interpreter paths', () => {
+    it('should map code-interpreter paths', async () => {
       const path = 'code-interpreter/chart.png'
       const expected = `code-interpreter-workspace/${userId}/${sessionId}/chart.png`
       const result = toS3Key(userId, sessionId, path)
       expect(result).toBe(expected)
     })
 
-    it('should map documents paths', () => {
+    it('should map documents paths', async () => {
       const path = 'documents/word/report.docx'
       const expected = `documents/${userId}/${sessionId}/word/report.docx`
       const result = toS3Key(userId, sessionId, path)
       expect(result).toBe(expected)
     })
 
-    it('should default to documents namespace for unrecognized paths', () => {
+    it('should default to documents namespace for unrecognized paths', async () => {
       const path = 'random/file.txt'
       const expected = `documents/${userId}/${sessionId}/random/file.txt`
       const result = toS3Key(userId, sessionId, path)
       expect(result).toBe(expected)
     })
 
-    it('should strip leading slash', () => {
+    it('should strip leading slash', async () => {
       const path = '/code-agent/file.json'
       const expected = `code-agent-workspace/${userId}/${sessionId}/file.json`
       const result = toS3Key(userId, sessionId, path)
@@ -351,34 +351,34 @@ describe('Workspace Download API', () => {
     })
   })
 
-  describe('Request validation', () => {
-    it('should require path and sessionId in body', () => {
+  describe('Request validation', async () => {
+    it('should require path and sessionId in body', async () => {
       const body = { path: 'code-agent/file.csv', sessionId: 'sess-123' }
       expect(body.path).toBeTruthy()
       expect(body.sessionId).toBeTruthy()
     })
 
-    it('should reject missing path', () => {
+    it('should reject missing path', async () => {
       const body = { sessionId: 'sess-123' } as any
       const isValid = !!(body.path && body.sessionId)
       expect(isValid).toBe(false)
     })
 
-    it('should reject missing sessionId', () => {
+    it('should reject missing sessionId', async () => {
       const body = { path: 'code-agent/file.csv' } as any
       const isValid = !!(body.path && body.sessionId)
       expect(isValid).toBe(false)
     })
   })
 
-  describe('Filename extraction', () => {
-    it('should extract filename from path', () => {
+  describe('Filename extraction', async () => {
+    it('should extract filename from path', async () => {
       const path = 'code-agent/subdir/output.csv'
       const filename = path.split('/').pop() || 'download'
       expect(filename).toBe('output.csv')
     })
 
-    it('should fallback to download when path ends with slash', () => {
+    it('should fallback to download when path ends with slash', async () => {
       const path = 'code-agent/'
       const filename = path.split('/').pop() || 'download'
       expect(filename).toBe('download')
@@ -403,12 +403,12 @@ function toS3Key(userId: string, sessionId: string, path: string): string {
   return `documents/${userId}/${sessionId}/${cleanPath}`
 }
 
-describe('Frontend Workspace File Fetching (useStreamEvents)', () => {
+describe('Frontend Workspace File Fetching (useStreamEvents)', async () => {
   // Tests for the frontend logic that fetches workspace files
   // Uses centralized TOOL_TO_DOC_TYPE from @/config/document-tools
 
-  describe('TOOL_TO_DOC_TYPE mapping', () => {
-    it('should detect word tools', () => {
+  describe('TOOL_TO_DOC_TYPE mapping', async () => {
+    it('should detect word tools', async () => {
       const toolNames = ['create_word_document', 'modify_word_document']
       const usedDocTypes = new Set<string>()
 
@@ -421,7 +421,7 @@ describe('Frontend Workspace File Fetching (useStreamEvents)', () => {
       expect(usedDocTypes.size).toBe(1)
     })
 
-    it('should detect multiple doc types from different tools', () => {
+    it('should detect multiple doc types from different tools', async () => {
       const toolNames = ['create_word_document', 'create_excel_spreadsheet', 'create_presentation']
       const usedDocTypes = new Set<string>()
 
@@ -436,7 +436,7 @@ describe('Frontend Workspace File Fetching (useStreamEvents)', () => {
       expect(usedDocTypes.has('powerpoint')).toBe(true)
     })
 
-    it('should ignore non-document tools', () => {
+    it('should ignore non-document tools', async () => {
       const toolNames = ['web_search', 'calculator', 'create_word_document']
       const usedDocTypes = new Set<string>()
 
@@ -449,24 +449,24 @@ describe('Frontend Workspace File Fetching (useStreamEvents)', () => {
     })
   })
 
-  describe('DOC_TYPE_TO_TOOL_TYPE mapping', () => {
+  describe('DOC_TYPE_TO_TOOL_TYPE mapping', async () => {
     // Uses centralized DOC_TYPE_TO_TOOL_TYPE from @/config/document-tools
 
-    it('should map word to word_document', () => {
+    it('should map word to word_document', async () => {
       expect(DOC_TYPE_TO_TOOL_TYPE['word']).toBe('word_document')
     })
 
-    it('should map excel to excel_spreadsheet', () => {
+    it('should map excel to excel_spreadsheet', async () => {
       expect(DOC_TYPE_TO_TOOL_TYPE['excel']).toBe('excel_spreadsheet')
     })
 
-    it('should map powerpoint to powerpoint_presentation', () => {
+    it('should map powerpoint to powerpoint_presentation', async () => {
       expect(DOC_TYPE_TO_TOOL_TYPE['powerpoint']).toBe('powerpoint_presentation')
     })
   })
 
-  describe('Workspace file integration', () => {
-    it('should transform API response for DynamoDB storage with user_id', () => {
+  describe('Workspace file integration', async () => {
+    it('should transform API response for DynamoDB storage with user_id', async () => {
       // Simulate API response - BFF returns userId which is needed for S3 path
       const apiResponse = {
         files: [
@@ -489,7 +489,7 @@ describe('Frontend Workspace File Fetching (useStreamEvents)', () => {
       ])
     })
 
-    it('should handle empty API response', () => {
+    it('should handle empty API response', async () => {
       const apiResponse = { files: [] }
 
       const documents = apiResponse.files || []
@@ -497,7 +497,7 @@ describe('Frontend Workspace File Fetching (useStreamEvents)', () => {
       expect(documents).toEqual([])
     })
 
-    it('should handle API error gracefully', () => {
+    it('should handle API error gracefully', async () => {
       // Simulate error scenario
       let workspaceDocuments: Array<{ filename: string; tool_type: string }> = []
 
@@ -512,7 +512,7 @@ describe('Frontend Workspace File Fetching (useStreamEvents)', () => {
     })
   })
 
-  describe('Workspace API fetch headers (Integration)', () => {
+  describe('Workspace API fetch headers (Integration)', async () => {
     /**
      * These tests verify that the frontend correctly includes authentication
      * headers when calling /api/workspace/files. Without proper headers:
@@ -650,7 +650,7 @@ describe('Frontend Workspace File Fetching (useStreamEvents)', () => {
       expect(data.sessionId).toBe(sessionId)
     })
 
-    it('should construct correct headers object for workspace fetch', () => {
+    it('should construct correct headers object for workspace fetch', async () => {
       /**
        * Test the header construction logic that should be used in useStreamEvents.
        * This verifies the fix pattern.
@@ -674,7 +674,7 @@ describe('Frontend Workspace File Fetching (useStreamEvents)', () => {
       })
     })
 
-    it('should handle missing auth token gracefully (still include session ID)', () => {
+    it('should handle missing auth token gracefully (still include session ID)', async () => {
       /**
        * For anonymous users, auth token may not be available.
        * Session ID should still be included.
