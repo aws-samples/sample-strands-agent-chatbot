@@ -118,6 +118,6 @@
     "tailwindcss-animate": "^1.0.7",
     "typescript": "^5",
     "vitest": "^3.2.6",
-    "ws": "^8.21.0"
+    "ws": "^8.21.1"
   }
 }
