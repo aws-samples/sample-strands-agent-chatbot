@@ -1,3 +1,7 @@
+# Runtime dependencies — tests import src/ modules directly, so the packages
+# they import at module level (boto3, strands) have to be present.
+-r requirements.txt
+
 # Test and lint dependencies
 pytest>=7.0.0
 pytest-timeout>=2.0.0
