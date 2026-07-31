@@ -258,6 +258,21 @@ resource "aws_iam_role_policy_attachment" "ecs_execution" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
+resource "aws_iam_role_policy" "ecs_execution_secrets" {
+  count = var.bedrock_api_key_secret_arn != "" ? 1 : 0
+
+  name = "${local.prefix}-ecs-exec-secrets"
+  role = aws_iam_role.ecs_execution.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["secretsmanager:GetSecretValue"]
+      Resource = var.bedrock_api_key_secret_arn
+    }]
+  })
+}
+
 resource "aws_iam_role" "ecs_task" {
   name = "${local.prefix}-ecs-task"
   assume_role_policy = jsonencode({
@@ -381,6 +396,10 @@ resource "aws_ecs_task_definition" "frontend" {
       { name = "AGENTCORE_RUNTIME_URL", value = var.orchestrator_runtime_url },
       { name = "SOURCE_HASH", value = local.source_hash },
     ]
+    secrets = var.bedrock_api_key_secret_arn != "" ? [{
+      name      = "AWS_BEARER_TOKEN_BEDROCK"
+      valueFrom = var.bedrock_api_key_secret_arn
+    }] : []
     logConfiguration = {
       logDriver = "awslogs"
       options = {
@@ -391,7 +410,11 @@ resource "aws_ecs_task_definition" "frontend" {
     }
   }])
 
-  depends_on = [null_resource.codebuild_trigger]
+  depends_on = [
+    null_resource.codebuild_trigger,
+    aws_iam_role_policy_attachment.ecs_execution,
+    aws_iam_role_policy.ecs_execution_secrets,
+  ]
 }
 
 # ALB ingress uses CloudFront prefix list. Keep ingress inline to avoid the

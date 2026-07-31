@@ -333,7 +333,7 @@ export const useChatAPI = ({
       const response = await fetch(getApiUrl('session/compact/summarize'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders },
-        body: JSON.stringify({ messages: messagesForSummary, modelId: currentModelId }),
+        body: JSON.stringify({ messages: messagesForSummary }),
       })
 
       if (!response.ok) {
@@ -356,8 +356,7 @@ export const useChatAPI = ({
       logger.error('Error generating compact summary:', error)
       return null
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentModelId])
+  }, [])
 
   // List all current eventIds for the session (snapshot before sending summary)
   const listSessionEvents = useCallback(async (): Promise<string[]> => {

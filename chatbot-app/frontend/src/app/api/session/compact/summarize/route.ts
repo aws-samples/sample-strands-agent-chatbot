@@ -3,15 +3,12 @@
  *
  * Receives the current messages directly from the frontend (no need to
  * re-load from AgentCore Memory, which avoids actorId / payload format issues).
- * Generates a summary via Bedrock Converse.
+ * Generates a summary with GPT-5.6 Luna via Bedrock Mantle.
  */
 import { NextRequest, NextResponse } from 'next/server'
-import {
-  BedrockRuntimeClient,
-  ConverseStreamCommand,
-} from '@aws-sdk/client-bedrock-runtime'
 
-const AWS_REGION = process.env.AWS_REGION || process.env.NEXT_PUBLIC_AWS_REGION || 'us-west-2'
+const COMPACTION_MODEL_ID = 'openai.gpt-5.6-luna'
+const MANTLE_RESPONSES_URL = 'https://bedrock-mantle.us-east-1.api.aws/openai/v1/responses'
 
 export const runtime = 'nodejs'
 
@@ -102,27 +99,56 @@ ${transcript}
 Now produce the summary following the instructions above.`
 }
 
-async function streamConverse(client: BedrockRuntimeClient, modelId: string, prompt: string): Promise<ReadableStream<Uint8Array>> {
-  const response = await client.send(new ConverseStreamCommand({
-    modelId,
-    messages: [{ role: 'user', content: [{ text: prompt }] }],
-    inferenceConfig: { maxTokens: 4096 },
-  }))
+type MantleContent = {
+  type?: string
+  text?: string
+}
 
-  const encoder = new TextEncoder()
-  return new ReadableStream({
-    async start(controller) {
-      try {
-        for await (const event of response.stream ?? []) {
-          const text = event.contentBlockDelta?.delta?.text
-          if (text) controller.enqueue(encoder.encode(text))
-        }
-        controller.close()
-      } catch (err) {
-        controller.error(err)
-      }
+type MantleOutput = {
+  type?: string
+  content?: MantleContent[]
+}
+
+type MantleResponse = {
+  output?: MantleOutput[]
+  error?: { message?: string }
+}
+
+async function generateSummary(prompt: string): Promise<string> {
+  const apiKey = process.env.AWS_BEARER_TOKEN_BEDROCK
+  if (!apiKey) {
+    throw new Error('AWS_BEARER_TOKEN_BEDROCK is not configured')
+  }
+
+  const response = await fetch(MANTLE_RESPONSES_URL, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
     },
+    body: JSON.stringify({
+      model: COMPACTION_MODEL_ID,
+      input: prompt,
+      max_output_tokens: 4096,
+    }),
   })
+
+  const payload = await response.json() as MantleResponse
+  if (!response.ok) {
+    throw new Error(payload.error?.message || `Mantle Responses API returned ${response.status}`)
+  }
+
+  const text = payload.output
+    ?.filter(item => item.type === 'message')
+    .flatMap(item => item.content ?? [])
+    .filter(item => item.type === 'output_text' && item.text)
+    .map(item => item.text)
+    .join('') ?? ''
+
+  if (!text) {
+    throw new Error('Mantle Responses API returned no summary text')
+  }
+  return text
 }
 
 function isContextWindowError(error: unknown): boolean {
@@ -139,11 +165,11 @@ function isContextWindowError(error: unknown): boolean {
 
 export async function POST(request: NextRequest) {
   try {
-    const { messages, modelId } = await request.json()
+    const { messages } = await request.json()
 
-    if (!messages || !Array.isArray(messages) || !modelId) {
+    if (!messages || !Array.isArray(messages)) {
       return NextResponse.json(
-        { success: false, error: 'messages (array) and modelId are required' },
+        { success: false, error: 'messages array is required' },
         { status: 400 }
       )
     }
@@ -179,20 +205,18 @@ export async function POST(request: NextRequest) {
       console.warn(`[compact/summarize] Transcript truncated to ${transcript.length} chars`)
     }
 
-    const client = new BedrockRuntimeClient({ region: AWS_REGION })
-
-    let stream: ReadableStream<Uint8Array>
+    let summary: string
     try {
-      stream = await streamConverse(client, modelId, buildPrompt(transcript, truncated))
+      summary = await generateSummary(buildPrompt(transcript, truncated))
     } catch (firstError) {
       if (!isContextWindowError(firstError)) throw firstError
 
       console.warn(`[compact/summarize] Context window error, retrying with reduced transcript`)
       const { transcript: shorter, truncated: moreTruncated } = truncateTranscript(textMessages, 100_000)
-      stream = await streamConverse(client, modelId, buildPrompt(shorter, moreTruncated))
+      summary = await generateSummary(buildPrompt(shorter, moreTruncated))
     }
 
-    return new Response(stream, {
+    return new Response(summary, {
       headers: { 'Content-Type': 'text/plain; charset=utf-8' },
     })
   } catch (error) {
