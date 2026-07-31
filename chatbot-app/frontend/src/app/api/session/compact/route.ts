@@ -36,7 +36,7 @@ async function getMemoryId(): Promise<string | null> {
 /** List all eventIds for the session (used to capture snapshot before sending summary) */
 export async function GET(request: NextRequest) {
   try {
-    const user = extractUserFromRequest(request)
+    const user = await extractUserFromRequest(request)
     const userId = user.userId
 
     const { searchParams } = new URL(request.url)
@@ -91,7 +91,7 @@ export async function GET(request: NextRequest) {
 /** Delete the specified eventIds (or all events if eventIds not provided) */
 export async function POST(request: NextRequest) {
   try {
-    const user = extractUserFromRequest(request)
+    const user = await extractUserFromRequest(request)
     const userId = user.userId
 
     const { sessionId, eventIds } = await request.json()

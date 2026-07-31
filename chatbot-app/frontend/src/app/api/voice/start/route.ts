@@ -58,21 +58,18 @@ export const runtime = 'nodejs'
 
 export async function POST(request: NextRequest) {
   try {
-    const user = extractUserFromRequest(request)
+    const user = await extractUserFromRequest(request)
     const userId = user.userId
     const { sessionId } = getSessionId(request, userId)
     const body = await request.json().catch(() => ({}))
     const enabledTools: string[] = body.enabledTools || []
-
-    const authHeader = request.headers.get('authorization')
-    const authToken = authHeader?.startsWith('Bearer ') ? authHeader.substring(7) : null
 
     const { isNew } = await ensureSessionExists(userId, sessionId, {
       title: 'Voice Chat',
       metadata: { isVoiceSession: true },
     })
 
-    console.log(`[Voice Start] User: ${userId}, Session: ${sessionId}, New: ${isNew}, Tools: ${enabledTools.length}, AuthToken: ${authToken ? 'present' : 'missing'}`)
+    console.log(`[Voice Start] User: ${userId}, Session: ${sessionId}, New: ${isNew}, Tools: ${enabledTools.length}`)
 
     let wsUrl: string
 
@@ -91,7 +88,7 @@ export async function POST(request: NextRequest) {
       }
 
       const queryParams: Record<string, string> = {
-        'X-Amzn-Bedrock-AgentCore-Runtime-Custom-Session-Id': sessionId,
+        'X-Amzn-Bedrock-AgentCore-Runtime-Session-Id': sessionId,
       }
       if (userId) {
         queryParams['X-Amzn-Bedrock-AgentCore-Runtime-Custom-User-Id'] = userId
@@ -99,10 +96,6 @@ export async function POST(request: NextRequest) {
       if (enabledTools.length > 0) {
         queryParams['X-Amzn-Bedrock-AgentCore-Runtime-Custom-Enabled-Tools'] = JSON.stringify(enabledTools)
       }
-      if (authToken) {
-        queryParams['access_token'] = authToken
-      }
-
       wsUrl = buildWsUrl(runtimeArn, AWS_REGION, queryParams)
     }
 
@@ -115,7 +108,7 @@ export async function POST(request: NextRequest) {
       wsUrl,
       awsRegion: AWS_REGION,
       isNewSession: isNew,
-      authToken,
+      isLocal: IS_LOCAL,
     })
   } catch (error) {
     console.error('[Voice Start] Error:', error)

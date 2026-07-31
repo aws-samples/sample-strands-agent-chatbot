@@ -57,14 +57,14 @@ function createMockNextRequest(options: {
   }
 }
 
-describe('Session List API', () => {
+describe('Session List API', async () => {
   beforeEach(() => {
     vi.clearAllMocks()
     // Reset environment
     vi.stubEnv('NEXT_PUBLIC_AGENTCORE_LOCAL', 'false')
   })
 
-  describe('Authentication', () => {
+  describe('Authentication', async () => {
     it('should extract user from request', async () => {
       const mockExtract = extractUserFromRequest as ReturnType<typeof vi.fn>
       mockExtract.mockReturnValue({ userId: 'test-user-123' })
@@ -74,7 +74,7 @@ describe('Session List API', () => {
 
       // Simulate what the route handler does
       const request = createMockNextRequest()
-      const user = extractUserFromRequest(request as any)
+      const user = await extractUserFromRequest(request as any)
 
       expect(user.userId).toBe('test-user-123')
       expect(mockExtract).toHaveBeenCalledWith(request)
@@ -85,13 +85,13 @@ describe('Session List API', () => {
       mockExtract.mockReturnValue({ userId: 'anonymous' })
 
       const request = createMockNextRequest()
-      const user = extractUserFromRequest(request as any)
+      const user = await extractUserFromRequest(request as any)
 
       expect(user.userId).toBe('anonymous')
     })
   })
 
-  describe('Session Retrieval', () => {
+  describe('Session Retrieval', async () => {
     it('should call DynamoDB for authenticated users in AWS mode', async () => {
       vi.stubEnv('NEXT_PUBLIC_AGENTCORE_LOCAL', 'false')
 
@@ -159,8 +159,8 @@ describe('Session List API', () => {
     })
   })
 
-  describe('Response Formatting', () => {
-    it('should format session response correctly', () => {
+  describe('Response Formatting', async () => {
+    it('should format session response correctly', async () => {
       const rawSession = {
         sessionId: 'sess-123',
         title: 'My Chat Session',
@@ -201,7 +201,7 @@ describe('Session List API', () => {
       expect(formattedSession).not.toHaveProperty('internalData')
     })
 
-    it('should handle missing optional fields', () => {
+    it('should handle missing optional fields', async () => {
       const rawSession = {
         sessionId: 'sess-456',
         title: 'Minimal Session',
@@ -227,7 +227,7 @@ describe('Session List API', () => {
     })
   })
 
-  describe('Error Handling', () => {
+  describe('Error Handling', async () => {
     it('should handle DynamoDB errors gracefully', async () => {
       const mockGetSessions = getDynamoSessions as ReturnType<typeof vi.fn>
       mockGetSessions.mockRejectedValue(new Error('DynamoDB connection failed'))
@@ -235,7 +235,7 @@ describe('Session List API', () => {
       await expect(getDynamoSessions('user-123', 20, undefined)).rejects.toThrow('DynamoDB connection failed')
     })
 
-    it('should return empty array for anonymous users in AWS mode', () => {
+    it('should return empty array for anonymous users in AWS mode', async () => {
       vi.stubEnv('NEXT_PUBLIC_AGENTCORE_LOCAL', 'false')
 
       const userId = 'anonymous'
@@ -252,13 +252,13 @@ describe('Session List API', () => {
   })
 })
 
-describe('Session Delete API', () => {
+describe('Session Delete API', async () => {
   beforeEach(() => {
     vi.clearAllMocks()
   })
 
-  describe('Delete Operation', () => {
-    it('should require session ID', () => {
+  describe('Delete Operation', async () => {
+    it('should require session ID', async () => {
       // Simulate validation
       const sessionId = undefined
 

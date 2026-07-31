@@ -44,6 +44,7 @@
     "@smithy/signature-v4": "^4.0.0",
     "@tailwindcss/typography": "^0.5.20",
     "aws-amplify": "^6.18.0",
+    "aws-jwt-verify": "^5.2.1",
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.0.0",
     "cmdk": "^1.1.1",

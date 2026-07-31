@@ -30,7 +30,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Extract userId from Authorization header (JWT token)
-    const user = extractUserFromRequest(request)
+    const user = await extractUserFromRequest(request)
     const userId = user.userId
 
     // Get document bucket from environment or Parameter Store

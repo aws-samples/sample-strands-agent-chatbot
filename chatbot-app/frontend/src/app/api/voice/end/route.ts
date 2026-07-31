@@ -14,7 +14,7 @@ export const runtime = 'nodejs'
 export async function POST(request: NextRequest) {
   try {
     // 1. Authentication
-    const user = extractUserFromRequest(request)
+    const user = await extractUserFromRequest(request)
     const userId = user.userId
 
     // 2. Get session info from request body

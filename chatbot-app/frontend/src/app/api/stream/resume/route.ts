@@ -19,7 +19,7 @@ export async function GET(request: NextRequest) {
     )
   }
 
-  const user = extractUserFromRequest(request)
+  const user = await extractUserFromRequest(request)
   const authToken = request.headers.get('authorization') || ''
 
   console.log(`[Resume] Proxying to backend: execution=${executionId}, cursor=${cursor}`)

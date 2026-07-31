@@ -8,7 +8,7 @@ const IS_LOCAL = process.env.NEXT_PUBLIC_AGENTCORE_LOCAL === 'true'
 
 export async function GET(request: NextRequest) {
   try {
-    const user = extractUserFromRequest(request)
+    const user = await extractUserFromRequest(request)
 
     if (IS_LOCAL) {
       return NextResponse.json({ disabledSkills: [] })
@@ -24,7 +24,7 @@ export async function GET(request: NextRequest) {
 
 export async function PUT(request: NextRequest) {
   try {
-    const user = extractUserFromRequest(request)
+    const user = await extractUserFromRequest(request)
     const body = await request.json()
     const disabledSkills: string[] = Array.isArray(body.disabledSkills) ? body.disabledSkills : []
 

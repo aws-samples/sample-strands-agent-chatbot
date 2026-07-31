@@ -12,7 +12,7 @@ export const runtime = 'nodejs'
 export async function DELETE(request: NextRequest) {
   try {
     // Extract user from Cognito JWT token
-    const user = extractUserFromRequest(request)
+    const user = await extractUserFromRequest(request)
     const userId = user.userId
 
     // Get session ID from query parameter

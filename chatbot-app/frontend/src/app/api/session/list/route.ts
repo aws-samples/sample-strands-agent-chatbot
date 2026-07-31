@@ -13,7 +13,7 @@ export const runtime = 'nodejs'
 export async function GET(request: NextRequest) {
   try {
     // Extract user from Cognito JWT token
-    const user = extractUserFromRequest(request)
+    const user = await extractUserFromRequest(request)
     const userId = user.userId
 
     // Get query parameters
