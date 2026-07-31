@@ -17,6 +17,9 @@ jobs:
       frontend: ${{ steps.filter.outputs.frontend }}
       a2a: ${{ steps.filter.outputs.a2a }}
       mcp: ${{ steps.filter.outputs.mcp }}
+      infra: ${{ steps.filter.outputs.infra }}
+      mobile: ${{ steps.filter.outputs.mobile }}
+      telegram: ${{ steps.filter.outputs.telegram }}
     steps:
       - uses: actions/checkout@v7
       - uses: dorny/paths-filter@v4
@@ -25,14 +28,28 @@ jobs:
           filters: |
             backend:
               - 'chatbot-app/agentcore/**'
+              - '.github/workflows/pr-check.yml'
             gateway:
               - 'agentcore/gateway-tools/**'
+              - '.github/workflows/pr-check.yml'
             frontend:
               - 'chatbot-app/frontend/**'
+              - '.github/workflows/pr-check.yml'
             a2a:
               - 'agentcore/a2a-agents/**'
+              - '.github/workflows/pr-check.yml'
             mcp:
               - 'agentcore/mcp-runtime/**'
+              - '.github/workflows/pr-check.yml'
+            infra:
+              - 'infra/**'
+              - '.github/workflows/pr-check.yml'
+            mobile:
+              - 'mobile-app/**'
+              - '.github/workflows/pr-check.yml'
+            telegram:
+              - 'telegram-app/**'
+              - '.github/workflows/pr-check.yml'
 
   backend:
     name: Backend (Python)
@@ -186,3 +203,81 @@ jobs:
 
       - name: Tests
         run: python -m pytest tests/ -v --tb=short
+
+  infrastructure:
+    name: Infrastructure (Terraform)
+    needs: changes
+    if: needs.changes.outputs.infra == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.15.8"
+
+      - name: Format check
+        run: terraform fmt -check -recursive infra/
+
+      - name: Initialize without remote state
+        working-directory: infra/environments/dev
+        run: terraform init -backend=false -input=false
+
+      - name: Validate
+        working-directory: infra/environments/dev
+        run: terraform validate -no-color
+
+      - name: Check deploy script syntax
+        run: bash -n infra/scripts/deploy.sh infra/scripts/test-api.sh
+
+      - name: Check model smoke script syntax
+        run: python3 -m py_compile infra/scripts/model-smoke.py
+
+  mobile:
+    name: Mobile (TypeScript)
+    needs: changes
+    if: needs.changes.outputs.mobile == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile-app
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: mobile-app/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+  telegram:
+    name: Telegram (TypeScript)
+    needs: changes
+    if: needs.changes.outputs.telegram == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: telegram-app
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: telegram-app/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
