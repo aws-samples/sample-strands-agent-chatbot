@@ -20,7 +20,7 @@ import httpx
 from a2a.client import ClientConfig, ClientFactory
 from a2a.types import Message, Part, Role, TextPart, AgentCard
 
-from agent.gateway.mcp_client import BearerAuth
+from agent.mcp.client import BearerAuth
 from a2a_response import A2ATextAccumulator
 
 logger = logging.getLogger(__name__)
