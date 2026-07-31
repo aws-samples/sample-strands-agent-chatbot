@@ -34,12 +34,16 @@ class BaseAgent(ABC):
         caching_enabled: Optional[bool] = None,
         compaction_enabled: Optional[bool] = None,
         auth_token: Optional[str] = None,
+        allow_user_federation: bool = True,
     ):
         self.session_id = session_id
         self.user_id = user_id or session_id
         self.enabled_tools = enabled_tools
         self.auth_token = auth_token
+        self.allow_user_federation = allow_user_federation
         self.gateway_client = None  # Gateway MCP client for lifecycle management
+        self._mcp_clients = []
+        self._closed = False
 
         # Model configuration
         self.model_id = model_id or self._get_default_model_id()
@@ -82,11 +86,15 @@ class BaseAgent(ABC):
             log_prefix=f"[{self.__class__.__name__}]",
             auth_token=self.auth_token,
             session_id=self.session_id,
+            user_id=self.user_id,
+            allow_user_federation=self.allow_user_federation,
         )
 
-        # Store gateway client for lifecycle management
-        if result.clients.get("gateway"):
-            self.gateway_client = result.clients["gateway"]
+        self.gateway_client = result.clients.get("gateway")
+        for client_key in ("gateway", "mcp"):
+            client = result.clients.get(client_key)
+            if client and client not in self._mcp_clients:
+                self._mcp_clients.append(client)
 
         # Store elicitation bridge for SSE multiplexing
         self.elicitation_bridge = result.clients.get("elicitation_bridge")
@@ -121,11 +129,18 @@ class BaseAgent(ABC):
         )
 
 
-    def __del__(self):
-        """Cleanup gateway client connection"""
-        if self.gateway_client:
+    def close(self):
+        """Close all MCP clients owned by this agent."""
+        if self._closed:
+            return
+        self._closed = True
+
+        for client in reversed(self._mcp_clients):
             try:
-                # MCPClient uses stop() not close()
-                self.gateway_client.stop(None, None, None)
+                client.stop(None, None, None)
             except Exception as e:
-                logger.warning(f"Failed to close gateway client: {e}")
+                logger.warning(f"Failed to close MCP client: {e}")
+        self._mcp_clients.clear()
+
+    def __del__(self):
+        self.close()

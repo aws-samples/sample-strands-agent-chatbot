@@ -38,13 +38,12 @@ Enter Google OAuth Client ID (or press Enter to skip): <your-client-id>
 Enter Google OAuth Client Secret: <your-client-secret>
 ```
 
-The script registers the credential provider with AgentCore and outputs a **callback URL**:
+The script registers the credential provider with AgentCore and prints its
+**provider callback URL** after Terraform completes:
 
 ```
-✓ Provider registered with callback URL: https://prod.us-west-2.agentcore.bedrock.aws.dev/...
-
-IMPORTANT: Add the Callback URL as an Authorized redirect URI in Google Cloud Console:
-  https://prod.us-west-2.agentcore.bedrock.aws.dev/...
+OAuth Callback URIs (register in each provider's console):
+  google-oauth-provider: https://bedrock-agentcore.us-west-2.amazonaws.com/identities/oauth2/callback/<provider-id>
 ```
 
 ## Step 4: Add Redirect URI to Google Cloud Console
@@ -52,19 +51,38 @@ IMPORTANT: Add the Callback URL as an Authorized redirect URI in Google Cloud Co
 1. Go back to [Google Cloud Console > Credentials](https://console.cloud.google.com/apis/credentials)
 2. Click on the OAuth client you created in Step 1
 3. Under **Authorized redirect URIs**, click **Add URI**
-4. Paste the callback URL from the deploy script output
+4. Paste the `google-oauth-provider` callback URL from the deploy output. It
+   must match exactly, including the region and provider ID, with no trailing
+   slash.
 5. Click **Save**
+
+Do not register the CloudFront `/oauth-complete` URL here. That URL is where
+AgentCore returns the browser after provider authorization; Google redirects
+to the AgentCore provider callback first.
 
 ## Step 5: Configure OAuth Consent Screen (If Not Done)
 
 If your Google Cloud project hasn't configured the OAuth consent screen yet:
 
-1. Go to [OAuth consent screen](https://console.cloud.google.com/apis/credentials/consent)
+1. Go to [Google Auth Platform > Audience](https://console.cloud.google.com/auth/audience)
 2. Select **External** user type (or **Internal** for Google Workspace)
 3. Fill in the required fields (app name, user support email, developer contact)
 4. Add the scope: `https://www.googleapis.com/auth/gmail.readonly`
-5. Add test users if the app is in **Testing** status
+5. Add every account that will test Gmail or Calendar under **Test users** if
+   the app is in **Testing** status
+
+## Troubleshooting
+
+`Error 400: redirect_uri_mismatch` means the URI in Step 4 is missing or does
+not exactly match the current AgentCore provider callback. Run the deploy
+script again to print the current URI, or retrieve it directly:
+
+```bash
+infra/.deploy-venv/bin/python -c \
+  "import boto3; print(boto3.client('bedrock-agentcore-control', region_name='us-west-2').get_oauth2_credential_provider(name='google-oauth-provider')['callbackUrl'])"
+```
 
 ## Verification
 
-After deployment, open the chatbot and enable the Gmail tools (`search_emails`, `read_email`) from the tools dropdown. When you first use a Gmail tool, the agent will prompt you to authorize access via a Google sign-in popup.
+After deployment, ask the chatbot to list recent Gmail messages. On first use,
+select **Continue** in the authorization dialog and complete Google consent.

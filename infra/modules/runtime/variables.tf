@@ -121,6 +121,12 @@ variable "read_only_bucket_arns" {
   default = []
 }
 
+variable "secret_arns" {
+  description = "Secrets Manager secrets that this Runtime may read."
+  type        = list(string)
+  default     = []
+}
+
 # Extra env vars (merged into Runtime environment_variables)
 variable "extra_env_vars" {
   type    = map(string)

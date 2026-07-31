@@ -12,6 +12,7 @@ import { AssistantTurn } from "@/components/chat/AssistantTurn"
 import { Greeting, PromptSuggestions } from "@/components/Greeting"
 import { ChatSidebar } from "@/components/ChatSidebar"
 import { InterruptApprovalModal } from "@/components/InterruptApprovalModal"
+import { OAuthElicitationDialog } from "@/components/OAuthElicitationDialog"
 import { SwarmProgress } from "@/components/SwarmProgress"
 import { Canvas } from "@/components/canvas"
 import { ChatInputArea } from "@/components/chat/ChatInputArea"
@@ -176,6 +177,8 @@ export function ChatInterface() {
     updateModelConfig,
     isReconnecting,
     reconnectAttempt,
+    pendingOAuth,
+    cancelOAuth,
   } = useChat({
     onArtifactUpdated: handleArtifactUpdated,
     onWordDocumentsCreated: handleWordDocumentsCreated,
@@ -1123,6 +1126,14 @@ export function ChatInterface() {
           onApprove={handleApproveInterrupt}
           onReject={handleRejectInterrupt}
           interrupts={currentInterrupt.interrupts}
+        />
+      )}
+
+      {pendingOAuth && (
+        <OAuthElicitationDialog
+          oauth={pendingOAuth}
+          sessionId={sessionId}
+          onCancel={cancelOAuth}
         />
       )}
 

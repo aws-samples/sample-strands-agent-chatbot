@@ -68,7 +68,8 @@ locals {
 
   skill_records = local.records_to_register
 
-  # Resolve endpoint URL per skill based on source type
+  # Public tools use Gateway; user-federated tools connect directly to the
+  # stateful MCP Runtime so the caller JWT reaches AgentCore Identity.
   _skill_endpoint_url = {
     for k, v in local.records_to_register : k => (
       lookup(v, "source", "builtin") == "gateway" ? var.gateway_url :

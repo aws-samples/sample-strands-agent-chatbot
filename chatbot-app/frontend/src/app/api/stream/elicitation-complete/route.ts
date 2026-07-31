@@ -14,8 +14,11 @@
 import { NextRequest, NextResponse } from 'next/server'
 import {
   DynamoDBClient,
-  PutItemCommand,
+  GetItemCommand,
+  UpdateItemCommand,
 } from '@aws-sdk/client-dynamodb'
+import { extractUserFromRequest } from '@/lib/auth-utils'
+import { getSession } from '@/lib/dynamodb-client'
 
 const AWS_REGION = process.env.AWS_REGION || 'us-west-2'
 const TABLE_NAME = process.env.DYNAMODB_USERS_TABLE || 'strands-agent-chatbot-users-v2'
@@ -26,37 +29,66 @@ const COMPLETION_TTL_SECONDS = 600
 
 export async function POST(request: NextRequest) {
   try {
+    const user = await extractUserFromRequest(request)
+    if (user.userId === 'anonymous') {
+      return NextResponse.json({ error: 'Authentication required' }, { status: 401 })
+    }
+
     const body = await request.json().catch(() => ({}))
     const sessionId: string | undefined = body.sessionId
     const elicitationId: string | undefined = body.elicitationId
     const oauthSessionUri: string | undefined = body.oauthSessionUri
 
-    if (!sessionId) {
+    if (!sessionId || !elicitationId || !oauthSessionUri) {
       return NextResponse.json(
-        { error: 'sessionId is required' },
+        { error: 'sessionId, elicitationId, and oauthSessionUri are required' },
         { status: 400 }
       )
     }
 
-    const eid = elicitationId || '__all__'
-    const now = Math.floor(Date.now() / 1000)
+    const session = await getSession(user.userId, sessionId)
+    if (!session) {
+      return NextResponse.json({ error: 'Session not found' }, { status: 404 })
+    }
 
-    const item: Record<string, any> = {
+    const key = {
       userId: { S: `ELICIT#${sessionId}` },
-      sk: { S: `EID#${eid}` },
-      status: { S: 'completed' },
-      ttl: { N: String(now + COMPLETION_TTL_SECONDS) },
+      sk: { S: `EID#${elicitationId}` },
     }
-    if (oauthSessionUri) {
-      item.oauthSessionUri = { S: oauthSessionUri }
+    const pending = await dynamoClient.send(new GetItemCommand({
+      TableName: TABLE_NAME,
+      Key: key,
+      ConsistentRead: true,
+    }))
+    const pendingItem = pending.Item
+    if (
+      !pendingItem ||
+      pendingItem.status?.S !== 'pending' ||
+      pendingItem.ownerUserId?.S !== user.userId
+    ) {
+      return NextResponse.json({ error: 'OAuth request not found' }, { status: 404 })
     }
 
-    await dynamoClient.send(new PutItemCommand({
+    const now = Math.floor(Date.now() / 1000)
+    await dynamoClient.send(new UpdateItemCommand({
       TableName: TABLE_NAME,
-      Item: item,
+      Key: key,
+      UpdateExpression: 'SET #status = :completed, oauthSessionUri = :uri, #ttl = :ttl',
+      ConditionExpression: '#status = :pending AND ownerUserId = :owner',
+      ExpressionAttributeNames: {
+        '#status': 'status',
+        '#ttl': 'ttl',
+      },
+      ExpressionAttributeValues: {
+        ':pending': { S: 'pending' },
+        ':completed': { S: 'completed' },
+        ':owner': { S: user.userId },
+        ':uri': { S: oauthSessionUri },
+        ':ttl': { N: String(now + COMPLETION_TTL_SECONDS) },
+      },
     }))
 
-    console.log(`[Elicitation] Signalled in DynamoDB: session=${sessionId}, eid=${eid}`)
+    console.log(`[Elicitation] Signalled in DynamoDB: user=${user.userId}, session=${sessionId}, eid=${elicitationId}`)
 
     return NextResponse.json({ success: true })
 

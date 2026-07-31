@@ -32,11 +32,6 @@ RUN pip install --no-cache-dir --no-deps nova-act==3.1.263
 COPY src/ ./src/
 COPY skills/ ./skills/
 
-# Registry YAML definitions — synced from infra/registry/definitions/ by
-# deploy.sh before each orchestrator build. This is the single source of truth
-# for MCP tool schemas, A2A agent cards, and skill catalogs.
-COPY registry_definitions/ ./registry_definitions/
-
 # Expose port (AgentCore Runtime will map this)
 EXPOSE 8080
 

@@ -1040,23 +1040,6 @@ export const useStreamEvents = ({
       }))
     } catch { /* quota exceeded — postMessage fallback still works */ }
 
-    // Auto-open OAuth popup
-    const popup = window.open(
-      ev.authUrl,
-      'oauth_popup',
-      'width=500,height=700,scrollbars=yes,resizable=yes'
-    )
-
-    if (popup) {
-      popup.focus()
-      setSessionState(prev => ({
-        ...prev,
-        pendingOAuth: prev.pendingOAuth ? {
-          ...prev.pendingOAuth,
-          popupOpened: true
-        } : null
-      }))
-    }
   }, [setSessionState, sessionId])
 
   // Swarm Mode event handlers
@@ -1648,7 +1631,7 @@ export const useStreamEvents = ({
       if (msg.isStreaming) return { ...msg, isStreaming: false }
       if (msg.isToolMessage && msg.toolExecutions) {
         const updated = msg.toolExecutions.map(te =>
-          !te.isComplete && !te.isCancelled && !isA2ATool(te.toolName)
+          !te.isComplete && !te.isCancelled
             ? { ...te, isCancelled: true }
             : te
         )

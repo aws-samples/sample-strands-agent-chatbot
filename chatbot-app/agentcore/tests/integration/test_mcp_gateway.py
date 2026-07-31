@@ -420,7 +420,7 @@ class TestGatewayJWTAuth:
 
     def test_bearer_auth_header(self):
         """Test that Bearer token is set in Authorization header."""
-        from agent.gateway.mcp_client import BearerAuth
+        from agent.mcp.client import BearerAuth
         import httpx
 
         auth = BearerAuth("test-jwt-token")

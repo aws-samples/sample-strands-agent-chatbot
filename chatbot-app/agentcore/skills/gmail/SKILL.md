@@ -52,7 +52,9 @@ description: Read, send, draft, delete, and organize Gmail emails
 
 ## Usage Guidelines
 
-- Use `list_labels` first to discover available labels before filtering.
+- Call `list_emails` directly for standard labels such as INBOX, SENT, DRAFT,
+  TRASH, SPAM, STARRED, and IMPORTANT. Use `list_labels` only when the user
+  asks for a custom label or the label name is unknown.
 - Gmail search query syntax: `from:sender`, `to:recipient`, `subject:text`, `is:unread`, `has:attachment`, `after:2024/01/01`, `before:2024/12/31`.
 - Use `get_email_thread` to view entire conversation context before replying.
 
@@ -85,7 +87,7 @@ Common queries:
 ## UI Guidance (from tools-config)
 
 **Gmail Tool Usage:**
-- list_labels: Get all available labels before filtering emails
+- list_labels: Discover custom labels when the requested label is unknown
 - list_emails: Browse emails by label (INBOX, SENT, DRAFT, TRASH, etc.)
 - search_emails: Use Gmail query syntax (from:, to:, subject:, is:unread, has:attachment, after:, before:)
 - read_email: Get full email content with attachments

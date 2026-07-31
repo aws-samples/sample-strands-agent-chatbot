@@ -7,17 +7,17 @@ but routes @skill-decorated tools through skill_dispatcher + skill_executor.
 
 import logging
 import os
-from typing import Optional, List
 
 from agents.chat_agent import ChatAgent
-from skill.skill_tools import set_dispatcher_registry
-from skill.skill_registry import SkillRegistry
-from skill.decorators import _apply_skill_metadata
 from registry import (
-    get_tool_to_skill_map,
-    get_mcp_runtime_skills,
     get_a2a_skill_tools,
+    get_mcp_runtime_skills,
+    get_tool_to_skill_map,
 )
+from skill.decorators import _apply_skill_metadata
+from skill.skill_registry import SkillRegistry
+from skill.skill_tools import set_dispatcher_registry
+from skill.tool_names import canonical_tool_name
 
 # Resolve skills directory relative to this file: src/agents/../../skills → agentcore/skills
 _SKILLS_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "skills")
@@ -34,7 +34,7 @@ class SkillChatAgent(ChatAgent):
     The rest of the ChatAgent behavior (streaming, session, hooks) is inherited.
     """
 
-    def __init__(self, *args, disabled_skills: Optional[List[str]] = None, **kwargs):
+    def __init__(self, *args, disabled_skills: list[str] | None = None, **kwargs):
         self._disabled_skills: set = set(disabled_skills or [])
         super().__init__(*args, **kwargs)
 
@@ -56,6 +56,7 @@ class SkillChatAgent(ChatAgent):
         if self.enabled_tools is None:
             self.enabled_tools = []
         has_auth = bool(getattr(self, 'auth_token', None))
+        allow_user_federation = getattr(self, 'allow_user_federation', True)
         tool_skill_map = get_tool_to_skill_map()
         mcp_runtime_skills = get_mcp_runtime_skills()
         a2a_tools = get_a2a_skill_tools()
@@ -67,7 +68,7 @@ class SkillChatAgent(ChatAgent):
             if not _skill_allowed(skill_name):
                 continue
             if skill_name in mcp_runtime_skills:
-                if not has_auth:
+                if not has_auth or not allow_user_federation:
                     continue
                 prefixed = f"mcp_{tool_name}"
             else:
@@ -121,7 +122,7 @@ class SkillChatAgent(ChatAgent):
             tool_skill_map = get_tool_to_skill_map()
             skill_tools = []
             for tool in paginated_tools:
-                tool_name = tool.tool_name
+                tool_name = canonical_tool_name(tool)
                 skill_name = tool_skill_map.get(tool_name)
 
                 if skill_name:
@@ -156,7 +157,7 @@ class SkillChatAgent(ChatAgent):
         if skill_tools:
             logger.info(
                 f"[SkillChatAgent] Routing {len(skill_tools)} skill tools: "
-                f"{[t.tool_name for t in skill_tools]}"
+                f"{[canonical_tool_name(t) for t in skill_tools]}"
             )
         if non_skill_tools:
             logger.info(
@@ -165,12 +166,12 @@ class SkillChatAgent(ChatAgent):
             )
 
         registry = SkillRegistry(_SKILLS_DIR)
-        registry.discover_skills()
+        registry.discover_skills(exclude=self._disabled_skills)
         registry.bind_tools(skill_tools)
         set_dispatcher_registry(registry)
         self._skill_registry = registry
 
-        catalog = registry.get_catalog(exclude=self._disabled_skills)
+        catalog = registry.get_catalog()
         if self.system_prompt:
             base_prompt_text = system_prompt_to_string(self.system_prompt)
             self.system_prompt = [{"text": f"{base_prompt_text}\n\n{catalog}"}]

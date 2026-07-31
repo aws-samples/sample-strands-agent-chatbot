@@ -22,25 +22,13 @@ variable "enabled_components" {
 }
 
 variable "gateway_url" {
-  description = "AgentCore Gateway invocation URL. MCP records for gateway-sourced tools use this as their sync endpoint."
-  type        = string
-  default     = ""
-}
-
-variable "gateway_role_arn" {
-  description = "IAM role ARN for SigV4 authentication to the Gateway."
+  description = "AgentCore Gateway invocation URL used by public MCP skills."
   type        = string
   default     = ""
 }
 
 variable "mcp_runtime_url" {
-  description = "MCP 3LO Runtime invocation URL. MCP records for 3LO-sourced tools use this as their sync endpoint."
-  type        = string
-  default     = ""
-}
-
-variable "mcp_runtime_role_arn" {
-  description = "IAM role ARN for SigV4 authentication to the MCP 3LO Runtime."
+  description = "Stateful MCP Runtime URL used by user-federated skills."
   type        = string
   default     = ""
 }

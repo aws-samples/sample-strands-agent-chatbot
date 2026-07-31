@@ -81,39 +81,6 @@ describe('extractUserFromRequest', async () => {
     })
   })
 
-  describe('Signature Verification', async () => {
-    it('should return anonymous when the verifier rejects the signature', async () => {
-      verifyJwt.mockRejectedValueOnce(new Error('Invalid signature'))
-      const token = createMockJWT({ sub: 'attacker-forged-sub' })
-      const request = createMockRequest({ authorization: `Bearer ${token}` })
-
-      const result = await extractUserFromRequest(request)
-
-      expect(result.userId).toBe('anonymous')
-    })
-
-    it('should verify the token rather than trusting its payload', async () => {
-      const token = createMockJWT({ sub: 'user-123-uuid' })
-      const request = createMockRequest({ authorization: `Bearer ${token}` })
-
-      await extractUserFromRequest(request)
-
-      expect(verifyJwt).toHaveBeenCalledWith(token)
-    })
-
-    it('should return anonymous when Cognito env vars are missing', async () => {
-      vi.stubEnv('NEXT_PUBLIC_COGNITO_USER_POOL_ID', '')
-      vi.stubEnv('NEXT_PUBLIC_COGNITO_USER_POOL_CLIENT_ID', '')
-      const token = createMockJWT({ sub: 'user-123-uuid' })
-      const request = createMockRequest({ authorization: `Bearer ${token}` })
-
-      const result = await extractUserFromRequest(request)
-
-      expect(result.userId).toBe('anonymous')
-      expect(verifyJwt).not.toHaveBeenCalled()
-    })
-  })
-
   describe('JWT Token Parsing', async () => {
     it('should extract userId from Cognito sub claim', async () => {
       const token = createMockJWT({

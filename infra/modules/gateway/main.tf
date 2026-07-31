@@ -82,6 +82,14 @@ resource "aws_bedrockagentcore_gateway" "this" {
     mcp {
       instructions       = "MCP Gateway for ${var.project_name} tool integration"
       supported_versions = ["2025-11-25"]
+
+      session_configuration {
+        session_timeout_in_seconds = 3600
+      }
+
+      streaming_configuration {
+        enable_response_streaming = true
+      }
     }
   }
 
@@ -145,32 +153,6 @@ resource "aws_bedrockagentcore_gateway_target" "lambda" {
             }
           }
         }
-      }
-    }
-  }
-
-  depends_on = [time_sleep.wait_for_iam_propagation]
-}
-
-# ============================================================
-# Runtime targets (MCP over HTTP) — e.g., MCP 3LO Runtime
-# ============================================================
-
-resource "aws_bedrockagentcore_gateway_target" "runtimes" {
-  for_each = var.runtime_targets
-
-  gateway_identifier = aws_bedrockagentcore_gateway.this.gateway_id
-  name               = each.key
-  description        = "MCP Runtime target for ${each.key}"
-
-  credential_provider_configuration {
-    gateway_iam_role {}
-  }
-
-  target_configuration {
-    mcp {
-      mcp_server {
-        endpoint = each.value
       }
     }
   }

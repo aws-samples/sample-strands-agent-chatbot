@@ -32,9 +32,21 @@ variable "enable_google_maps" {
 }
 
 variable "enable_mantle_models" {
-  description = "Wire the Bedrock API key secret into the orchestrator so Mantle OpenAI-compatible models (gpt-5.x, grok, gemma-4) can be selected. Requires a Secrets Manager secret at <project_name>/bedrock/api-key."
+  description = "Wire the Bedrock API key secret into model-calling runtimes so Mantle OpenAI-compatible models (gpt-5.x, grok, gemma-4) can be selected. Requires a Secrets Manager secret at <project_name>/bedrock/api-key."
   type        = bool
   default     = false
+}
+
+variable "code_agent_model_id" {
+  description = "Claude model used by the Claude Agent SDK based Code Agent."
+  type        = string
+  default     = "us.anthropic.claude-sonnet-5"
+}
+
+variable "research_agent_default_model_id" {
+  description = "Fallback model for direct Research Agent calls without orchestrator model metadata."
+  type        = string
+  default     = "us.anthropic.claude-sonnet-5"
 }
 
 variable "google_oauth_client_id" {

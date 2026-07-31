@@ -44,6 +44,8 @@ class OAuthElicitationBridge:
         elicitation_id = getattr(params, 'elicitationId', str(id(params)))
         auth_url = params.url
         message = getattr(params, 'message', '')
+        store = _get_elicitation_store()
+        store.register_pending(self.session_id, elicitation_id, self.user_id)
 
         await self._outbound_queue.put({
             "type": "oauth_elicitation",
@@ -56,8 +58,6 @@ class OAuthElicitationBridge:
         logger.info(f"[Elicitation] Waiting for OAuth completion: {elicitation_id}")
 
         loop = asyncio.get_running_loop()
-        store = _get_elicitation_store()
-
         try:
             result = await asyncio.wait_for(
                 loop.run_in_executor(
@@ -136,6 +136,9 @@ def _poll_for_completion(
 
 class ElicitationStore:
 
+    def register_pending(self, session_id: str, elicitation_id: str, user_id: str) -> None:
+        raise NotImplementedError
+
     def signal_complete(self, session_id: str, elicitation_id: Optional[str], oauth_session_uri: Optional[str] = None) -> None:
         raise NotImplementedError
 
@@ -161,6 +164,17 @@ class DynamoDBElicitationStore(ElicitationStore):
             "sk": {"S": f"EID#{elicitation_id}"},
         }
 
+    def register_pending(self, session_id: str, elicitation_id: str, user_id: str) -> None:
+        self._client.put_item(
+            TableName=self._table_name,
+            Item={
+                **self._get_key(session_id, elicitation_id),
+                "status": {"S": "pending"},
+                "ownerUserId": {"S": user_id},
+                "ttl": {"N": str(int(time.time()) + 600)},
+            },
+        )
+
     def signal_complete(self, session_id: str, elicitation_id: Optional[str], oauth_session_uri: Optional[str] = None) -> None:
         eid = elicitation_id or "__all__"
         try:
@@ -178,15 +192,14 @@ class DynamoDBElicitationStore(ElicitationStore):
 
     def get_completion(self, session_id: str, elicitation_id: str) -> Tuple[bool, Optional[str]]:
         try:
-            for eid in (elicitation_id, "__all__"):
-                resp = self._client.get_item(
-                    TableName=self._table_name,
-                    Key=self._get_key(session_id, eid),
-                )
-                item = resp.get("Item")
-                if item:
-                    uri = item.get("oauthSessionUri", {}).get("S")
-                    return True, uri
+            resp = self._client.get_item(
+                TableName=self._table_name,
+                Key=self._get_key(session_id, elicitation_id),
+            )
+            item = resp.get("Item")
+            if item and item.get("status", {}).get("S") == "completed":
+                uri = item.get("oauthSessionUri", {}).get("S")
+                return True, uri
             return False, None
         except Exception as e:
             logger.warning(f"[Elicitation] DynamoDB check failed: {e}")
@@ -195,7 +208,6 @@ class DynamoDBElicitationStore(ElicitationStore):
     def clear(self, session_id: str, elicitation_id: str) -> None:
         try:
             self._client.delete_item(TableName=self._table_name, Key=self._get_key(session_id, elicitation_id))
-            self._client.delete_item(TableName=self._table_name, Key=self._get_key(session_id, "__all__"))
         except Exception:
             pass
 
@@ -217,6 +229,10 @@ class LocalElicitationStore(ElicitationStore):
     def _key(self, session_id: str, elicitation_id: str) -> str:
         return f"{session_id}:{elicitation_id}"
 
+    def register_pending(self, session_id: str, elicitation_id: str, user_id: str) -> None:
+        with self._data_lock:
+            self._completed.pop(self._key(session_id, elicitation_id), None)
+
     def signal_complete(self, session_id: str, elicitation_id: Optional[str], oauth_session_uri: Optional[str] = None) -> None:
         eid = elicitation_id or "__all__"
         with self._data_lock:
@@ -225,16 +241,14 @@ class LocalElicitationStore(ElicitationStore):
 
     def get_completion(self, session_id: str, elicitation_id: str) -> Tuple[bool, Optional[str]]:
         with self._data_lock:
-            for eid in (elicitation_id, "__all__"):
-                key = self._key(session_id, eid)
-                if key in self._completed:
-                    return True, self._completed[key]
-        return False, None
+            key = self._key(session_id, elicitation_id)
+            if key in self._completed:
+                return True, self._completed[key]
+            return False, None
 
     def clear(self, session_id: str, elicitation_id: str) -> None:
         with self._data_lock:
             self._completed.pop(self._key(session_id, elicitation_id), None)
-            self._completed.pop(self._key(session_id, "__all__"), None)
 
 
 # ── Singleton store ──────────────────────────────────────────────────────

@@ -4,6 +4,7 @@ Unified Tool Filter Module
 Consolidates tool filtering logic for all tool sources:
 - Local tools (TOOL_REGISTRY)
 - Gateway MCP tools (gateway_* prefix)
+- User-federated MCP Runtime tools (mcp_* prefix)
 - A2A Agent tools (agentcore_* prefix)
 
 This module provides unified tool filtering across all agent types.
@@ -73,8 +74,8 @@ class ToolFilterRegistry:
         self,
         local_registry: Optional[Dict[str, Any]] = None,
         gateway_client_factory: Optional[Callable] = None,
+        mcp_client_factory: Optional[Callable] = None,
         a2a_tool_factory: Optional[Callable] = None,
-        mcp_runtime_client_factory: Optional[Callable] = None,
     ):
         """
         Initialize the tool filter registry.
@@ -82,13 +83,13 @@ class ToolFilterRegistry:
         Args:
             local_registry: Dict mapping tool_id -> tool object (default: imports TOOL_REGISTRY)
             gateway_client_factory: Function to create Gateway MCP client
+            mcp_client_factory: Function to create a user-federated Runtime MCP client
             a2a_tool_factory: Function to create A2A tools
-            mcp_runtime_client_factory: Function to create MCP Runtime client
         """
         self._local_registry = local_registry
         self._gateway_client_factory = gateway_client_factory
+        self._mcp_client_factory = mcp_client_factory
         self._a2a_tool_factory = a2a_tool_factory
-        self._mcp_runtime_client_factory = mcp_runtime_client_factory
 
     def _get_local_registry(self) -> Dict[str, Any]:
         """Lazy load local registry to avoid circular imports."""
@@ -101,12 +102,23 @@ class ToolFilterRegistry:
         """Lazy load gateway client factory."""
         if self._gateway_client_factory is None:
             try:
-                from agent.gateway.mcp_client import get_gateway_client_if_enabled
+                from agent.mcp.client import get_gateway_client_if_enabled
                 self._gateway_client_factory = get_gateway_client_if_enabled
             except ImportError:
                 logger.warning("Gateway MCP client not available")
                 return None
         return self._gateway_client_factory
+
+    def _get_mcp_client_factory(self) -> Optional[Callable]:
+        """Lazy load the user-federated Runtime MCP client factory."""
+        if self._mcp_client_factory is None:
+            try:
+                from agent.mcp.client import get_runtime_client_if_enabled
+                self._mcp_client_factory = get_runtime_client_if_enabled
+            except ImportError:
+                logger.warning("Runtime MCP client not available")
+                return None
+        return self._mcp_client_factory
 
     def _get_a2a_tool_factory(self) -> Optional[Callable]:
         """Lazy load A2A tool factory."""
@@ -118,17 +130,6 @@ class ToolFilterRegistry:
                 logger.warning("A2A tools module not available")
                 return None
         return self._a2a_tool_factory
-
-    def _get_mcp_runtime_client_factory(self) -> Optional[Callable]:
-        """Lazy load MCP Runtime client factory."""
-        if self._mcp_runtime_client_factory is None:
-            try:
-                from agent.mcp.mcp_runtime_client import get_mcp_runtime_client_if_enabled
-                self._mcp_runtime_client_factory = get_mcp_runtime_client_if_enabled
-            except ImportError:
-                logger.warning("MCP Runtime client not available")
-                return None
-        return self._mcp_runtime_client_factory
 
     def classify_tool_id(self, tool_id: str) -> str:
         """
@@ -210,6 +211,8 @@ class ToolFilterRegistry:
         log_prefix: str = "",
         auth_token: Optional[str] = None,
         session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        allow_user_federation: bool = True,
     ) -> FilteredToolResult:
         """
         Filter and load tools from all sources.
@@ -273,15 +276,52 @@ class ToolFilterRegistry:
                     f"Tool '{tool_id}' not found in any source"
                 )
 
-        # Process Gateway tools
+        # User-federated tools connect directly to the stateful MCP Runtime.
+        # Gateway MCP server targets do not support JWT passthrough.
+        federation_enabled = allow_user_federation and bool(auth_token)
+        federated_tool_ids = mcp_tool_ids if federation_enabled else []
+        if mcp_tool_ids and not allow_user_federation:
+            result.validation_errors.append(
+                "User-federated MCP tools are disabled for this client."
+            )
+        elif mcp_tool_ids and not auth_token:
+            result.validation_errors.append(
+                "User-federated MCP tools require an authenticated user."
+            )
+
         if gateway_tool_ids:
-            gateway_result = self._load_gateway_tools(gateway_tool_ids, log_prefix, auth_token=auth_token)
+            gateway_result = self._load_gateway_tools(
+                gateway_tool_ids,
+                log_prefix,
+                auth_token=auth_token,
+            )
             if gateway_result.get("client"):
                 result.tools.append(gateway_result["client"])
                 result.clients["gateway"] = gateway_result["client"]
                 result.tool_ids_by_source["gateway"] = gateway_tool_ids
             if gateway_result.get("error"):
                 result.validation_errors.append(gateway_result["error"])
+
+        if federated_tool_ids:
+            elicitation_bridge = self._create_elicitation_bridge(
+                session_id=session_id,
+                user_id=user_id,
+                auth_token=auth_token,
+            )
+            mcp_result = self._load_runtime_mcp_tools(
+                federated_tool_ids,
+                log_prefix,
+                auth_token=auth_token,
+                elicitation_bridge=elicitation_bridge,
+            )
+            if mcp_result.get("client"):
+                result.tools.append(mcp_result["client"])
+                result.clients["mcp"] = mcp_result["client"]
+                result.tool_ids_by_source["mcp"] = federated_tool_ids
+                if elicitation_bridge:
+                    result.clients["elicitation_bridge"] = elicitation_bridge
+            if mcp_result.get("error"):
+                result.validation_errors.append(mcp_result["error"])
 
         # Process A2A tools
         if a2a_agent_ids:
@@ -292,20 +332,6 @@ class ToolFilterRegistry:
                     result.tool_ids_by_source["a2a"].append(agent_id)
                 if a2a_result.get("error"):
                     result.validation_errors.append(a2a_result["error"])
-
-        # Process MCP Runtime tools
-        if mcp_tool_ids:
-            mcp_result = self._load_mcp_runtime_tools(
-                mcp_tool_ids, log_prefix, auth_token=auth_token, session_id=session_id,
-            )
-            if mcp_result.get("client"):
-                result.tools.append(mcp_result["client"])
-                result.clients["mcp_runtime"] = mcp_result["client"]
-                result.tool_ids_by_source["mcp"] = mcp_tool_ids
-            if mcp_result.get("elicitation_bridge"):
-                result.clients["elicitation_bridge"] = mcp_result["elicitation_bridge"]
-            if mcp_result.get("error"):
-                result.validation_errors.append(mcp_result["error"])
 
         # Log summary
         local_count = len(result.tool_ids_by_source["local"])
@@ -329,6 +355,7 @@ class ToolFilterRegistry:
         tool_ids: List[str],
         log_prefix: str,
         auth_token: Optional[str] = None,
+        elicitation_bridge=None,
     ) -> Dict[str, Any]:
         """Load Gateway MCP tools."""
         factory = self._get_gateway_client_factory()
@@ -336,7 +363,11 @@ class ToolFilterRegistry:
             return {"error": "Gateway MCP client factory not available"}
 
         try:
-            client = factory(enabled_tool_ids=tool_ids, auth_token=auth_token)
+            client = factory(
+                enabled_tool_ids=tool_ids,
+                auth_token=auth_token,
+                elicitation_bridge=elicitation_bridge,
+            )
             if client:
                 logger.debug(f"{log_prefix} Gateway MCP client created: {tool_ids}")
                 return {"client": client}
@@ -345,6 +376,32 @@ class ToolFilterRegistry:
         except Exception as e:
             logger.error(f"{log_prefix} Failed to create Gateway client: {e}")
             return {"error": f"Gateway client creation failed: {e}"}
+
+    def _load_runtime_mcp_tools(
+        self,
+        tool_ids: List[str],
+        log_prefix: str,
+        auth_token: Optional[str],
+        elicitation_bridge=None,
+    ) -> Dict[str, Any]:
+        """Load user-federated tools from the stateful MCP Runtime."""
+        factory = self._get_mcp_client_factory()
+        if not factory:
+            return {"error": "Runtime MCP client factory not available"}
+
+        try:
+            client = factory(
+                enabled_tool_ids=tool_ids,
+                auth_token=auth_token,
+                elicitation_bridge=elicitation_bridge,
+            )
+            if client:
+                logger.debug(f"{log_prefix} Runtime MCP client created: {tool_ids}")
+                return {"client": client}
+            return {"error": "Runtime MCP client returned None"}
+        except Exception as e:
+            logger.error(f"{log_prefix} Failed to create Runtime MCP client: {e}")
+            return {"error": f"Runtime MCP client creation failed: {e}"}
 
     def _load_a2a_tool(
         self,
@@ -376,58 +433,25 @@ class ToolFilterRegistry:
             logger.error(f"{log_prefix} Failed to create A2A tool {agent_id}: {e}")
             return {"error": f"A2A tool creation failed for {agent_id}: {e}"}
 
-    def _load_mcp_runtime_tools(
-        self,
-        tool_ids: List[str],
-        log_prefix: str,
-        auth_token: Optional[str] = None,
-        session_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """
-        Load MCP Runtime tools (e.g., Gmail 3LO).
+    @staticmethod
+    def _create_elicitation_bridge(
+        session_id: Optional[str],
+        user_id: Optional[str],
+        auth_token: Optional[str],
+    ):
+        if not session_id:
+            return None
 
-        Args:
-            tool_ids: List of MCP runtime tool IDs
-            log_prefix: Prefix for log messages
-            auth_token: Cognito JWT for MCP Runtime Bearer auth
-            session_id: Session ID for elicitation bridge registration
+        from agent.mcp.elicitation_bridge import OAuthElicitationBridge, register_bridge
 
-        Returns:
-            Dict with "client", "elicitation_bridge", and/or "error"
-        """
-        factory = self._get_mcp_runtime_client_factory()
-        if not factory:
-            return {"error": "MCP Runtime client factory not available"}
-
-        try:
-            # Create elicitation bridge for OAuth consent flows
-            elicitation_bridge = None
-            if session_id:
-                from agent.mcp.elicitation_bridge import (
-                    OAuthElicitationBridge, register_bridge,
-                )
-                elicitation_bridge = OAuthElicitationBridge(session_id, auth_token=auth_token)
-                register_bridge(session_id, elicitation_bridge)
-                logger.debug(f"{log_prefix} Elicitation bridge created for session {session_id}")
-
-            client = factory(
-                enabled_tool_ids=tool_ids,
-                auth_token=auth_token,
-                elicitation_bridge=elicitation_bridge,
-            )
-            if client:
-                logger.info(f"{log_prefix} MCP Runtime client created: {tool_ids}")
-                result: Dict[str, Any] = {"client": client}
-                if elicitation_bridge:
-                    result["elicitation_bridge"] = elicitation_bridge
-                return result
-            else:
-                if not auth_token:
-                    return {"error": "MCP tools (e.g. Gmail) require sign-in. Please authenticate to use these tools."}
-                return {"error": "MCP Runtime is not configured for this environment."}
-        except Exception as e:
-            logger.error(f"{log_prefix} Failed to create MCP Runtime client: {e}")
-            return {"error": f"MCP tools failed to load: {e}"}
+        bridge = OAuthElicitationBridge(
+            session_id,
+            user_id=user_id or "anonymous",
+            auth_token=auth_token,
+        )
+        register_bridge(session_id, bridge)
+        logger.debug(f"Elicitation bridge created for session {session_id}")
+        return bridge
 
 
 # Module-level singleton for convenience
@@ -448,6 +472,8 @@ def filter_tools(
     log_prefix: str = "",
     auth_token: Optional[str] = None,
     session_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    allow_user_federation: bool = True,
 ) -> FilteredToolResult:
     return get_tool_filter_registry().filter_tools(
         enabled_tool_ids=enabled_tool_ids,
@@ -455,4 +481,6 @@ def filter_tools(
         log_prefix=log_prefix,
         auth_token=auth_token,
         session_id=session_id,
+        user_id=user_id,
+        allow_user_federation=allow_user_federation,
     )

@@ -19,6 +19,7 @@
     "@aws-amplify/ui-react": "^6.15.4",
     "@aws-crypto/sha256-js": "^5.2.0",
     "@aws-sdk/client-bedrock-agentcore": "^3.1076.0",
+    "@aws-sdk/client-bedrock-runtime": "^3.1076.0",
     "@aws-sdk/client-dynamodb": "^3.1076.0",
     "@aws-sdk/client-s3": "^3.1076.0",
     "@aws-sdk/client-ssm": "^3.1076.0",

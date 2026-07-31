@@ -7,7 +7,11 @@ locals {
   # Exclude build artifacts / caches / vendored deps (including symlinks under node_modules).
   source_files = [
     for f in fileset("${var.repo_root}/${var.build_context}", "**") : f
-    if !can(regex("(^|/)(cdk\\.out|node_modules|\\.venv|venv|__pycache__|\\.git|\\.next|\\.terraform)(/|$)", f))
+    if !can(regex("(^|/)(cdk\\.out|node_modules|\\.venv|venv|__pycache__|\\.ruff_cache|\\.pytest_cache|\\.git|\\.next|\\.terraform)(/|$)", f))
+    && !can(regex("^sessions(/|$)", f))
+    && !can(regex("^tests(/|$)", f))
+    && f != "requirements-dev.txt"
+    && f != "pytest.ini"
     && !can(regex("(^|/)\\.DS_Store$", f))
     && !can(regex("\\.pyc$", f))
     && !can(regex("\\.log$", f))
@@ -91,7 +95,10 @@ resource "null_resource" "upload_source" {
       cd "${var.build_context}"
       rm -f /tmp/${var.component_name}-source.zip
       zip -r /tmp/${var.component_name}-source.zip . \
-        -x 'venv/*' '.venv/*' '__pycache__/*' '*.pyc' '.git/*' 'node_modules/*' '.DS_Store' '*.log' 'cdk/*' 'cdk.out/*'
+        -x 'venv/*' '.venv/*' '__pycache__/*' '*/__pycache__/*' \
+           '.ruff_cache/*' '*/.ruff_cache/*' '.pytest_cache/*' '*/.pytest_cache/*' \
+           'sessions/*' 'tests/*' 'requirements-dev.txt' 'pytest.ini' \
+           '*.pyc' '.git/*' 'node_modules/*' '.DS_Store' '*.log' 'cdk/*' 'cdk.out/*'
       aws s3 cp /tmp/${var.component_name}-source.zip \
         s3://${aws_s3_bucket.source.bucket}/${local.s3_key} \
         --region ${var.aws_region}
@@ -343,6 +350,21 @@ resource "aws_iam_role_policy" "execution_ddb" {
         Resource = [var.user_data_table_arn]
       }] : [],
     )
+  })
+}
+
+resource "aws_iam_role_policy" "execution_secrets" {
+  count = length(var.secret_arns) > 0 ? 1 : 0
+  name  = "secrets-policy"
+  role  = aws_iam_role.execution.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["secretsmanager:GetSecretValue"]
+      Resource = var.secret_arns
+    }]
   })
 }
 

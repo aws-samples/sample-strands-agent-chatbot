@@ -3,7 +3,7 @@
 Submodules:
     - config/: Constants, prompts, swarm configuration
     - factory/: Session manager and agent factories
-    - gateway/: MCP client and JWT Bearer authentication
+    - mcp/: Native Strands MCP clients and user elicitation
     - processor/: File and multimodal content processing
     - session/: Session managers and message stores
     - hooks/: Agent lifecycle hooks
@@ -16,5 +16,5 @@ Usage:
     from agent.config.constants import DEFAULT_AGENT_ID
     from agent.config.prompt_builder import build_text_system_prompt
     from agent.session.compacting_session_manager import CompactingSessionManager
-    from agent.gateway.mcp_client import get_gateway_client_if_enabled
+    from agent.mcp.client import get_gateway_client_if_enabled
 """

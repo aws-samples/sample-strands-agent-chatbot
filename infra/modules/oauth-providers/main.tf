@@ -2,8 +2,8 @@
 #
 # Each provider is optional — enabled only when both client_id and client_secret
 # are supplied. Callback URL is not exposed as a Terraform attribute, so we fetch
-# it post-create via AWS CLI and write it to SSM. The orchestrator and MCP 3LO
-# runtime read this SSM param to set the OAuth2CallbackUrl header.
+# it post-create via AWS CLI and write it to SSM. The MCP 3LO runtime reads
+# this parameter when starting a user-federation flow.
 #
 # IMPORTANT: Once created, providers must NOT be destroyed — each has a unique
 # callback UUID registered in the external OAuth app (Google Console, GitHub, etc).
@@ -86,7 +86,7 @@ resource "aws_bedrockagentcore_oauth2_credential_provider" "notion" {
   }
 }
 
-# Note: The OAuth2 callback URL registered with each OAuth app (Google/GitHub/Notion)
-# is the CloudFront distribution URL (https://<cloudfront>/oauth-complete).
-# It is written to SSM by the chat module after CloudFront is created.
-# See modules/chat/main.tf :: aws_ssm_parameter.oauth_callback_url.
+# External OAuth apps must register the provider callback URL returned by
+# AgentCore (https://bedrock-agentcore.<region>.amazonaws.com/identities/oauth2/callback/<id>).
+# The CloudFront /oauth-complete URL stored in SSM is a separate return URL:
+# AgentCore redirects the user's browser there after provider authorization.

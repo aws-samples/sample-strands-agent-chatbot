@@ -378,7 +378,8 @@ async def _handle_agui_invocation(body: dict, http_request: Request) -> Streamin
     caching_enabled = None
     compaction_enabled = None
     request_type = "skill"
-    auth_token = None
+    auth_token = http_request.headers.get("authorization")
+    allow_user_federation = True
     selected_artifact_id = None
     if input_data.state and isinstance(input_data.state, dict):
         model_id = input_data.state.get("model_id")
@@ -387,7 +388,7 @@ async def _handle_agui_invocation(body: dict, http_request: Request) -> Streamin
         caching_enabled = input_data.state.get("caching_enabled")
         compaction_enabled = input_data.state.get("compaction_enabled")
         request_type = input_data.state.get("request_type", "skill")
-        auth_token = input_data.state.get("auth_token")
+        allow_user_federation = input_data.state.get("allow_user_federation", True) is not False
         selected_artifact_id = input_data.state.get("selected_artifact_id")
         raw_disabled = input_data.state.get("disabled_skills")
         if isinstance(raw_disabled, list):
@@ -410,6 +411,7 @@ async def _handle_agui_invocation(body: dict, http_request: Request) -> Streamin
             caching_enabled=caching_enabled,
             compaction_enabled=compaction_enabled,
             auth_token=auth_token,
+            allow_user_federation=allow_user_federation,
         )
 
         agui_processor = AGUIStreamEventProcessor(thread_id=thread_id, run_id=run_id)
@@ -482,6 +484,7 @@ async def _handle_agui_invocation(body: dict, http_request: Request) -> Streamin
                 error_event = f'data: {json.dumps({"type": "error", "message": str(e)})}\n\n'
                 execution.append_event(error_event, "error")
             finally:
+                agent.close()
                 if execution.status == ExecutionStatus.RUNNING:
                     execution.status = ExecutionStatus.COMPLETED
                 execution.completed_at = time.time()

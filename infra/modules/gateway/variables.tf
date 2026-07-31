@@ -30,16 +30,3 @@ variable "lambda_tool_arns" {
   type        = map(string)
   default     = {}
 }
-
-# MCP Runtime targets (e.g., mcp-3lo). Keyed by target name → runtime invocation URL.
-variable "runtime_targets" {
-  description = "Map of target name → Runtime invocation URL (MCP over HTTP)"
-  type        = map(string)
-  default     = {}
-}
-
-# Outbound OAuth2 credential provider ARN (for runtime targets). Optional — when empty, GATEWAY_IAM_ROLE is used.
-variable "oauth2_credential_provider_arn" {
-  type    = string
-  default = ""
-}

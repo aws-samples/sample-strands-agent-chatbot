@@ -209,7 +209,7 @@ prompt_api_keys() {
     echo "Bedrock Mantle  : already configured (gpt-5.x, grok, gemma-4 enabled)"
   else
     echo ""
-    echo "Bedrock API Key (enables Mantle models: GPT-5.5, Grok-4.3, Gemma-4)"
+    echo "Bedrock API Key (enables Mantle models: GPT-5.6, Grok-4.3, Gemma-4)"
     echo "  Generate at: https://console.aws.amazon.com/bedrock/home#/api-keys"
     read -rp "  Bedrock API Key (Enter to skip): " key
     if [ -n "${key:-}" ]; then
@@ -217,7 +217,7 @@ prompt_api_keys() {
       ENABLE_MANTLE_MODELS=true
       echo "  -> stored"
     else
-      echo "  (skipped — GPT-5.5, Grok, Gemma-4 will not be available)"
+      echo "  (skipped — GPT-5.6, Grok, Gemma-4 will not be available)"
     fi
   fi
 
