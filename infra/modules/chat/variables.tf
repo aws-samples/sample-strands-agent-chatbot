@@ -87,6 +87,12 @@ variable "orchestrator_runtime_url" {
   type = string
 }
 
+variable "bedrock_api_key_secret_arn" {
+  description = "Secrets Manager ARN for the Bedrock Mantle API key."
+  type        = string
+  default     = ""
+}
+
 # Build-time secrets passed as build args (e.g., Google Maps embed key, default keys)
 variable "frontend_build_args" {
   description = "Extra NEXT_PUBLIC_* build args (key → value)"

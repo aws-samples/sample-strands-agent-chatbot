@@ -438,6 +438,11 @@ module "chat" {
 
   orchestrator_runtime_arn = module.runtime_orchestrator.runtime_arn
   orchestrator_runtime_url = module.runtime_orchestrator.runtime_invocation_url
+  bedrock_api_key_secret_arn = (
+    var.enable_mantle_models
+    ? data.aws_secretsmanager_secret.bedrock_api_key[0].arn
+    : ""
+  )
 
   frontend_build_args = {
     NEXT_PUBLIC_GOOGLE_MAPS_EMBED_API_KEY = local.google_maps_embed_api_key
