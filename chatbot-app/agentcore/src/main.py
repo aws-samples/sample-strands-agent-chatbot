@@ -44,8 +44,8 @@ logging.getLogger("uvicorn.access").addFilter(HealthCheckFilter())
 # Suppress verbose logging from various modules
 logging.getLogger("strands.experimental.bidi").setLevel(logging.WARNING)
 
-# Suppress Gateway MCP client detailed logs (tool listing, filtering)
-logging.getLogger("agent.gateway_mcp_client").setLevel(logging.WARNING)
+# Suppress MCP client detailed logs (tool listing, filtering)
+logging.getLogger("agent.mcp.client").setLevel(logging.WARNING)
 
 # Suppress Strands SDK internal logs (model calls, tool execution details)
 logging.getLogger("strands.agent.agent").setLevel(logging.WARNING)
@@ -103,7 +103,7 @@ if os.getenv('ENVIRONMENT', 'development') == 'development':
     )
 
 # Import routers
-from routers import health, chat, gateway_tools, tools, skills, browser_live_view, stop, voice  # noqa: E402
+from routers import health, chat, gateway_tools, tools, skills, browser_live_view, voice  # noqa: E402
 
 # Include routers
 app.include_router(health.router)
@@ -112,7 +112,6 @@ app.include_router(gateway_tools.router)
 app.include_router(tools.router)
 app.include_router(skills.router)
 app.include_router(browser_live_view.router)
-app.include_router(stop.router)
 app.include_router(voice.router)  # Voice chat WebSocket
 
 if __name__ == "__main__":

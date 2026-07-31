@@ -9,7 +9,6 @@ import {
   PutItemCommand,
   UpdateItemCommand,
   QueryCommand,
-  DeleteItemCommand,
 } from '@aws-sdk/client-dynamodb'
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb'
 import type {
@@ -476,37 +475,26 @@ export async function toggleSessionStar(userId: string, sessionId: string): Prom
 
 /**
  * Write a stop signal to DynamoDB for out-of-band stop delivery.
- * Both Main Agent and Code Agent poll this independently.
+ * The main runtime polls this and propagates cancellation to active tools.
  */
-export async function writeStopSignal(userId: string, sessionId: string): Promise<void> {
+export async function writeStopSignal(
+  userId: string,
+  sessionId: string,
+  runId: string,
+): Promise<void> {
   const ttl = Math.floor(Date.now() / 1000) + 300 // 5-minute TTL
   const command = new PutItemCommand({
     TableName: TABLE_NAME,
     Item: marshall({
       userId: `STOP#${userId}`,
       sk: `SESSION#${sessionId}`,
-      phase: 1,
+      runId,
       ttl,
       createdAt: new Date().toISOString(),
     }),
   })
   await dynamoClient.send(command)
-  console.log(`[DynamoDB] Stop signal (phase 1) written for ${userId}:${sessionId}`)
-}
-
-/**
- * Delete a stop signal from DynamoDB (cleanup after processing).
- */
-export async function deleteStopSignal(userId: string, sessionId: string): Promise<void> {
-  const command = new DeleteItemCommand({
-    TableName: TABLE_NAME,
-    Key: marshall({
-      userId: `STOP#${userId}`,
-      sk: `SESSION#${sessionId}`,
-    }),
-  })
-  await dynamoClient.send(command)
-  console.log(`[DynamoDB] Stop signal deleted for ${userId}:${sessionId}`)
+  console.log(`[DynamoDB] Stop signal written for ${userId}:${sessionId}:${runId}`)
 }
 
 // ============================================================

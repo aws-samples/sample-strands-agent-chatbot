@@ -10,6 +10,7 @@ import concurrent.futures
 import json
 import logging
 from datetime import timedelta
+
 from strands import tool
 from strands.types.tools import ToolContext
 
@@ -48,7 +49,13 @@ _SKILL_STREAM_TYPES = ("code_step", "code_todo_update", "code_result_meta",
                        "research_step", "research_progress")
 
 
-async def _consume_async_generator(agen, session_id=None):
+async def _consume_async_generator(
+    agen,
+    session_id=None,
+    user_id=None,
+    run_id=None,
+    is_code_agent=False,
+):
     """Consume an async generator and return the final result text.
 
     A2A tools yield event dicts while running, then a final
@@ -59,8 +66,8 @@ async def _consume_async_generator(agen, session_id=None):
     """
     import time
 
-    # Push start event immediately so the UI shows progress right away
-    if session_id:
+    # Only Code Agent uses the dedicated code progress UI.
+    if session_id and is_code_agent:
         from streaming import skill_event_bus
         q = skill_event_bus.get_queue(session_id)
         if q is not None:
@@ -71,12 +78,47 @@ async def _consume_async_generator(agen, session_id=None):
     start_time = time.time()
     last_activity = start_time
     code_steps: list[str] = []  # Accumulate code steps for tool result
+    stop_event = None
+    if user_id and session_id and run_id:
+        from agent.stop_signal import get_local_stop_event
+        stop_event = get_local_stop_event(user_id, session_id, run_id)
 
-    async for event in agen:
+    iterator = agen.__aiter__()
+    while True:
+        next_event_task = asyncio.create_task(iterator.__anext__())
+        stopped = False
+        while not next_event_task.done():
+            await asyncio.wait({next_event_task}, timeout=0.1)
+            if stop_event and stop_event.is_set():
+                stopped = True
+                next_event_task.cancel()
+                try:
+                    await next_event_task
+                except (asyncio.CancelledError, StopAsyncIteration):
+                    pass
+                break
+
+        if stopped:
+            logger.info(
+                "[SkillExecutor] Cancelling active A2A task for "
+                f"{user_id}:{session_id}:{run_id}"
+            )
+            if hasattr(iterator, "aclose"):
+                await iterator.aclose()
+            return json.dumps({
+                "status": "cancelled",
+                "message": "A2A task stopped by user",
+            })
+
+        try:
+            event = next_event_task.result()
+        except StopAsyncIteration:
+            break
+
         now = time.time()
         if not isinstance(event, dict):
             # Send heartbeat if no real event for 10+ seconds
-            if session_id and (now - last_activity) >= 10:
+            if session_id and is_code_agent and (now - last_activity) >= 10:
                 from streaming import skill_event_bus
                 q = skill_event_bus.get_queue(session_id)
                 if q is not None:
@@ -419,7 +461,16 @@ def _execute_tool(
             # Handle async generators (A2A tools that stream events)
             elif hasattr(result, '__aiter__'):
                 session_id = tool_context.invocation_state.get("session_id")
-                result = _run_async(_consume_async_generator(result, session_id=session_id))
+                user_id = tool_context.invocation_state.get("user_id")
+                run_id = tool_context.invocation_state.get("run_id")
+                target_name = target_tool.tool_name
+                result = _run_async(_consume_async_generator(
+                    result,
+                    session_id=session_id,
+                    user_id=user_id,
+                    run_id=run_id,
+                    is_code_agent="code" in target_name,
+                ))
 
         logger.info(f"Executed {skill_name}/{tool_name} successfully")
         return result

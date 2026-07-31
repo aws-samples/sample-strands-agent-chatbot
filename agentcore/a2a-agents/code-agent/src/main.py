@@ -16,7 +16,6 @@ import json
 import logging
 import os
 import re
-import time
 import uuid
 import zipfile
 from pathlib import Path
@@ -72,6 +71,13 @@ PORT = int(os.getenv("PORT", "9000"))
 PROJECT_NAME = os.getenv("PROJECT_NAME", "strands-agent-chatbot")
 ENVIRONMENT = os.getenv("ENVIRONMENT", "dev")
 WORKSPACE_BASE = os.getenv("WORKSPACE_BASE", "/tmp/workspaces")
+CODE_AGENT_MODEL_ID = os.getenv(
+    "CODE_AGENT_MODEL_ID",
+    os.getenv("ANTHROPIC_MODEL", "us.anthropic.claude-sonnet-5"),
+)
+# Claude Code reads this variable when its subprocess starts. Set it once at
+# process startup; mutating it per request would race across concurrent users.
+os.environ["ANTHROPIC_MODEL"] = CODE_AGENT_MODEL_ID
 
 
 def _resolve_artifact_bucket() -> str:
@@ -116,61 +122,6 @@ TOOL_STATUS_MAP = {
     "WebSearch": "Searching web",
     "WebFetch":  "Fetching URL",
 }
-
-# DynamoDB stop signal (out-of-band, cloud mode only)
-_DYNAMODB_USERS_TABLE = os.environ.get("DYNAMODB_USERS_TABLE")
-_dynamodb_client = None
-
-
-def _check_dynamodb_stop(user_id: str, session_id: str) -> bool:
-    """Check DynamoDB for phase 2 stop signal (escalated by Main Agent).
-
-    Two-phase protocol:
-      Phase 1: Written by BFF → only Main Agent detects
-      Phase 2: Escalated by Main Agent → Code Agent detects (this function)
-    Returns False if table not configured or phase != 2.
-    """
-    if not _DYNAMODB_USERS_TABLE:
-        return False
-    global _dynamodb_client
-    if _dynamodb_client is None:
-        import boto3
-        _dynamodb_client = boto3.client("dynamodb", region_name=AWS_REGION)
-    try:
-        resp = _dynamodb_client.get_item(
-            TableName=_DYNAMODB_USERS_TABLE,
-            Key={
-                "userId": {"S": f"STOP#{user_id}"},
-                "sk": {"S": f"SESSION#{session_id}"},
-            },
-            ProjectionExpression="phase",
-        )
-        item = resp.get("Item")
-        if not item:
-            return False
-        phase = int(item.get("phase", {}).get("N", "0"))
-        return phase == 2
-    except Exception as e:
-        logger.warning(f"[StopSignal] DynamoDB check failed: {e}")
-        return False
-
-
-def _clear_dynamodb_stop(user_id: str, session_id: str) -> None:
-    """Delete the stop signal item from DynamoDB after Code Agent handles it."""
-    if not _DYNAMODB_USERS_TABLE or not _dynamodb_client:
-        return
-    try:
-        _dynamodb_client.delete_item(
-            TableName=_DYNAMODB_USERS_TABLE,
-            Key={
-                "userId": {"S": f"STOP#{user_id}"},
-                "sk": {"S": f"SESSION#{session_id}"},
-            },
-        )
-        logger.info(f"[StopSignal] Cleared stop signal for {user_id}:{session_id}")
-    except Exception as e:
-        logger.warning(f"[StopSignal] DynamoDB delete failed: {e}")
-
 
 # In-memory map: "{user_id}-{session_id}" → claude_agent_sdk session_id
 # Allows resuming the same Claude Agent session across multiple A2A calls
@@ -562,12 +513,14 @@ class ClaudeCodeExecutor(AgentExecutor):
         session_id = metadata.get("session_id", str(uuid.uuid4()))
         user_id = metadata.get("user_id", "default_user")
 
-        # Use model_id from orchestrator payload if provided
-        model_id = metadata.get("model_id")
-        if model_id:
-            os.environ["ANTHROPIC_MODEL"] = model_id
-
-        logger.info(f"[ClaudeCodeExecutor] session={session_id}, user={user_id}, model={model_id or os.environ.get('ANTHROPIC_MODEL', 'default')}")
+        orchestrator_model_id = metadata.get("orchestrator_model_id")
+        logger.info(
+            "[ClaudeCodeExecutor] session=%s, user=%s, model=%s, orchestrator_model=%s",
+            session_id,
+            user_id,
+            CODE_AGENT_MODEL_ID,
+            orchestrator_model_id,
+        )
         logger.info(f"[ClaudeCodeExecutor] task={task_text[:200]}")
 
         # --- Per-session workspace directory ---
@@ -663,7 +616,6 @@ class ClaudeCodeExecutor(AgentExecutor):
                 logger.warning(f"[ClaudeCodeExecutor] Compaction failed (proceeding anyway): {e}")
 
         # --- Execute main query ---
-        last_stop_check = time.monotonic()
         try:
             await client.query(prompt=task_text)
 
@@ -672,22 +624,6 @@ class ClaudeCodeExecutor(AgentExecutor):
                 if cancel_event.is_set():
                     logger.info("[ClaudeCodeExecutor] Cancel event detected, exiting message loop")
                     break
-
-                # Poll DynamoDB for phase 2 stop signal (1-second interval)
-                now = time.monotonic()
-                if now - last_stop_check >= 1.0:
-                    last_stop_check = now
-                    if _check_dynamodb_stop(user_id, session_id):
-                        logger.info("[ClaudeCodeExecutor] Phase 2 stop signal detected")
-                        cancel_event.set()
-                        if client._query:
-                            try:
-                                await client.interrupt()
-                                logger.info("[ClaudeCodeExecutor] Interrupt sent via phase 2 stop")
-                            except Exception as e:
-                                logger.warning(f"[ClaudeCodeExecutor] interrupt() failed: {e}")
-                        _clear_dynamodb_stop(user_id, session_id)
-                        break
 
                 # Capture SDK session_id from init event (for future resume)
                 if isinstance(message, SystemMessage) and message.subtype == "init":

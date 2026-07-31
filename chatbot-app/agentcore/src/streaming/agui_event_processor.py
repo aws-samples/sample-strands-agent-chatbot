@@ -4,7 +4,12 @@ import time
 import logging
 from typing import AsyncGenerator, Dict, Any
 from .agui_event_formatter import AGUIStreamEventFormatter, extract_final_result_data
-from agent.stop_signal import get_stop_signal_provider
+from agent.stop_signal import (
+    clear_local_stop_event,
+    get_stop_signal_provider,
+    reset_local_stop_event,
+    signal_local_stop,
+)
 
 # OpenTelemetry imports
 from opentelemetry.trace import get_tracer
@@ -23,6 +28,7 @@ class AGUIStreamEventProcessor:
         self.seen_tool_uses = set()
         self.current_session_id = None
         self.current_user_id = None
+        self.current_run_id = run_id
         self.tool_use_registry = {}
         self.partial_response_text = ""  # Track partial response for graceful abort
         self.tool_use_started = False  # Track if tool_use has been emitted (to prevent duplicate assistant messages)
@@ -96,7 +102,7 @@ class AGUIStreamEventProcessor:
         if not self.stop_signal_provider:
             return False
 
-        if not self.current_user_id or not self.current_session_id:
+        if not self.current_user_id or not self.current_session_id or not self.current_run_id:
             return False
 
         current_time = time.time()
@@ -107,40 +113,39 @@ class AGUIStreamEventProcessor:
         try:
             is_stopped = self.stop_signal_provider.is_stop_requested(
                 self.current_user_id,
-                self.current_session_id
+                self.current_session_id,
+                self.current_run_id,
             )
             if is_stopped:
                 self._stop_detected = True
+                signal_local_stop(
+                    self.current_user_id,
+                    self.current_session_id,
+                    self.current_run_id,
+                )
                 logger.info(f"[StopSignal] Stop detected for session {self.current_session_id}")
             return is_stopped
         except Exception as e:
             logger.warning(f"[StopSignal] Error: {e}")
             return False
 
-    def _clear_stop_signal(self, keep_for_remote_agent: bool = False) -> None:
-        """Handle stop signal cleanup with two-phase protocol.
-
-        Args:
-            keep_for_remote_agent: If True, escalate to phase 2 and keep the
-                DynamoDB item so a remote agent (Code Agent) can detect it.
-                If False, escalate then immediately delete (no remote agent running).
-        """
-        if not self.stop_signal_provider or not self.current_user_id or not self.current_session_id:
+    def _clear_stop_signal(self) -> None:
+        """Clear the active run's local and DynamoDB stop state."""
+        if not self.current_user_id or not self.current_session_id or not self.current_run_id:
             return
 
-        try:
-            self.stop_signal_provider.escalate_to_code_agent(
-                self.current_user_id,
-                self.current_session_id
-            )
-        except Exception as e:
-            logger.warning(f"[StopSignal] Error escalating stop signal: {e}")
+        clear_local_stop_event(
+            self.current_user_id,
+            self.current_session_id,
+            self.current_run_id,
+        )
 
-        if not keep_for_remote_agent:
+        if self.stop_signal_provider:
             try:
                 self.stop_signal_provider.clear_stop_signal(
                     self.current_user_id,
-                    self.current_session_id
+                    self.current_session_id,
+                    self.current_run_id,
                 )
             except Exception as e:
                 logger.warning(f"[StopSignal] Error clearing stop signal: {e}")
@@ -266,12 +271,19 @@ class AGUIStreamEventProcessor:
 
         # Extract user_id from invocation_state for stop signal checking
         self.current_user_id = self.invocation_state.get('user_id')
+        self.current_run_id = self.invocation_state.get('run_id', self.current_run_id)
 
 
         # Reset stop signal state for this stream
         self.last_stop_check_time = 0
         self._stop_detected = False
         self._cancel_called = False
+        if self.current_user_id and self.current_session_id and self.current_run_id:
+            reset_local_stop_event(
+                self.current_user_id,
+                self.current_session_id,
+                self.current_run_id,
+            )
 
         # Reset seen tool uses for each new stream
         self.seen_tool_uses.clear()
@@ -463,7 +475,7 @@ class AGUIStreamEventProcessor:
                     elif hasattr(final_result, 'stop_reason') and final_result.stop_reason == "cancelled":
                         logger.info(f"[Cancel] Agent cancelled for session {session_id}")
                         self._fix_cancelled_history(agent)
-                        self._clear_stop_signal(keep_for_remote_agent=self.tool_use_started)
+                        self._clear_stop_signal()
                         yield self.formatter.format_event("stop")
                         return
 
@@ -859,6 +871,9 @@ class AGUIStreamEventProcessor:
 
             if hasattr(self, '_active_streams'):
                 self._active_streams.discard(stream_id)
+
+            if self._stop_detected:
+                self._clear_stop_signal()
 
     async def _drain_skill_queue(self, session_id):
         """Drain intermediate skill events from the side-channel queue and yield SSE."""
