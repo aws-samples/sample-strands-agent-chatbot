@@ -81,34 +81,3 @@ output "chat_alb_dns" {
 output "chat_cognito_login_url" {
   value = module.chat.cognito_login_url
 }
-
-output "enable_cowork" {
-  value = var.enable_cowork
-}
-
-# ============================================================
-# Cowork connection values (only when enable_cowork = true)
-# ============================================================
-
-output "cowork_gateway_url" {
-  description = "Streamable-HTTP MCP endpoint"
-  value       = var.enable_cowork ? module.gateway.gateway_url : null
-}
-
-output "cowork_cognito_domain" {
-  description = "Cognito Hosted UI base URL"
-  value       = var.enable_cowork ? module.auth.domain_url : null
-}
-
-output "cowork_client_id" {
-  value = var.enable_cowork ? module.auth.cowork_client_id : null
-}
-
-output "cowork_client_secret" {
-  value     = var.enable_cowork ? module.auth.cowork_client_secret : null
-  sensitive = true
-}
-
-output "cowork_scopes" {
-  value = var.enable_cowork ? "openid email profile agentcore/invoke" : null
-}

@@ -42,7 +42,7 @@ resource "aws_cloudwatch_log_delivery_destination" "logs" {
 }
 
 resource "aws_cloudwatch_log_delivery_destination" "traces" {
-  name                    = "${local.prefix}-traces-dest"
+  name                      = "${local.prefix}-traces-dest"
   delivery_destination_type = "XRAY"
 }
 
@@ -51,11 +51,11 @@ resource "aws_cloudwatch_log_delivery_destination" "traces" {
 # ============================================================
 
 resource "aws_cloudwatch_log_delivery" "logs" {
-  delivery_source_name    = aws_cloudwatch_log_delivery_source.logs.name
+  delivery_source_name     = aws_cloudwatch_log_delivery_source.logs.name
   delivery_destination_arn = aws_cloudwatch_log_delivery_destination.logs.arn
 }
 
 resource "aws_cloudwatch_log_delivery" "traces" {
-  delivery_source_name    = aws_cloudwatch_log_delivery_source.traces.name
+  delivery_source_name     = aws_cloudwatch_log_delivery_source.traces.name
   delivery_destination_arn = aws_cloudwatch_log_delivery_destination.traces.arn
 }

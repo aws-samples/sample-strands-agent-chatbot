@@ -1,8 +1,8 @@
 locals {
-  prefix          = "${var.project_name}-${var.environment}-chat"
-  ecr_repo_name   = "chatbot-frontend"
-  frontend_dir    = "${var.repo_root}/${var.frontend_rel_path}"
-  s3_source_key   = "frontend-source.zip"
+  prefix        = "${var.project_name}-${var.environment}-chat"
+  ecr_repo_name = "chatbot-frontend"
+  frontend_dir  = "${var.repo_root}/${var.frontend_rel_path}"
+  s3_source_key = "frontend-source.zip"
 
   # Hash only source files that affect the build — avoids fileset scanning
   # node_modules/.next which can trigger "inconsistent result" errors.
@@ -177,8 +177,8 @@ resource "aws_codebuild_project" "frontend" {
   }
 
   source {
-    type     = "S3"
-    location = "${aws_s3_bucket.source.bucket}/${local.s3_source_key}"
+    type      = "S3"
+    location  = "${aws_s3_bucket.source.bucket}/${local.s3_source_key}"
     buildspec = <<-BUILDSPEC
       version: 0.2
       phases:
@@ -248,7 +248,7 @@ resource "aws_cloudwatch_log_group" "frontend" {
 resource "aws_iam_role" "ecs_execution" {
   name = "${local.prefix}-ecs-exec"
   assume_role_policy = jsonencode({
-    Version = "2012-10-17"
+    Version   = "2012-10-17"
     Statement = [{ Effect = "Allow", Principal = { Service = "ecs-tasks.amazonaws.com" }, Action = "sts:AssumeRole" }]
   })
 }
@@ -261,7 +261,7 @@ resource "aws_iam_role_policy_attachment" "ecs_execution" {
 resource "aws_iam_role" "ecs_task" {
   name = "${local.prefix}-ecs-task"
   assume_role_policy = jsonencode({
-    Version = "2012-10-17"
+    Version   = "2012-10-17"
     Statement = [{ Effect = "Allow", Principal = { Service = "ecs-tasks.amazonaws.com" }, Action = "sts:AssumeRole" }]
   })
 }
@@ -330,8 +330,8 @@ resource "aws_iam_role_policy" "ecs_task" {
         Resource = [var.users_table_arn, var.sessions_table_arn, "${var.sessions_table_arn}/index/*"]
       },
       {
-        Effect = "Allow"
-        Action = ["bedrock-agentcore:InvokeGateway", "bedrock-agentcore:GetGateway", "bedrock-agentcore:ListGateways"]
+        Effect   = "Allow"
+        Action   = ["bedrock-agentcore:InvokeGateway", "bedrock-agentcore:GetGateway", "bedrock-agentcore:ListGateways"]
         Resource = "arn:aws:bedrock-agentcore:${var.aws_region}:${var.account_id}:gateway/*"
       },
       {
@@ -358,28 +358,28 @@ resource "aws_ecs_task_definition" "frontend" {
   task_role_arn            = aws_iam_role.ecs_task.arn
 
   container_definitions = jsonencode([{
-    name      = "chatbot-frontend"
-    image     = "${aws_ecr_repository.frontend.repository_url}:${local.source_hash}"
-    essential = true
+    name         = "chatbot-frontend"
+    image        = "${aws_ecr_repository.frontend.repository_url}:${local.source_hash}"
+    essential    = true
     portMappings = [{ containerPort = 3000, protocol = "tcp" }]
     environment = [
-      { name = "NODE_ENV",                             value = "production" },
-      { name = "AWS_REGION",                           value = var.aws_region },
-      { name = "AWS_DEFAULT_REGION",                   value = var.aws_region },
-      { name = "NEXT_PUBLIC_AWS_REGION",               value = var.aws_region },
-      { name = "PROJECT_NAME",                         value = var.project_name },
-      { name = "ENVIRONMENT",                          value = var.environment },
-      { name = "NEXT_PUBLIC_COGNITO_USER_POOL_ID",     value = var.cognito_user_pool_id },
+      { name = "NODE_ENV", value = "production" },
+      { name = "AWS_REGION", value = var.aws_region },
+      { name = "AWS_DEFAULT_REGION", value = var.aws_region },
+      { name = "NEXT_PUBLIC_AWS_REGION", value = var.aws_region },
+      { name = "PROJECT_NAME", value = var.project_name },
+      { name = "ENVIRONMENT", value = var.environment },
+      { name = "NEXT_PUBLIC_COGNITO_USER_POOL_ID", value = var.cognito_user_pool_id },
       { name = "NEXT_PUBLIC_COGNITO_USER_POOL_CLIENT_ID", value = var.cognito_user_pool_client_id },
-      { name = "DYNAMODB_USERS_TABLE",                 value = var.users_table_name },
-      { name = "DYNAMODB_SESSIONS_TABLE",              value = var.sessions_table_name },
-      { name = "ARTIFACT_BUCKET",                      value = var.artifact_bucket_name },
-      { name = "MEMORY_ID",                            value = var.memory_id },
-      { name = "MCP_GATEWAY_URL",                      value = var.gateway_url },
-      { name = "ORCHESTRATOR_RUNTIME_ARN",             value = var.orchestrator_runtime_arn },
-      { name = "AGENTCORE_RUNTIME_ARN",                value = var.orchestrator_runtime_arn },
-      { name = "AGENTCORE_RUNTIME_URL",                value = var.orchestrator_runtime_url },
-      { name = "SOURCE_HASH",                          value = local.source_hash },
+      { name = "DYNAMODB_USERS_TABLE", value = var.users_table_name },
+      { name = "DYNAMODB_SESSIONS_TABLE", value = var.sessions_table_name },
+      { name = "ARTIFACT_BUCKET", value = var.artifact_bucket_name },
+      { name = "MEMORY_ID", value = var.memory_id },
+      { name = "MCP_GATEWAY_URL", value = var.gateway_url },
+      { name = "ORCHESTRATOR_RUNTIME_ARN", value = var.orchestrator_runtime_arn },
+      { name = "AGENTCORE_RUNTIME_ARN", value = var.orchestrator_runtime_arn },
+      { name = "AGENTCORE_RUNTIME_URL", value = var.orchestrator_runtime_url },
+      { name = "SOURCE_HASH", value = local.source_hash },
     ]
     logConfiguration = {
       logDriver = "awslogs"
