@@ -21,6 +21,7 @@ from a2a.client import ClientConfig, ClientFactory
 from a2a.types import Message, Part, Role, TextPart, AgentCard
 
 from agent.gateway.mcp_client import BearerAuth
+from a2a_response import A2ATextAccumulator
 
 logger = logging.getLogger(__name__)
 
@@ -155,6 +156,8 @@ async def send_a2a_message(
     completed = False
     current_task_id = None
     client = None
+    httpx_client = None
+    owns_httpx_client = False
 
     try:
         # Check for local testing mode (per-agent env var)
@@ -176,6 +179,7 @@ async def send_a2a_message(
         logger.debug(f"Invoking A2A agent {agent_id}")
 
         httpx_client = get_http_client(region, auth_token=auth_token)
+        owns_httpx_client = bool(auth_token)
 
         # Add session ID header (must be >= 33 characters)
         if not session_id:
@@ -215,7 +219,7 @@ async def send_a2a_message(
 
         current_task_id = None
         completed = False
-        response_text = ""
+        response = A2ATextAccumulator()
         code_result_meta = None
         sent_code_steps = set()
         sent_code_todos = set()
@@ -231,7 +235,7 @@ async def send_a2a_message(
 
         def _process_artifact(artifact):
             """Process a single artifact, return yield-able event or None."""
-            nonlocal response_text, code_result_meta
+            nonlocal code_result_meta
             name = getattr(artifact, 'name', 'unnamed')
             text = _extract_text(getattr(artifact, 'parts', []))
 
@@ -264,16 +268,16 @@ async def send_a2a_message(
                 try:
                     import json as _json
                     result_data = _json.loads(text)
-                    response_text += result_data.get("summary", "")
+                    response.add(result_data.get("summary", ""))
                     code_result_meta = {
                         "files_changed": result_data.get("files_changed", []),
                         "todos": result_data.get("todos", []),
                         "steps": result_data.get("steps", 0),
                     }
                 except Exception:
-                    response_text += text
+                    response.add(text)
             elif text:
-                response_text += text
+                response.add(text)
             return None
 
         async with asyncio.timeout(AGENT_TIMEOUT):
@@ -282,7 +286,7 @@ async def send_a2a_message(
                     for part in (event.parts or []):
                         t = _extract_text([part])
                         if t:
-                            response_text += t
+                            response.add(t)
                     break
 
                 if isinstance(event, tuple) and len(event) == 2:
@@ -298,7 +302,7 @@ async def send_a2a_message(
                     if hasattr(task_status, 'message') and task_status.message:
                         txt = _extract_text(getattr(task_status.message, 'parts', []))
                         if txt:
-                            response_text += txt
+                            response.add(txt)
 
                     # Process artifacts
                     for artifact in (getattr(task, 'artifacts', None) or []):
@@ -310,7 +314,7 @@ async def send_a2a_message(
                         error_msg = _extract_text(
                             getattr(task_status.message, 'parts', []) if hasattr(task_status, 'message') and task_status.message else []
                         )
-                        yield {"status": "error", "content": [{"text": response_text or error_msg or "Agent task failed"}]}
+                        yield {"status": "error", "content": [{"text": response.text or error_msg or "Agent task failed"}]}
                         return
 
                     if 'completed' in state:
@@ -328,11 +332,11 @@ async def send_a2a_message(
 
         # Yield final result
         completed = True
-        logger.debug(f"Final A2A response: {len(response_text)} chars")
+        logger.debug(f"Final A2A response: {len(response.text)} chars")
         yield {
             "status": "success",
             "content": [{
-                "text": response_text or "Task completed successfully"
+                "text": response.text or "Task completed successfully"
             }]
         }
 
@@ -360,6 +364,11 @@ async def send_a2a_message(
                 logger.info(f"[A2A] Cancelled task {current_task_id} on {agent_id}")
             except Exception as e:
                 logger.warning(f"[A2A] Failed to cancel task {current_task_id} on {agent_id}: {e}")
+        if owns_httpx_client and httpx_client:
+            try:
+                await httpx_client.aclose()
+            except Exception as e:
+                logger.warning(f"[A2A] Failed to close HTTP client for {agent_id}: {e}")
 
 
 # ============================================================
@@ -452,7 +461,9 @@ def create_a2a_tool(agent_id: str):
                 "session_id": session_id,
                 "user_id": user_id,
                 "source": "main_agent",
-                "model_id": model_id,
+                # Claude Agent SDK has its own provider-specific model setting.
+                # Keep the orchestrator model only for diagnostics.
+                "orchestrator_model_id": model_id,
                 "s3_files": s3_files,
                 "reset_session": reset_session,
                 "compact_session": compact_session,
