@@ -20,6 +20,7 @@ def create_agent(
     caching_enabled: Optional[bool] = None,
     compaction_enabled: Optional[bool] = None,
     auth_token: Optional[str] = None,
+    allow_user_federation: bool = True,
     **kwargs,
 ) -> BaseAgent:
     request_type = request_type or "skill"
@@ -39,6 +40,7 @@ def create_agent(
             caching_enabled=caching_enabled,
             compaction_enabled=compaction_enabled,
             auth_token=auth_token,
+            allow_user_federation=allow_user_federation,
         )
 
     if request_type == "voice":

@@ -327,7 +327,7 @@ export function ChatInputArea({
                     size="sm"
                     className="h-9 w-9 p-0 rounded-xl hover:bg-muted-foreground/10 transition-all duration-200"
                     title={agentStatus === 'stopping' ? "Stopping..." : agentStatus === 'compacting' ? "Compacting..." : "Stop generation"}
-                    disabled={agentStatus === 'researching' || agentStatus === 'stopping' || agentStatus === 'compacting'}
+                    disabled={agentStatus === 'stopping' || agentStatus === 'compacting'}
                   >
                     {agentStatus === 'stopping' || agentStatus === 'compacting' ? (
                       <Loader2 className="w-4 h-4 animate-spin" />

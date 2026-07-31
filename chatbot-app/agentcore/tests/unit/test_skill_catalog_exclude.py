@@ -1,5 +1,4 @@
-"""SkillRegistry.get_catalog(exclude=...) filters disabled skills so the agent
-never learns about them via the L1 catalog in the system prompt."""
+"""Disabled skills are hidden from the catalog and unavailable to execution."""
 
 import os
 import shutil
@@ -65,3 +64,15 @@ def test_catalog_unknown_exclude_is_noop(registry):
     assert "arxiv-search" in cat
     assert "excel-spreadsheets" in cat
     assert "weather" in cat
+
+
+def test_discovery_excludes_disabled_skill(tmp_path):
+    _make_skill(tmp_path, "weather", "Weather forecast")
+    _make_skill(tmp_path, "github", "GitHub tools")
+    reg = SkillRegistry(skills_dir=str(tmp_path))
+
+    reg.discover_skills(exclude={"github"})
+
+    assert reg.skill_names == ["weather"]
+    with pytest.raises(KeyError, match="Unknown skill"):
+        reg.load_instructions("github")

@@ -1,9 +1,10 @@
 # E2E Integration Tests
 
-Thirteen parametrized tests that drive the deployed stack through the BFF
+Integration tests that drive the deployed stack through the BFF
 `/api/stream/chat` endpoint and assert — from the AG-UI SSE stream — that each
 distinct protocol path (Local Python, Builtin SDK/WebSocket, Gateway MCP,
-A2A, Skill dispatch, Memory) actually works.
+A2A, Skill dispatch, Memory) actually works. The Research Agent case completes
+the approval interrupt roundtrip before asserting the deployed agent result.
 
 Assertions are event-based (`TOOL_CALL_START.tool_call_name`,
 `TOOL_CALL_RESULT.content`, `RUN_FINISHED`), so LLM text nondeterminism does

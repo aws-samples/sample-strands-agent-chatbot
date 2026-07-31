@@ -60,6 +60,19 @@ class TestGetParamFromRequest:
 
         assert result is None
 
+    def test_runtime_session_header_is_supported(self):
+        """Cloud mode uses AgentCore's native isolated session header."""
+        from routers.voice import _get_session_id_from_request
+
+        mock_ws = MagicMock()
+        mock_ws.headers.get.side_effect = lambda name: (
+            "runtime-session-123"
+            if name == "x-amzn-bedrock-agentcore-runtime-session-id"
+            else None
+        )
+
+        assert _get_session_id_from_request(mock_ws, "query-session") == "runtime-session-123"
+
 
 class TestVoiceSessionsEndpoint:
     """Tests for the /voice/sessions endpoint."""

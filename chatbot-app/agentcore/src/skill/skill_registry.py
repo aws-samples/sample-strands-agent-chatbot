@@ -14,7 +14,9 @@ import inspect
 import logging
 import os
 import re
-from typing import Iterable, Optional
+from collections.abc import Iterable
+
+from skill.tool_names import canonical_tool_name
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +33,7 @@ class SkillRegistry:
     # Phase 1: Directory-based skill discovery (L1)
     # ------------------------------------------------------------------
 
-    def discover_skills(self) -> None:
+    def discover_skills(self, exclude: Iterable[str] | None = None) -> None:
         """Scan skills/ directory for SKILL.md files and build the skill index.
 
         Reads frontmatter from each SKILL.md to extract:
@@ -46,6 +48,7 @@ class SkillRegistry:
             logger.warning(f"Skills directory not found: {self.skills_dir}")
             return
 
+        excluded = set(exclude or ())
         for entry in sorted(os.listdir(self.skills_dir)):
             skill_dir = os.path.join(self.skills_dir, entry)
             skill_md = os.path.join(skill_dir, "SKILL.md")
@@ -55,6 +58,8 @@ class SkillRegistry:
 
             meta = self._parse_frontmatter(skill_md)
             name = meta.get("name", entry)
+            if name in excluded:
+                continue
 
             self._skills[name] = {
                 "description": meta.get("description", ""),
@@ -85,7 +90,7 @@ class SkillRegistry:
 
             if name not in self._skills:
                 logger.warning(
-                    f"Tool '{getattr(tool_obj, 'tool_name', '?')}' references "
+                    f"Tool '{canonical_tool_name(tool_obj)}' references "
                     f"unknown skill '{name}' — skipping (no SKILL.md found)"
                 )
                 continue
@@ -96,7 +101,7 @@ class SkillRegistry:
             is_mcp = hasattr(tool_obj, "mcp_client")
             if is_mcp:
                 logger.debug(
-                    f"MCP tool '{tool_obj.tool_name}' bound to skill '{name}'"
+                    f"MCP tool '{canonical_tool_name(tool_obj)}' bound to skill '{name}'"
                 )
                 continue
 
@@ -127,7 +132,7 @@ class SkillRegistry:
     # Level 1: catalog (injected into system prompt at init)
     # ------------------------------------------------------------------
 
-    def get_catalog(self, exclude: Optional[Iterable[str]] = None) -> str:
+    def get_catalog(self, exclude: Iterable[str] | None = None) -> str:
         """Generate the Level 1 skill catalog for the system prompt.
 
         Skills listed in `exclude` are omitted so the agent never sees a
@@ -310,9 +315,10 @@ class SkillRegistry:
                     )
                     continue
                 for t in self._skills[ref]["tools"]:
-                    if t.tool_name not in seen:
+                    tool_name = canonical_tool_name(t)
+                    if tool_name not in seen:
                         tools.append(t)
-                        seen.add(t.tool_name)
+                        seen.add(tool_name)
             return tools
 
         return list(info["tools"])

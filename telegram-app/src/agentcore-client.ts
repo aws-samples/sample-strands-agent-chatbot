@@ -78,6 +78,7 @@ async function getAccessToken(): Promise<string> {
 
 const sessionEpochs = new Map<number, number>();
 const selectedModels = new Map<number, string>();
+export const DEFAULT_MODEL_ID = "openai.gpt-5.6-terra";
 
 export function resetSession(chatId: number): void {
   sessionEpochs.set(chatId, Date.now());
@@ -87,8 +88,8 @@ export function setModel(chatId: number, modelId: string): void {
   selectedModels.set(chatId, modelId);
 }
 
-export function getModel(chatId: number): string | undefined {
-  return selectedModels.get(chatId);
+export function getModel(chatId: number): string {
+  return selectedModels.get(chatId) ?? DEFAULT_MODEL_ID;
 }
 
 function buildSessionId(chatId: number): string {
@@ -108,7 +109,6 @@ function buildPayload(
   chatId: number,
   content: string | ContentPart[],
   sessionId: string,
-  authToken: string,
 ) {
   const runId = randomUUID();
   const messages =
@@ -125,8 +125,8 @@ function buildPayload(
     state: {
       user_id: resolveUserId(chatId),
       channel: "telegram",
-      auth_token: authToken,
-      ...(selectedModels.get(chatId) ? { model_id: selectedModels.get(chatId) } : {}),
+      allow_user_federation: false,
+      model_id: getModel(chatId),
     },
   };
 }
@@ -138,7 +138,7 @@ export async function invokeAgent(
 ): Promise<AgentResponse> {
   const sessionId = buildSessionId(chatId);
   const token = await getAccessToken();
-  const payload = buildPayload(chatId, content, sessionId, `Bearer ${token}`);
+  const payload = buildPayload(chatId, content, sessionId);
 
   logger.info({ chatId, sessionId }, "Invoking AgentCore");
 

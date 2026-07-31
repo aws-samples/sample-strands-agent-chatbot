@@ -46,7 +46,8 @@ Once a user completes consent, the token is stored in **AgentCore Token Vault** 
      │   SSE event    │   oauth_required  │                    │
      │<───────────────│<──────────────────│                    │
      │                │                   │                    │
-     │  6. Open popup │                   │                    │
+     │  6. Continue   │                   │                    │
+     │     opens popup│                   │                    │
      │  ┌──────────┐  │                   │                    │
      │  │ Google   │  │                   │                    │
      │  │ Consent  │  │                   │                    │
@@ -54,14 +55,14 @@ Once a user completes consent, the token is stored in **AgentCore Token Vault** 
      │       │        │                   │                    │
      │  7. Redirect to /oauth-complete?session_id=xxx         │
      │       │        │                   │                    │
-     │  8. POST /api/oauth/complete       │                    │
-     │───────────────>│  9. CompleteResourceTokenAuth          │
-     │                │──────────────────>│                    │
-     │                │                   │ (token stored in   │
-     │                │                   │  Token Vault)      │
+     │  8. POST /api/stream/elicitation-complete               │
+     │───────────────>│                   │                    │
+     │                │  9. DynamoDB completion signal         │
+     │                │<─────────────────>│ CompleteResource-  │
+     │                │                   │ TokenAuth          │
      │                │                   │                    │
-     │  10. User retries tool manually    │                    │
-     │───────────────>│──────────────────>│───────────────────>│
+     │                │  10. Pending MCP call resumes          │
+     │                │                   │───────────────────>│
      │                │                   │    Token found!    │
      │   Gmail data   │   Gmail data      │    Gmail data      │
      │<───────────────│<──────────────────│<───────────────────│
@@ -98,9 +99,12 @@ The MCP server's `OAuthHelper.get_access_token()` calls `get_resource_oauth2_tok
 
 ### Step 6: OAuth Popup
 
-The tool result containing `oauth_required: true` and `auth_url` is streamed back to the frontend. The `ToolExecutionContainer` component detects the Google authorization URL pattern and opens a popup window automatically.
+The MCP URL elicitation is streamed to the frontend as an
+`oauth_elicitation` event. The frontend displays an authorization dialog.
+The popup opens only after the user selects **Continue**, which keeps the
+operation inside a browser user gesture and avoids popup blocking.
 
-**Key file:** `chatbot-app/frontend/src/components/chat/ToolExecutionContainer.tsx:98-125`
+**Key file:** `chatbot-app/frontend/src/components/OAuthElicitationDialog.tsx`
 
 ### Step 7: Google Consent
 
@@ -112,24 +116,23 @@ https://{cloudfront}/oauth-complete?session_id={agentcore_session_id}
 
 ### Step 8-9: Token Completion
 
-The `/oauth-complete` page extracts the `session_id` and calls the BFF endpoint, which invokes `CompleteResourceTokenAuthCommand`:
-
-```typescript
-const command = new CompleteResourceTokenAuthCommand({
-  sessionUri: session_id,
-  userIdentifier: { userToken: cognitoJwt }  // or { userId }
-})
-```
-
-This tells AgentCore Identity to finalize the OAuth exchange and store the token in the Token Vault.
+The `/oauth-complete` page extracts the AgentCore `session_id` and posts the
+pending chat session and elicitation IDs to the authenticated BFF endpoint.
+The BFF validates ownership and writes a completion signal to DynamoDB. The
+orchestrator's waiting elicitation bridge reads that signal and invokes
+`CompleteResourceTokenAuth` with the user's Cognito token. AgentCore then
+stores the provider token in the Token Vault.
 
 **Key files:**
 - `chatbot-app/frontend/src/app/oauth-complete/page.tsx` — callback page
-- `chatbot-app/frontend/src/app/api/oauth/complete/route.ts` — BFF endpoint
+- `chatbot-app/frontend/src/app/api/stream/elicitation-complete/route.ts` — authenticated completion signal
+- `chatbot-app/agentcore/src/agent/mcp/elicitation_bridge.py` — waits for completion and finalizes token auth
 
-### Step 10: Retry
+### Step 10: Resume
 
-The user manually retries the tool (the instructions say "try this action again"). This time, `get_resource_oauth2_token()` returns a cached `accessToken` and the tool executes successfully.
+The bridge accepts the MCP URL elicitation after token completion. The paused
+MCP tool retrieves the cached access token and resumes in the same request;
+the user does not need to submit the chat request again.
 
 ## Token Persistence
 
@@ -180,7 +183,7 @@ print(response)
 | `chatbot-app/agentcore/src/agent/mcp/mcp_runtime_client.py` | MCP Runtime client with JWT auth |
 | `chatbot-app/agentcore/src/agent/mcp/elicitation_bridge.py` | Bridges OAuth elicitation between MCP server and frontend |
 | `chatbot-app/agentcore/src/streaming/agui_event_processor.py` | Streams `oauth_elicitation` events to frontend |
-| `chatbot-app/frontend/src/components/chat/ToolExecutionContainer.tsx` | Auto-opens OAuth popup |
-| `chatbot-app/frontend/src/app/oauth-complete/page.tsx` | Handles Google redirect callback |
-| `chatbot-app/frontend/src/app/api/stream/elicitation-complete/route.ts` | Signals elicitation completion |
+| `chatbot-app/frontend/src/components/OAuthElicitationDialog.tsx` | Presents the user-triggered authorization action |
+| `chatbot-app/frontend/src/app/oauth-complete/page.tsx` | Handles the provider return and signals completion |
+| `chatbot-app/frontend/src/app/api/stream/elicitation-complete/route.ts` | Validates and stores elicitation completion |
 | `infra/modules/oauth-providers/main.tf` | Registers OAuth credential providers (Terraform) |

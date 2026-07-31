@@ -73,6 +73,7 @@ class ChatAgent(BaseAgent):
         use_null_conversation_manager: Optional[bool] = None,
         agent_id: Optional[str] = None,
         auth_token: Optional[str] = None,
+        allow_user_federation: bool = True,
     ):
         self.agent = None
         self.use_null_conversation_manager = use_null_conversation_manager if use_null_conversation_manager is not None else False
@@ -88,6 +89,7 @@ class ChatAgent(BaseAgent):
             caching_enabled=caching_enabled,
             compaction_enabled=compaction_enabled,
             auth_token=auth_token,
+            allow_user_federation=allow_user_federation,
         )
 
         # Create Strands agent after base initialization
@@ -203,4 +205,3 @@ class ChatAgent(BaseAgent):
         except Exception as e:
             logger.error(f"Error creating agent: {e}")
             raise
-

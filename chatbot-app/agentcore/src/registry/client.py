@@ -174,8 +174,11 @@ class RegistryClient:
     def get_gateway_url(self) -> Optional[str]:
         return self._first_endpoint_by_source("gateway")
 
-    def get_mcp_runtime_url(self) -> Optional[str]:
-        return self._first_endpoint_by_source("mcp")
+    def get_mcp_endpoint(self, source: str) -> Optional[str]:
+        """Return the first registered endpoint for an MCP source."""
+        if source not in {"gateway", "mcp"}:
+            raise ValueError(f"Unsupported MCP source: {source}")
+        return self._first_endpoint_by_source(source)
 
     def get_a2a_endpoint_url(self, agent_name: str) -> Optional[str]:
         """Return endpoint URL for a specific A2A agent."""

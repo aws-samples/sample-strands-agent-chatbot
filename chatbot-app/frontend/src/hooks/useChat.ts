@@ -42,7 +42,7 @@ interface UseChatReturn {
   showProgressPanel: boolean
   toggleProgressPanel: () => void
   sendMessage: (text: string, files?: File[], systemPrompt?: string, selectedArtifactId?: string | null) => Promise<void>
-  stopGeneration: () => void
+  stopGeneration: () => Promise<void>
   newChat: () => Promise<void>
   compactSession: () => Promise<void>
   truncateFromMessage: (message: Message) => Promise<void>
@@ -79,6 +79,7 @@ interface UseChatReturn {
   addArtifactMessage: (artifact: { id: string; type: string; title: string; wordCount?: number }) => void
   // OAuth state
   pendingOAuth: PendingOAuthState | null | undefined
+  cancelOAuth: () => void
   // SSE reconnection state
   isReconnecting: boolean
   reconnectAttempt: number
@@ -86,7 +87,7 @@ interface UseChatReturn {
 
 // Default preferences when session has no saved preferences
 const DEFAULT_PREFERENCES: SessionPreferences = {
-  lastModel: 'us.anthropic.claude-sonnet-5',
+  lastModel: 'openai.gpt-5.6-terra',
   selectedPromptId: 'general',
 }
 
@@ -418,8 +419,23 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
       setSessionState(prev => ({ ...prev, pendingOAuth: null }))
     }
 
+    const handleOAuthStorage = (event: StorageEvent) => {
+      if (event.key !== 'oauth_completed' || !event.newValue) return
+      try {
+        const completed = JSON.parse(event.newValue)
+        if (completed.elicitationId !== sessionState.pendingOAuth?.elicitationId) return
+        setSessionState(prev => ({ ...prev, pendingOAuth: null }))
+      } catch {
+        // Ignore malformed cross-window completion signals.
+      }
+    }
+
     window.addEventListener('message', handleOAuthMessage)
-    return () => window.removeEventListener('message', handleOAuthMessage)
+    window.addEventListener('storage', handleOAuthStorage)
+    return () => {
+      window.removeEventListener('message', handleOAuthMessage)
+      window.removeEventListener('storage', handleOAuthStorage)
+    }
   }, [sessionState.pendingOAuth, sessionId])
 
   // ==================== ACTIONS ====================
@@ -692,14 +708,31 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId])
 
-  const stopGeneration = useCallback(() => {
-    setUIState(prev => ({ ...prev, agentStatus: 'stopping' }))
-    sendStopSignal()
-    // In the AG-UI path the subscription is aborted client-side so RunFinishedEvent
-    // never arrives. Immediately reset streaming state so the spinner and in-progress
-    // tool executions don't hang.
-    resetStreamingState()
+  const stopGeneration = useCallback(async () => {
+    let previousStatus: AgentStatus = 'thinking'
+    setUIState(prev => {
+      previousStatus = prev.agentStatus
+      return { ...prev, agentStatus: 'stopping' }
+    })
+
+    const stopped = await sendStopSignal()
+    if (stopped) {
+      // The durable stop request has been accepted; the local stream can now close.
+      resetStreamingState()
+      return
+    }
+
+    setUIState(prev => ({
+      ...prev,
+      agentStatus: previousStatus === 'stopping' ? 'thinking' : previousStatus,
+    }))
   }, [sendStopSignal, resetStreamingState])
+
+  const cancelOAuth = useCallback(() => {
+    localStorage.removeItem('oauth_pending')
+    setSessionState(prev => ({ ...prev, pendingOAuth: null }))
+    void stopGeneration()
+  }, [stopGeneration])
 
   // ==================== DERIVED STATE ====================
   const groupedMessages = useMemo(() => {
@@ -997,6 +1030,7 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
     addArtifactMessage,
     // OAuth state
     pendingOAuth: sessionState.pendingOAuth,
+    cancelOAuth,
     // SSE reconnection state
     isReconnecting,
     reconnectAttempt,

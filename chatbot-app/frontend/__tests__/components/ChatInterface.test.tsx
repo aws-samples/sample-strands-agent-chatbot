@@ -351,7 +351,7 @@ describe('ChatInterface - Agent Status', () => {
     expect(buttons.length).toBeGreaterThan(0)
   })
 
-  it('should disable stop button for researching status', () => {
+  it('should allow stopping during research', () => {
     mockUseChat.agentStatus = 'researching'
     mockUseChat.groupedMessages = [
       {
@@ -363,10 +363,10 @@ describe('ChatInterface - Agent Status', () => {
 
     render(<ChatInterface />)
 
-    // Stop button should be disabled during research
+    // A2A research tasks support cancellation through the standard cancel API.
     const stopButton = document.querySelector('button[title*="Stop"]')
     if (stopButton) {
-      expect(stopButton).toBeDisabled()
+      expect(stopButton).not.toBeDisabled()
     }
   })
 })

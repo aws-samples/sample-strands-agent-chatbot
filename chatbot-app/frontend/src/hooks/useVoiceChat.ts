@@ -21,6 +21,13 @@ import {
 import { fetchAuthSession } from 'aws-amplify/auth'
 import { AgentStatus } from '@/types/events'
 
+function toBase64Url(value: string): string {
+  return btoa(value)
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=/g, '')
+}
+
 // Transcript entry
 export interface TranscriptEntry {
   id: string
@@ -458,7 +465,7 @@ export function useVoiceChat({
       }
 
       const startData = await startResponse.json()
-      const { sessionId: activeSessionId, wsUrl, authToken: voiceAuthToken } = startData
+      const { sessionId: activeSessionId, wsUrl, isLocal } = startData
 
       // Store active session ID for cleanup
       activeSessionIdRef.current = activeSessionId
@@ -475,13 +482,17 @@ export function useVoiceChat({
         console.warn(`[VoiceChat] Session ID mismatch - expected: ${existingSessionId}, got: ${activeSessionId}`)
       }
 
-      // 2. Use WebSocket URL from BFF directly
-      // BFF already includes query params (session_id, user_id, enabled_tools)
-      // For cloud mode, the URL includes JWT token and all params as query parameters
       console.log('[VoiceChat] Connecting to WebSocket (URL from BFF)')
 
-      // 3. Create WebSocket connection
-      const ws = new WebSocket(wsUrl)
+      // Browser WebSocket cannot set Authorization. AgentCore accepts the
+      // base64url bearer token through the WebSocket subprotocol header.
+      const protocols = authToken
+        ? [
+            `base64UrlBearerAuthorization.${toBase64Url(authToken)}`,
+            'base64UrlBearerAuthorization',
+          ]
+        : undefined
+      const ws = protocols ? new WebSocket(wsUrl, protocols) : new WebSocket(wsUrl)
       wsRef.current = ws
 
       ws.onopen = () => {
@@ -492,18 +503,16 @@ export function useVoiceChat({
         // Start idle timer
         resetIdleTimer()
 
-        // Send config message with session info
-        // Workaround: AgentCore Runtime WebSocket proxy doesn't convert
-        // X-Amzn-Bedrock-AgentCore-Runtime-Custom-* query params to headers
-        // So we send config via first WebSocket message instead
+        // Keep one application config frame for local mode and dynamic tool
+        // settings. Cloud authentication is handled by the handshake.
         ws.send(JSON.stringify({
           type: 'config',
           session_id: activeSessionId,
           user_id: userId,
           enabled_tools: enabledTools,
-          auth_token: voiceAuthToken,  // For MCP Runtime 3LO tools (Gmail, etc.)
+          ...(isLocal && authToken ? { auth_token: authToken } : {}),
         }))
-        console.log(`[VoiceChat] Sent config: session=${activeSessionId}, tools=${enabledTools.length}, authToken=${voiceAuthToken ? 'present' : 'missing'}`)
+        console.log(`[VoiceChat] Sent config: session=${activeSessionId}, tools=${enabledTools.length}`)
       }
 
       ws.onmessage = handleMessage

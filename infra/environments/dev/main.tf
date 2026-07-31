@@ -199,9 +199,6 @@ module "gateway" {
     for k, m in module.gateway_lambda_tools : k => m.function_arn
   }
 
-  # MCP 3LO runtime stays direct-invoke (stateful consent/elicitation is not Gateway-friendly).
-  runtime_targets = {}
-
   depends_on = [module.auth, module.gateway_lambda_tools]
 }
 
@@ -232,6 +229,8 @@ module "runtime_code_agent" {
 
   extra_env_vars = {
     CLAUDE_CODE_USE_BEDROCK = "1"
+    ANTHROPIC_MODEL         = var.code_agent_model_id
+    CODE_AGENT_MODEL_ID     = var.code_agent_model_id
   }
 
   depends_on = [module.auth, aws_s3_bucket.artifacts, module.agentcore_shared]
@@ -258,9 +257,19 @@ module "runtime_research_agent" {
   artifact_bucket_arn  = aws_s3_bucket.artifacts.arn
   artifact_bucket_name = aws_s3_bucket.artifacts.id
 
-  extra_env_vars = {
-    CODE_INTERPRETER_ID = module.agentcore_shared.code_interpreter_id
-  }
+  secret_arns = var.enable_mantle_models ? [
+    data.aws_secretsmanager_secret.bedrock_api_key[0].arn
+  ] : []
+
+  extra_env_vars = merge(
+    {
+      CODE_INTERPRETER_ID = module.agentcore_shared.code_interpreter_id
+      MODEL_ID            = var.research_agent_default_model_id
+    },
+    var.enable_mantle_models ? {
+      BEDROCK_API_KEY_SECRET_NAME = data.aws_secretsmanager_secret.bedrock_api_key[0].name
+    } : {},
+  )
 
   depends_on = [module.auth, aws_s3_bucket.artifacts, module.agentcore_shared]
 }
@@ -535,10 +544,8 @@ module "registry" {
   aws_region   = var.aws_region
   repo_root    = local.root_dir
 
-  gateway_url          = module.gateway.gateway_url
-  gateway_role_arn     = module.gateway.gateway_role_arn
-  mcp_runtime_url      = module.runtime_mcp_3lo.runtime_invocation_url
-  mcp_runtime_role_arn = module.runtime_mcp_3lo.execution_role_arn
+  gateway_url     = module.gateway.gateway_url
+  mcp_runtime_url = module.runtime_mcp_3lo.runtime_invocation_url
   a2a_runtime_urls = {
     "code-agent"     = module.runtime_code_agent.runtime_invocation_url
     "research-agent" = module.runtime_research_agent.runtime_invocation_url
@@ -579,8 +586,11 @@ module "runtime_mcp_3lo" {
   build_context   = "agentcore/mcp-runtime"
   dockerfile_path = "Dockerfile"
 
-  cognito_issuer_url      = module.auth.issuer_url
-  cognito_allowed_clients = [module.auth.app_client_id, module.auth.web_client_id]
+  cognito_issuer_url = module.auth.issuer_url
+  cognito_allowed_clients = [
+    module.auth.app_client_id,
+    module.auth.web_client_id,
+  ]
 
   network_mode = var.network_mode == "PUBLIC" ? "PUBLIC" : "VPC"
 

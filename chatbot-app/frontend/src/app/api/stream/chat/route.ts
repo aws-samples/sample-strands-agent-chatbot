@@ -185,10 +185,9 @@ export async function POST(request: NextRequest) {
     const user = await extractUserFromRequest(request)
     const userId = user.userId
 
-    // Extract raw JWT token for forwarding to MCP Runtime (3LO OAuth user identity)
+    // Forward the verified caller token only as the Runtime Authorization header.
     const authHeader = request.headers.get('authorization') || ''
     const authToken = authHeader.startsWith('Bearer ') ? authHeader : ''
-    console.log(`[BFF] Authorization header present: ${!!authHeader}, starts with Bearer: ${authHeader.startsWith('Bearer ')}, authToken length: ${authToken.length}`)
 
     // Get or generate session ID (user-specific)
     // For the AG-UI JSON path, threadId from RunAgentInput is the authoritative session identifier
@@ -233,7 +232,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Load model configuration from storage (only if not provided in request)
-    const defaultModelId = model_id || 'us.anthropic.claude-sonnet-5'
+    const defaultModelId = model_id || 'openai.gpt-5.6-terra'
 
     let modelConfig = {
       model_id: defaultModelId,
@@ -393,7 +392,6 @@ export async function POST(request: NextRequest) {
             temperature: modelConfig.temperature,
             system_prompt: finalSystemPrompt,
             caching_enabled: modelConfig.caching_enabled,
-            ...(authToken && { auth_token: authToken }),
             ...(selected_artifact_id && { selected_artifact_id }),
             ...(request_type && { request_type }),
             ...(disabled_skills.length > 0 && { disabled_skills }),

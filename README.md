@@ -267,6 +267,9 @@ sample-strands-agent-chatbot/
 ## Documentation
 
 - DEPLOYMENT.md
+- docs/guides/GOOGLE_OAUTH_SETUP.md
+- docs/guides/GITHUB_OAUTH_SETUP.md
+- docs/guides/THREE_LEGGED_OAUTH_FLOW.md
 - docs/guides/TROUBLESHOOTING.md
 
 ---

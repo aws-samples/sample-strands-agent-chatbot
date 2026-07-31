@@ -143,6 +143,14 @@ class StreamResult:
             if e.get("type") == "TEXT_MESSAGE_CONTENT"
         )
 
+    def tool_result_contents(self) -> list[str]:
+        """Return serialized TOOL_CALL_RESULT content payloads."""
+        return [
+            str(event.get("content", ""))
+            for event in self.events
+            if event.get("type") == "TOOL_CALL_RESULT"
+        ]
+
     def run_finished(self) -> bool:
         return any(e.get("type") == "RUN_FINISHED" for e in self.events)
 
@@ -165,6 +173,26 @@ class StreamResult:
                     return True
         return False
 
+    def interrupts(self) -> list[dict[str, Any]]:
+        """Return all interrupt payloads emitted during this run."""
+        interrupts: list[dict[str, Any]] = []
+        for event in self.events:
+            if event.get("type") != "CUSTOM" or event.get("name") != "interrupt":
+                continue
+            value = event.get("value") or {}
+            interrupts.extend(
+                item for item in (value.get("interrupts") or [])
+                if isinstance(item, dict)
+            )
+        return interrupts
+
+    def custom_events(self, name: str) -> list[dict[str, Any]]:
+        """Return CUSTOM events with the requested name."""
+        return [
+            event for event in self.events
+            if event.get("type") == "CUSTOM" and event.get("name") == name
+        ]
+
     def terminated_cleanly(self) -> bool:
         return self.run_finished() or self.interrupted_for_approval()
 
@@ -180,7 +208,7 @@ def stream_chat(
     prompt: str,
     *,
     thread_id: str | None = None,
-    model_id: str = "us.anthropic.claude-sonnet-5",
+    model_id: str = "openai.gpt-5.6-terra",
     state_overrides: dict[str, Any] | None = None,
     timeout: float = 180.0,
 ) -> StreamResult:

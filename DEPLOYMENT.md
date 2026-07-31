@@ -55,6 +55,11 @@ This deploys:
 
 **Estimated Time**: 20-30 minutes
 
+For each configured OAuth provider, register the provider callback URI printed
+at the end of deployment before testing its tools. See
+[Google OAuth Setup](docs/guides/GOOGLE_OAUTH_SETUP.md) and
+[GitHub OAuth Setup](docs/guides/GITHUB_OAUTH_SETUP.md).
+
 ### Remove All Components
 
 ```bash
@@ -222,6 +227,9 @@ Tools are disabled by default. Enable via UI:
 ```bash
 # Run end-to-end API test
 ./infra/scripts/test-api.sh
+
+# Also invoke Code Agent and complete the Research approval flow
+RUN_MODEL_SMOKE=1 ./infra/scripts/test-api.sh
 
 # Expected output:
 # Cognito login: OK

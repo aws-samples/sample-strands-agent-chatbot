@@ -45,6 +45,23 @@ def _get_param_from_request(websocket: WebSocket, header_suffix: str, query_para
     return query_param
 
 
+def _get_bearer_token(websocket: WebSocket) -> Optional[str]:
+    authorization = websocket.headers.get("authorization")
+    if authorization and authorization.lower().startswith("bearer "):
+        return authorization[7:].strip()
+    return None
+
+
+def _get_session_id_from_request(
+    websocket: WebSocket,
+    query_param: Optional[str],
+) -> Optional[str]:
+    return (
+        websocket.headers.get("x-amzn-bedrock-agentcore-runtime-session-id")
+        or _get_param_from_request(websocket, "session-id", query_param)
+    )
+
+
 @router.websocket("/voice/stream")
 async def voice_stream(
     websocket: WebSocket,
@@ -58,12 +75,12 @@ async def voice_stream(
     """
     await websocket.accept()
 
-    session_id = _get_param_from_request(websocket, "session-id", session_id)
+    session_id = _get_session_id_from_request(websocket, session_id)
     user_id = _get_param_from_request(websocket, "user-id", user_id)
-    auth_token = _get_param_from_request(websocket, "auth-token", auth_token)
+    auth_token = _get_bearer_token(websocket) or auth_token
 
-    # Config message supplies auth_token (not in query params) and supplements
-    # missing fields when AgentCore Runtime proxy drops query params.
+    # The application config frame carries dynamic settings. In cloud mode,
+    # authentication comes from the AgentCore WebSocket handshake.
     try:
         first_msg = await asyncio.wait_for(websocket.receive_json(), timeout=10.0)
         if first_msg.get("type") == "config":

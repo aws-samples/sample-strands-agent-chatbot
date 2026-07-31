@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState, useRef } from 'react'
+import { fetchAuthSession } from 'aws-amplify/auth'
 
 export default function OAuthCompletePage() {
   const [status, setStatus] = useState<'loading' | 'success' | 'error'>('loading')
@@ -34,20 +35,39 @@ export default function OAuthCompletePage() {
     } catch { /* ignore parse errors */ }
 
     const signalCompletion = async () => {
-      if (pending.sessionId) {
-        try {
-          await fetch('/api/stream/elicitation-complete', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              sessionId: pending.sessionId,
-              elicitationId: pending.elicitationId,
-              oauthSessionUri,
-            }),
-          })
-        } catch (e) {
-          console.error('[OAuth] Failed to signal via BFF:', e)
+      if (!pending.sessionId || !pending.elicitationId) {
+        setStatus('error')
+        setMessage('The pending authorization request was not found. Please try again.')
+        return false
+      }
+
+      try {
+        const authSession = await fetchAuthSession()
+        const accessToken = authSession.tokens?.accessToken?.toString()
+        if (!accessToken) {
+          throw new Error('Authenticated OAuth session context is missing')
         }
+
+        const response = await fetch('/api/stream/elicitation-complete', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify({
+            sessionId: pending.sessionId,
+            elicitationId: pending.elicitationId,
+            oauthSessionUri,
+          }),
+        })
+        if (!response.ok) {
+          throw new Error(`OAuth completion failed (${response.status})`)
+        }
+      } catch (e) {
+        console.error('[OAuth] Failed to signal via BFF:', e)
+        setStatus('error')
+        setMessage('Could not verify the authorization session. Please try again.')
+        return false
       }
 
       if (window.opener && !window.opener.closed) {
@@ -60,12 +80,19 @@ export default function OAuthCompletePage() {
           console.warn('[OAuth] Could not notify parent window:', e)
         }
       }
+      localStorage.setItem('oauth_completed', JSON.stringify({
+        elicitationId: pending.elicitationId,
+        completedAt: Date.now(),
+      }))
+      return true
     }
 
-    signalCompletion()
-    setStatus('success')
-    setMessage('Authorization completed! This window will close automatically.')
-    setTimeout(() => window.close(), 1500)
+    signalCompletion().then((completed) => {
+      if (!completed) return
+      setStatus('success')
+      setMessage('Authorization completed! This window will close automatically.')
+      setTimeout(() => window.close(), 1500)
+    })
   }, [])
 
   return (

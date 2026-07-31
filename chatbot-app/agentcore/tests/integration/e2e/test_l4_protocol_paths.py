@@ -10,6 +10,7 @@ Run: `pytest -m e2e tests/integration/e2e -v`
 
 from __future__ import annotations
 
+import json
 import os
 
 import pytest
@@ -115,13 +116,6 @@ _CASES = [
         id="gateway_wikipedia",
     ),
     pytest.param(
-        "Do deep research comparing vector databases in 2026 — pinecone, weaviate, "
-        "and qdrant — focusing on performance and pricing. Use the research agent.",
-        ("research-agent", "research_agent"),
-        {"timeout": 600.0},
-        id="a2a_research",
-    ),
-    pytest.param(
         "Delegate to the coding agent: write a FastAPI hello-world endpoint and "
         "save it to the workspace as app.py.",
         ("code-agent", "code_agent"),
@@ -164,6 +158,54 @@ def test_protocol_path(stream, prompt, expected_tool_substrings, call_kwargs):
         f"Last events: {[e.get('type') for e in result.events[-10:]]}"
     )
     _assert_skill_or_tool_invoked(result, expected_tool_substrings)
+
+
+def test_a2a_research_approval_roundtrip(stream):
+    """Approve the HITL interrupt and verify the Research Agent completes."""
+    first = stream(
+        "Use the research agent for a concise multi-source comparison of HTTP/2 "
+        "and HTTP/3 with a summary, three technical differences, and sources.",
+        timeout=300.0,
+    )
+    assert first.interrupted_for_approval(), (
+        f"Research approval interrupt not observed. Errors: {first.raw_error_events}"
+    )
+    _assert_skill_or_tool_invoked(first, ("research-agent", "research_agent"))
+
+    interrupt = first.interrupts()[0]
+    interrupt_id = interrupt.get("id") or interrupt.get("interruptId")
+    assert interrupt_id, f"Interrupt has no ID: {interrupt}"
+
+    approval = json.dumps([{
+        "interruptResponse": {
+            "interruptId": interrupt_id,
+            "response": "approved",
+        }
+    }])
+    completed = stream(
+        approval,
+        thread_id=first.thread_id,
+        timeout=600.0,
+    )
+
+    assert completed.run_finished(), (
+        f"Research approval continuation did not finish. "
+        f"Errors: {completed.raw_error_events}"
+    )
+    assert not completed.raw_error_events
+    assert completed.custom_events("research_progress"), (
+        "Research Agent completed without emitting research_progress events"
+    )
+    research_results = [
+        content for content in completed.tool_result_contents()
+        if "<research>" in content
+    ]
+    assert research_results, "Research Agent returned no research artifact"
+    assert research_results[0].count("<research>") == 1
+    assert research_results[0].count("</research>") == 1
+    assert completed.assistant_text().strip(), (
+        "Orchestrator returned no completion summary"
+    )
 
 
 def test_memory_roundtrip(stream):

@@ -279,11 +279,12 @@ class VoiceAgent(BaseAgent):
 
     async def stop(self) -> None:
         """Stop the bidirectional agent connection"""
-        if not self._started:
-            return
-
-        await self.agent.stop()
-        self._started = False
+        try:
+            if self._started:
+                await self.agent.stop()
+        finally:
+            self._started = False
+            self.close()
 
     async def send_audio(self, audio_base64: str, sample_rate: int = 16000) -> None:
         """Send audio chunk to the agent

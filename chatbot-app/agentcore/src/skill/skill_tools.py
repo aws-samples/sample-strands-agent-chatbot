@@ -14,6 +14,8 @@ from datetime import timedelta
 from strands import tool
 from strands.types.tools import ToolContext
 
+from skill.tool_names import canonical_tool_name
+
 logger = logging.getLogger(__name__)
 
 # Module-level registry reference, set by SkillChatAgent during init
@@ -232,12 +234,12 @@ def skill_dispatcher(skill_name: str, reference: str = "", source: str = "") -> 
             if spec and isinstance(spec, dict):
                 schema = spec.get("inputSchema", {}).get("json", {})
                 tool_schemas.append({
-                    "name": t.tool_name,
+                    "name": canonical_tool_name(t),
                     "description": spec.get("description", ""),
                     "parameters": schema,
                 })
             else:
-                tool_schemas.append({"name": t.tool_name})
+                tool_schemas.append({"name": canonical_tool_name(t)})
 
         logger.info(f"Skill dispatched: '{skill_name}' — tools: {[s['name'] for s in tool_schemas]}")
 
@@ -395,12 +397,12 @@ def _execute_tool(
         tools = _registry.get_tools(skill_name)
         target_tool = None
         for t in tools:
-            if t.tool_name == tool_name:
+            if canonical_tool_name(t) == tool_name:
                 target_tool = t
                 break
 
         if target_tool is None:
-            available = [t.tool_name for t in tools]
+            available = [canonical_tool_name(t) for t in tools]
             return json.dumps({
                 "error": f"Tool '{tool_name}' not found in skill '{skill_name}'.",
                 "available_tools": available,
@@ -419,9 +421,6 @@ def _execute_tool(
 
         if is_mcp_tool:
             # MCP tool — delegate to mcp_client.call_tool_sync()
-            # Ensure MCP session is alive (may have timed out since startup)
-            if hasattr(target_tool.mcp_client, 'ensure_session'):
-                target_tool.mcp_client.ensure_session()
             # Uses the original MCP tool name for server communication
             mcp_result = target_tool.mcp_client.call_tool_sync(
                 tool_use_id=tool_context.tool_use.get("toolUseId", "skill-exec"),
@@ -463,7 +462,7 @@ def _execute_tool(
                 session_id = tool_context.invocation_state.get("session_id")
                 user_id = tool_context.invocation_state.get("user_id")
                 run_id = tool_context.invocation_state.get("run_id")
-                target_name = target_tool.tool_name
+                target_name = canonical_tool_name(target_tool)
                 result = _run_async(_consume_async_generator(
                     result,
                     session_id=session_id,

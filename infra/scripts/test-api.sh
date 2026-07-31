@@ -6,6 +6,7 @@
 #
 # Usage:
 #   TEST_EMAIL=test@example.com TEST_PASSWORD='TestPass123!' ./infra/scripts/test-api.sh
+#   RUN_MODEL_SMOKE=1 ./infra/scripts/test-api.sh  # Also invoke Code/Research
 
 set -euo pipefail
 
@@ -66,25 +67,24 @@ AUTH_JSON=$(aws cognito-idp initiate-auth \
 ACCESS_TOKEN=$(echo "$AUTH_JSON" | python3 -c "import json,sys;print(json.load(sys.stdin)['AuthenticationResult']['AccessToken'])")
 echo "   got access_token (${#ACCESS_TOKEN} chars)"
 
-# Gateway MCP probe — a full tools/list requires the MCP handshake
-# (initialize → notifications/initialized → tools/list). Validate connectivity
-# by checking the endpoint rejects a missing Authorization (401) but accepts ours.
+# Gateway MCP probe — complete the stateful MCP handshake:
+# initialize → notifications/initialized → tools/list.
 echo ""
-echo ">>> Gateway: auth probe"
-CODE=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$GATEWAY_URL" \
-  -H "Authorization: Bearer $ACCESS_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}}')
-echo "  initialize -> HTTP $CODE (200 = auth ok; non-200 body below)"
-
+echo ">>> Gateway: MCP handshake"
 python3 - "$GATEWAY_URL" "$ACCESS_TOKEN" <<'PY'
-import sys, json, urllib.request
+import json
+import sys
+import urllib.error
+import urllib.request
+
 url, tok = sys.argv[1], sys.argv[2]
-def call(payload, mcp_session=None, extra_accept=False):
+
+def call(payload, mcp_session=None):
     req = urllib.request.Request(url, data=json.dumps(payload).encode(), method='POST')
     req.add_header('Authorization', f'Bearer {tok}')
     req.add_header('Content-Type', 'application/json')
     req.add_header('Accept', 'application/json, text/event-stream')
+    req.add_header('MCP-Protocol-Version', '2025-11-25')
     if mcp_session:
         req.add_header('Mcp-Session-Id', mcp_session)
     try:
@@ -95,16 +95,21 @@ def call(payload, mcp_session=None, extra_accept=False):
 try:
     s, h, b = call({'jsonrpc':'2.0','id':1,'method':'initialize','params':{'protocolVersion':'2025-11-25','capabilities':{},'clientInfo':{'name':'smoke','version':'0'}}})
     sid = h.get('Mcp-Session-Id') or h.get('mcp-session-id')
+    if s != 200 or not sid:
+        raise RuntimeError(f'initialize failed: HTTP {s}, session={sid}, body={b[:200]}')
+    sn, _, bn = call({'jsonrpc':'2.0','method':'notifications/initialized'}, mcp_session=sid)
+    if sn not in (200, 202):
+        raise RuntimeError(f'initialized notification failed: HTTP {sn}, body={bn[:200]}')
     s2, _, b2 = call({'jsonrpc':'2.0','id':2,'method':'tools/list','params':{}}, mcp_session=sid)
-    try:
-        data = json.loads(b2)
-        tools = data.get('result',{}).get('tools',[])
-        names = [t.get('name') for t in tools[:6]]
-        print(f"  tools/list -> HTTP {s2}, {len(tools)} tools: " + ', '.join(names) + ('…' if len(tools)>6 else ''))
-    except Exception:
-        print(f"  tools/list -> HTTP {s2}, body: {b2[:200]}")
+    data = json.loads(b2)
+    tools = data.get('result',{}).get('tools',[])
+    if s2 != 200 or not tools:
+        raise RuntimeError(f'tools/list failed: HTTP {s2}, body={b2[:200]}')
+    names = [t.get('name') for t in tools[:6]]
+    print(f"  tools/list -> HTTP {s2}, {len(tools)} tools: " + ', '.join(names) + ('...' if len(tools)>6 else ''))
 except Exception as e:
-    print(f"  gateway probe failed: {e}")
+    print(f"  gateway probe failed: {e}", file=sys.stderr)
+    sys.exit(1)
 PY
 
 # Orchestrator uses AG-UI protocol on POST /invocations.
@@ -117,3 +122,10 @@ curl -sS -X POST "$ORCH_URL" \
   -d '{"thread_id":"smoke-1","run_id":"smoke-run-1","messages":[],"state":{"action":"warmup","user_id":"smoke-test"}}' \
   | head -c 500
 echo ""
+
+if [ "${RUN_MODEL_SMOKE:-0}" = "1" ]; then
+  echo ""
+  echo ">>> Model routing: Code + Research"
+  export ORCH_URL ACCESS_TOKEN
+  python3 "$INFRA_DIR/scripts/model-smoke.py"
+fi

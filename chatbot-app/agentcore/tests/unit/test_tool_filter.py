@@ -189,6 +189,41 @@ class TestToolFilterRegistry:
         )
         assert len(result.tools) == 1
 
+    def test_user_federation_can_be_disabled(self, mock_registry):
+        """Machine clients must not load per-user 3LO MCP tools."""
+        gateway_factory = Mock()
+        registry = ToolFilterRegistry(
+            local_registry=mock_registry,
+            gateway_client_factory=gateway_factory,
+        )
+
+        result = registry.filter_tools(
+            enabled_tool_ids=["mcp_search_emails"],
+            auth_token="Bearer machine-token",
+            allow_user_federation=False,
+        )
+
+        gateway_factory.assert_not_called()
+        assert result.tools == []
+        assert "disabled for this client" in result.validation_errors[0]
+
+    def test_user_federation_requires_user_token(self, mock_registry):
+        """Federated tools must not be sent to Gateway without user auth."""
+        gateway_factory = Mock()
+        registry = ToolFilterRegistry(
+            local_registry=mock_registry,
+            gateway_client_factory=gateway_factory,
+        )
+
+        result = registry.filter_tools(
+            enabled_tool_ids=["mcp_search_emails"],
+            allow_user_federation=True,
+        )
+
+        gateway_factory.assert_not_called()
+        assert result.tools == []
+        assert "authenticated user" in result.validation_errors[0]
+
 
 class TestGatewayTools:
     """Tests for Gateway MCP tool filtering."""
@@ -245,6 +280,46 @@ class TestGatewayTools:
         assert result.tools == []
         assert len(result.validation_errors) == 1
         assert "Gateway" in result.validation_errors[0]
+
+    @patch("agent.tool_filter.ToolFilterRegistry._create_elicitation_bridge")
+    def test_federated_tools_use_direct_runtime(
+        self,
+        mock_create_bridge,
+        mock_gateway_client,
+        mock_gateway_factory,
+    ):
+        """User-federated tools use a separate Runtime session."""
+        bridge = Mock(name="elicitation_bridge")
+        runtime_client = Mock(name="runtime_client")
+        runtime_factory = Mock(return_value=runtime_client)
+        mock_create_bridge.return_value = bridge
+        registry = ToolFilterRegistry(
+            local_registry={},
+            gateway_client_factory=mock_gateway_factory,
+            mcp_client_factory=runtime_factory,
+        )
+
+        result = registry.filter_tools(
+            enabled_tool_ids=[
+                "gateway_wikipedia_search",
+                "mcp_search_emails",
+            ],
+            auth_token="Bearer user-token",
+            session_id="session-1",
+            user_id="user-1",
+        )
+
+        assert result.tools == [mock_gateway_client, runtime_client]
+        assert result.clients["gateway"] == mock_gateway_client
+        assert result.clients["mcp"] == runtime_client
+        assert result.clients["elicitation_bridge"] == bridge
+        assert result.tool_ids_by_source["gateway"] == ["gateway_wikipedia_search"]
+        assert result.tool_ids_by_source["mcp"] == ["mcp_search_emails"]
+        runtime_factory.assert_called_once_with(
+            enabled_tool_ids=["mcp_search_emails"],
+            auth_token="Bearer user-token",
+            elicitation_bridge=bridge,
+        )
 
 
 class TestA2ATools:
@@ -363,5 +438,7 @@ class TestModuleLevelFunctions:
             log_prefix="[Test]",
             auth_token=None,
             session_id=None,
+            user_id=None,
+            allow_user_federation=True,
         )
         assert result == mock_result
