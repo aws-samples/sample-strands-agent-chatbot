@@ -8,7 +8,7 @@ tool execution, memory, browser automation, and agent-to-agent collaboration.
 It is intended as a realistic, extensible sample for teams exploring advanced agent architectures on AWS.
 
 > [!NOTE]
-> **New: Bedrock Mantle models.** The model picker now includes OpenAI **GPT-5.5 / GPT-5.4**, **xAI Grok 4.3**, and **Google Gemma 4** via Amazon Bedrock's OpenAI-compatible Mantle endpoints — alongside the native Bedrock models (Claude, DeepSeek, Qwen, and more).
+> **New: Bedrock Mantle models.** The model picker now includes the OpenAI **GPT-5.6 family (Sol, Terra, and Luna)**, **xAI Grok 4.3**, and **Google Gemma 4** via Amazon Bedrock's OpenAI-compatible Mantle endpoints — alongside the native Bedrock models (Claude, DeepSeek, Qwen, and more).
 
 ---
 

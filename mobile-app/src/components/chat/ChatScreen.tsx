@@ -40,7 +40,11 @@ export default function ChatScreen({
   // Load persisted model selection
   useEffect(() => {
     AsyncStorage.getItem(MODEL_STORAGE_KEY).then(saved => {
-      if (saved) setSelectedModelId(saved)
+      if (saved && AVAILABLE_MODELS.some(model => model.id === saved)) {
+        setSelectedModelId(saved)
+      } else if (saved) {
+        AsyncStorage.setItem(MODEL_STORAGE_KEY, DEFAULT_MODEL_ID)
+      }
     })
   }, [])
 

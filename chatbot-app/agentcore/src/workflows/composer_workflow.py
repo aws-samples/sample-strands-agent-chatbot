@@ -259,7 +259,9 @@ class ComposerWorkflow:
         """
         self.session_id = session_id
         self.user_id = user_id or session_id
-        self.model_id = model_id or "us.anthropic.claude-sonnet-5"
+        from agent.config import DEFAULT_MODEL_ID
+
+        self.model_id = model_id or DEFAULT_MODEL_ID
         self.temperature = temperature if temperature is not None else 0.7
         self.region_name = os.environ.get('AWS_REGION', 'us-west-2')
         self.session_manager = session_manager

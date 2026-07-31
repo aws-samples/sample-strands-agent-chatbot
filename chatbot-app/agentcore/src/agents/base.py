@@ -13,6 +13,7 @@ import logging
 from abc import ABC
 from typing import List, Optional, Any
 
+from agent.config import DEFAULT_MODEL_ID
 from agent.tool_filter import filter_tools
 from agent.factory import create_session_manager
 
@@ -72,7 +73,7 @@ class BaseAgent(ABC):
 
     def _get_default_model_id(self) -> str:
         """Get default model ID for this agent type"""
-        return "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+        return DEFAULT_MODEL_ID
 
     def _load_tools(self) -> List:
         """Load and filter tools based on enabled_tools"""
