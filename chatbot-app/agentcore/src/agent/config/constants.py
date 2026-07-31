@@ -37,8 +37,8 @@ A2A_PREFIX = "agentcore_"
 # Model Configuration
 # =============================================================================
 
-# Default Bedrock model ID
-DEFAULT_MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+# Default text model ID
+DEFAULT_MODEL_ID = "openai.gpt-5.6-terra"
 
 # Default temperature for model inference
 DEFAULT_TEMPERATURE = 0.7

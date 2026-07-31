@@ -31,8 +31,9 @@ class TestTemperatureGuard:
         "us.anthropic.claude-opus-4-7",
         "us.anthropic.claude-opus-4-8",
         "us.anthropic.claude-sonnet-5",
-        "openai.gpt-5.5",
-        "openai.gpt-5.4",
+        "openai.gpt-5.6-sol",
+        "openai.gpt-5.6-terra",
+        "openai.gpt-5.6-luna",
     ])
     def test_rejects(self, model_id):
         assert model_rejects_temperature(model_id) is True
@@ -84,9 +85,17 @@ class TestBedrockRouting:
 class TestMantleRouting:
     @patch.dict(os.environ, {"AWS_BEARER_TOKEN_BEDROCK": "test-key"})
     def test_mantle_model_built_with_correct_base_url(self):
-        model = build_model("openai.gpt-5.5")
-        assert "bedrock-mantle.us-east-2.api.aws/openai/v1" in model.client_args["base_url"]
+        model = build_model("openai.gpt-5.6-sol")
+        assert "bedrock-mantle.us-east-1.api.aws/openai/v1" in model.client_args["base_url"]
         assert model.client_args["api_key"] == "test-key"
+
+    def test_gpt_56_family_is_pinned_to_us_east_1(self):
+        for model_id in (
+            "openai.gpt-5.6-sol",
+            "openai.gpt-5.6-terra",
+            "openai.gpt-5.6-luna",
+        ):
+            assert MANTLE_MODELS[model_id].region == "us-east-1"
 
     @patch.dict(os.environ, {"AWS_BEARER_TOKEN_BEDROCK": "test-key"})
     def test_grok_region_is_west(self):
@@ -102,7 +111,7 @@ class TestMantleRouting:
     def test_pdf_document_uses_filename_and_file_data(self):
         # Mantle rejects the SDK default {"type":"input_file","file_url":...} with
         # "Unsupported file type: 'unknown'". The subclass must emit filename + file_data.
-        model = build_model("openai.gpt-5.5")
+        model = build_model("openai.gpt-5.6-sol")
         block = {"document": {"format": "pdf", "name": "report", "source": {"bytes": b"%PDF-1.4 x"}}}
         out = type(model)._format_request_message_content(block)
         assert out["type"] == "input_file"
@@ -112,7 +121,7 @@ class TestMantleRouting:
 
     @patch.dict(os.environ, {"AWS_BEARER_TOKEN_BEDROCK": "test-key"})
     def test_non_document_content_delegates_to_parent(self):
-        model = build_model("openai.gpt-5.5")
+        model = build_model("openai.gpt-5.6-sol")
         out = type(model)._format_request_message_content({"text": "hi"})
         assert out == {"type": "input_text", "text": "hi"}
 

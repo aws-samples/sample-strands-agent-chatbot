@@ -86,7 +86,7 @@ export interface UserApiKeys {
 
 export interface UserPreferences {
   // Model Configuration
-  defaultModel?: string // e.g., "us.anthropic.claude-sonnet-5"
+  defaultModel?: string // e.g., "openai.gpt-5.6-terra"
   defaultTemperature?: number // 0.0 - 1.0
   systemPrompt?: string // Custom system prompt
   customPromptName?: string // Name of custom prompt
@@ -261,7 +261,7 @@ export const EXAMPLE_USER_RECORD: UserProfileRecord = {
   createdAt: '2025-01-14T10:00:00Z',
   lastAccessAt: '2025-01-14T15:30:00Z',
   preferences: {
-    defaultModel: 'us.anthropic.claude-sonnet-5',
+    defaultModel: 'openai.gpt-5.6-terra',
     defaultTemperature: 0.5,
     systemPrompt: 'You are a helpful AI assistant.',
     enabledTools: ['calculator', 'web_search', 'code_interpreter'],
@@ -282,7 +282,7 @@ export const EXAMPLE_SESSION_RECORD: SessionRecord = {
   tags: ['aws', 'lambda', 'deployment'],
   starred: true,
   metadata: {
-    lastModel: 'us.anthropic.claude-sonnet-5',
+    lastModel: 'openai.gpt-5.6-terra',
     lastTemperature: 0.5,
     totalTokens: 8500,
     agentCoreTraceId: 'trace-abc123',

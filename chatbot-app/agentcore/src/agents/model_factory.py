@@ -9,8 +9,8 @@ Two execution paths coexist:
 
 Mantle models differ by region and by API path, so each is registered with its
 own spec. A Mantle stream can intermittently end with a `response.failed` event
-that the Strands SDK silently swallows (producing an empty turn); ResilientMantleModel
-retries those before any output is streamed downstream.
+that the Strands SDK silently swallows (producing an empty turn);
+BedrockMantleResponsesModel retries those before any output is streamed downstream.
 """
 
 import logging
@@ -35,7 +35,7 @@ class MantleSpec:
 
     api: "responses" -> /openai/v1 (OpenAIResponsesModel)
     region: Mantle region serving this model (independent of the app's region;
-            e.g. grok-4.3 is us-west-2 only, gpt-5.5 is not in us-west-2).
+            e.g. grok-4.3 is us-west-2 only, gpt-5.6 is served in us-east-1).
     """
     api: str
     region: str
@@ -43,12 +43,13 @@ class MantleSpec:
 
 # Mantle-only models (not callable via native Bedrock Converse). Anything not
 # listed here falls back to BedrockModel. The region is pinned per model: a
-# Mantle model is only served in some regions (grok-4.3 us-west-2 only, gpt-5.5
-# not in us-west-2), so the base_url region is forced independent of where the
+# Mantle model is only served in some regions (grok-4.3 in us-west-2, gpt-5.6
+# in us-east-1), so the base_url region is forced independent of where the
 # app is deployed.
 MANTLE_MODELS: dict[str, MantleSpec] = {
-    "openai.gpt-5.5": MantleSpec(api="responses", region="us-east-2"),
-    "openai.gpt-5.4": MantleSpec(api="responses", region="us-east-2"),
+    "openai.gpt-5.6-sol": MantleSpec(api="responses", region="us-east-1"),
+    "openai.gpt-5.6-terra": MantleSpec(api="responses", region="us-east-1"),
+    "openai.gpt-5.6-luna": MantleSpec(api="responses", region="us-east-1"),
     "xai.grok-4.3": MantleSpec(api="responses", region="us-west-2"),
     "google.gemma-4-31b": MantleSpec(api="responses", region="us-east-2"),
     "google.gemma-4-26b-a4b": MantleSpec(api="responses", region="us-east-2"),
@@ -99,15 +100,15 @@ def _get_bedrock_api_key() -> str:
     return _bedrock_api_key
 
 
-def _make_resilient_mantle_model(model_id: str, spec: MantleSpec, max_tokens: int):
-    """Build the resilient OpenAIResponsesModel subclass for a Mantle model."""
+def _make_bedrock_mantle_responses_model(model_id: str, spec: MantleSpec, max_tokens: int):
+    """Build the OpenAI Responses model configured for Bedrock Mantle."""
     import asyncio
     import base64
     import mimetypes
 
     from strands.models.openai_responses import OpenAIResponsesModel
 
-    class ResilientMantleModel(OpenAIResponsesModel):
+    class BedrockMantleResponsesModel(OpenAIResponsesModel):
         """Live streaming preserved. Buffers only the content-less leading events
         (messageStart). On the first content/tool block, flushes the buffer and
         streams live. If a turn produces no content block at all -- the Mantle
@@ -172,7 +173,7 @@ def _make_resilient_mantle_model(model_id: str, spec: MantleSpec, max_tokens: in
             return super()._format_request_message_content(content, role=role)
 
     base_url = f"https://bedrock-mantle.{spec.region}.api.aws/openai/v1"
-    return ResilientMantleModel(
+    return BedrockMantleResponsesModel(
         model_id=model_id,
         params={"max_output_tokens": max_tokens},
         client_args={
@@ -191,13 +192,13 @@ def build_model(
 ):
     """Build the appropriate Strands model for `model_id`.
 
-    Mantle-only models -> ResilientMantleModel (no caching, no temperature).
+    Mantle-only models -> BedrockMantleResponsesModel (no caching, no temperature).
     Everything else -> BedrockModel (caching + boto retry).
     """
     spec = MANTLE_MODELS.get(model_id)
     if spec is not None:
         logger.info("Building Mantle model %s (region=%s)", model_id, spec.region)
-        return _make_resilient_mantle_model(model_id, spec, max_tokens)
+        return _make_bedrock_mantle_responses_model(model_id, spec, max_tokens)
 
     from botocore.config import Config
 

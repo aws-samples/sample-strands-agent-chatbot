@@ -19,7 +19,9 @@ const MODELS = [
   { id: "us.anthropic.claude-sonnet-5", label: "Sonnet 5" },
   { id: "us.anthropic.claude-haiku-4-5-20251001-v1:0", label: "Haiku 4.5" },
   { id: "us.anthropic.claude-opus-4-8", label: "Opus 4.8" },
-  { id: "openai.gpt-5.5", label: "GPT-5.5" },
+  { id: "openai.gpt-5.6-sol", label: "GPT-5.6 Sol" },
+  { id: "openai.gpt-5.6-terra", label: "GPT-5.6 Terra" },
+  { id: "openai.gpt-5.6-luna", label: "GPT-5.6 Luna" },
 ] as const;
 
 export function setupMessageHandlers(bot: Bot): void {

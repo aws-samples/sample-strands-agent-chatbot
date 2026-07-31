@@ -35,17 +35,24 @@ const AVAILABLE_MODELS = [
 
   // GPT (OpenAI) - gpt-5.x via Mantle, gpt-oss via native Bedrock
   {
-    id: 'openai.gpt-5.5',
-    name: 'GPT-5.5',
+    id: 'openai.gpt-5.6-sol',
+    name: 'GPT-5.6 Sol',
     provider: 'OpenAI',
-    description: 'Frontier reasoning model (via Bedrock Mantle)',
+    description: 'Flagship frontier model (via Bedrock Mantle)',
     noTemperature: true
   },
   {
-    id: 'openai.gpt-5.4',
-    name: 'GPT-5.4',
+    id: 'openai.gpt-5.6-terra',
+    name: 'GPT-5.6 Terra',
     provider: 'OpenAI',
-    description: 'Frontier model (via Bedrock Mantle)',
+    description: 'Balanced frontier model (via Bedrock Mantle)',
+    noTemperature: true
+  },
+  {
+    id: 'openai.gpt-5.6-luna',
+    name: 'GPT-5.6 Luna',
+    provider: 'OpenAI',
+    description: 'Fast and cost-efficient model (via Bedrock Mantle)',
     noTemperature: true
   },
   {
