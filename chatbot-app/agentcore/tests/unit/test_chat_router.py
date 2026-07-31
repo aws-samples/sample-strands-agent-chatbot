@@ -375,6 +375,7 @@ class TestLifecycleActions:
         """Test stop action sets stop signal."""
         mock_provider = MagicMock()
         mock_get_provider.return_value = mock_provider
+        target_run_id = str(uuid.uuid4())
 
         from routers.chat import router
         from fastapi import FastAPI
@@ -388,7 +389,11 @@ class TestLifecycleActions:
             json={
                 "thread_id": "test-session",
                 "run_id": str(uuid.uuid4()),
-                "state": {"action": "stop", "user_id": "test-user"}
+                "state": {
+                    "action": "stop",
+                    "user_id": "test-user",
+                    "run_id": target_run_id,
+                }
             }
         )
 
@@ -396,6 +401,31 @@ class TestLifecycleActions:
         data = response.json()
         assert data["status"] == "stop_requested"
         assert data["session_id"] == "test-session"
+        assert data["run_id"] == target_run_id
+        mock_provider.request_stop.assert_called_once_with(
+            "test-user",
+            "test-session",
+            target_run_id,
+        )
+
+    def test_stop_requires_target_run_id(self):
+        from routers.chat import router
+        from fastapi import FastAPI
+
+        app = FastAPI()
+        app.include_router(router)
+        client = TestClient(app)
+
+        response = client.post(
+            "/invocations",
+            json={
+                "thread_id": "test-session",
+                "run_id": str(uuid.uuid4()),
+                "state": {"action": "stop", "user_id": "test-user"},
+            },
+        )
+
+        assert response.status_code == 400
 
     @patch('agent.mcp.elicitation_bridge.get_bridge')
     def test_elicitation_complete(self, mock_get_bridge):

@@ -27,6 +27,7 @@ export function useChatStream({
   onComplete,
 }: UseChatStreamOptions) {
   const handleRef = useRef<SSEClientHandle | null>(null)
+  const activeRunIdRef = useRef<string | null>(null)
 
   const sendMessage = useCallback(
     (userText: string, history: Message[], images?: ImagePickerAsset[], documents?: PickedDocument[]) => {
@@ -78,9 +79,10 @@ export function useChatStream({
         }
       })
 
+      const runId = uuidv4()
       const body: RunAgentInput = {
         threadId: sessionId,
-        runId: uuidv4(),
+        runId,
         messages: messagesForBFF,
         tools: [],
         context: [],
@@ -94,13 +96,22 @@ export function useChatStream({
         },
       }
 
+      activeRunIdRef.current = runId
       handleRef.current = connectSSEStream({
         path: ENDPOINTS.chat,
         body,
         extraHeaders: { 'X-Session-ID': sessionId },
         onEvent,
-        onComplete,
-        onError: (err: Error) => onError(err.message),
+        onComplete: () => {
+          if (activeRunIdRef.current === runId) activeRunIdRef.current = null
+          handleRef.current = null
+          onComplete()
+        },
+        onError: (err: Error) => {
+          if (activeRunIdRef.current === runId) activeRunIdRef.current = null
+          handleRef.current = null
+          onError(err.message)
+        },
         maxRetries: 3,
         retryBaseDelayMs: 1000,
       })
@@ -112,15 +123,20 @@ export function useChatStream({
   const abortStream = useCallback(() => {
     handleRef.current?.abort()
     handleRef.current = null
+    activeRunIdRef.current = null
   }, [])
 
-  /** Abort local SSE + send stop signal to server. */
+  /** Persist the stop request before disconnecting the local SSE stream. */
   const stopStream = useCallback(async () => {
-    abortStream()
+    const runId = activeRunIdRef.current
+    if (!runId) return false
+
     try {
-      await apiPost(ENDPOINTS.stop, { sessionId })
+      await apiPost(ENDPOINTS.stop, { sessionId, runId })
+      abortStream()
+      return true
     } catch {
-      // Best-effort; the local stream is already aborted
+      return false
     }
   }, [sessionId, abortStream])
 

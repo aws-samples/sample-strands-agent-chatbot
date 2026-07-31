@@ -1,9 +1,9 @@
 /**
  * Stop Signal API endpoint
- * Sets stop signal for a specific user-session to gracefully stop streaming.
+ * Sets a run-scoped stop signal to gracefully stop agent execution.
  *
- * - Local mode: POST /invocations with action="stop" (in-memory flag, same process)
- * - Cloud mode: DynamoDB PutItem (out-of-band, agents poll independently)
+ * - Local mode: POST /invocations with action="stop" (same-process provider)
+ * - Cloud mode: DynamoDB PutItem (out-of-band delivery)
  *
  * Cloud mode uses DynamoDB because AgentCore Runtime does not support concurrent
  * requests on a single session — the stop invocation would queue behind the active
@@ -11,7 +11,7 @@
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { extractUserFromRequest, getSessionId } from '@/lib/auth-utils'
-import { writeStopSignal } from '@/lib/dynamodb-client'
+import { getSession, writeStopSignal } from '@/lib/dynamodb-client'
 
 // Check if running in local mode
 const IS_LOCAL = process.env.NEXT_PUBLIC_AGENTCORE_LOCAL === 'true'
@@ -26,6 +26,7 @@ export async function POST(request: NextRequest) {
     // Get session ID from request body or header
     const body = await request.json().catch(() => ({}))
     let sessionId = body.sessionId
+    const runId = body.runId
 
     // Fallback to header if not in body
     if (!sessionId) {
@@ -40,7 +41,24 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    console.log(`[StopSignal] Setting stop signal for user=${userId}, session=${sessionId}`)
+    if (!runId || typeof runId !== 'string') {
+      return NextResponse.json(
+        { error: 'Run ID is required' },
+        { status: 400 }
+      )
+    }
+
+    if (!IS_LOCAL) {
+      const session = await getSession(userId, sessionId)
+      if (!session) {
+        return NextResponse.json(
+          { error: 'Session not found' },
+          { status: 404 }
+        )
+      }
+    }
+
+    console.log(`[StopSignal] Setting stop signal for user=${userId}, session=${sessionId}, run=${runId}`)
 
     if (IS_LOCAL) {
       // Local mode: Call local AgentCore /invocations with AG-UI stop action
@@ -50,7 +68,7 @@ export async function POST(request: NextRequest) {
         messages: [],
         tools: [],
         context: [],
-        state: { user_id: userId, action: 'stop' }
+        state: { user_id: userId, action: 'stop', run_id: runId }
       }
       const response = await fetch(`${AGENTCORE_URL}/invocations`, {
         method: 'POST',
@@ -68,19 +86,27 @@ export async function POST(request: NextRequest) {
       }
 
       const result = await response.json()
+      if (result.status !== 'stop_requested') {
+        console.error('[StopSignal] Local runtime did not accept stop request:', result)
+        return NextResponse.json(
+          { error: 'Stop signal provider is unavailable' },
+          { status: 503 }
+        )
+      }
       console.log(`[StopSignal] Local stop signal set successfully:`, result)
     } else {
       // Cloud mode: Write stop flag to DynamoDB (out-of-band).
-      // Agents poll DynamoDB independently to detect stop signals.
-      await writeStopSignal(userId, sessionId)
-      console.log(`[StopSignal] DynamoDB stop signal written for user=${userId}, session=${sessionId}`)
+      // The main runtime polls DynamoDB and propagates cancellation to active tools.
+      await writeStopSignal(userId, sessionId, runId)
+      console.log(`[StopSignal] DynamoDB stop signal written for user=${userId}, session=${sessionId}, run=${runId}`)
     }
 
     return NextResponse.json({
       success: true,
       message: 'Stop signal set',
       userId,
-      sessionId
+      sessionId,
+      runId,
     })
 
   } catch (error) {

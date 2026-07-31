@@ -201,14 +201,17 @@ async def invocations(http_request: Request):
     # Stop
     if action == "stop":
         user_id = state.get("user_id", "anonymous")
+        run_id = state.get("run_id")
+        if not run_id:
+            raise HTTPException(status_code=400, detail="run_id required for stop")
         from agent.stop_signal import get_stop_signal_provider
         provider = get_stop_signal_provider()
         if not provider:
             logger.warning("[Stop] Stop signal provider not available (DYNAMODB_USERS_TABLE not set)")
             return {"status": "stop_unavailable", "session_id": thread_id}
-        provider.request_stop(user_id, thread_id)
-        logger.info(f"[Stop] Stop signal set for session={thread_id}")
-        return {"status": "stop_requested", "session_id": thread_id}
+        provider.request_stop(user_id, thread_id, run_id)
+        logger.info(f"[Stop] Stop signal set for session={thread_id}, run={run_id}")
+        return {"status": "stop_requested", "session_id": thread_id, "run_id": run_id}
 
     # Elicitation complete — write to shared store (DynamoDB in cloud, in-memory locally)
     if action == "elicitation_complete":
@@ -417,6 +420,7 @@ async def _handle_agui_invocation(body: dict, http_request: Request) -> Streamin
         invocation_state = {
             "session_id": session_id,
             "user_id": user_id,
+            "run_id": run_id,
             "model_id": agent.model_id,
             "session_manager": agent.session_manager,
             "selected_artifact_id": selected_artifact_id,

@@ -203,7 +203,11 @@ export function useChat({ sessionId, modelId, onTitleUpdated }: UseChatOptions) 
 
   // Wrap stopStream to guarantee state reset even if onComplete doesn't fire
   const stopStream = useCallback(async () => {
-    await rawStopStream()
+    const stopped = await rawStopStream()
+    if (!stopped) {
+      setNetworkError('Unable to stop the active run. Please try again.')
+      return
+    }
     setIsSending(false)
     resetStreamState()
     resetReconnect()

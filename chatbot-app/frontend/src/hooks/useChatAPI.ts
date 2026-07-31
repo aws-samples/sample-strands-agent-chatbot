@@ -179,7 +179,7 @@ interface UseChatAPIReturn {
   newChat: () => Promise<boolean>
   sendMessage: (messageToSend: string, files?: File[], onSuccess?: () => void, onError?: (error: string) => void) => Promise<void>
   cleanup: () => void
-  sendStopSignal: () => Promise<void>
+  sendStopSignal: () => Promise<boolean>
   loadSession: (sessionId: string) => Promise<{ preferences: SessionPreferences | null; messages: Message[] }>
 }
 
@@ -198,6 +198,7 @@ export const useChatAPI = ({
 
   const abortRef = useRef<{ unsubscribe: () => void } | null>(null)
   const sessionIdRef = useRef<string | null>(null)
+  const activeRunIdRef = useRef<string | null>(null)
   const reconnect = useSSEReconnect()
 
   // Restore last session on page load (with timeout check) and trigger warmup
@@ -333,7 +334,7 @@ export const useChatAPI = ({
       const response = await fetch(getApiUrl('session/compact/summarize'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders },
-        body: JSON.stringify({ messages: messagesForSummary, modelId: currentModelId }),
+        body: JSON.stringify({ messages: messagesForSummary }),
       })
 
       if (!response.ok) {
@@ -356,8 +357,7 @@ export const useChatAPI = ({
       logger.error('Error generating compact summary:', error)
       return null
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentModelId])
+  }, [])
 
   // List all current eventIds for the session (snapshot before sending summary)
   const listSessionEvents = useCallback(async (): Promise<string[]> => {
@@ -456,6 +456,7 @@ export const useChatAPI = ({
     abortRef.current = null
     reconnect.reset()
 
+    let requestRunId: string | null = null
     try {
       const authHeaders = await getAuthHeaders()
 
@@ -501,9 +502,11 @@ export const useChatAPI = ({
         }
 
         const threadId = sessionIdRef.current ?? crypto.randomUUID()
+        requestRunId = crypto.randomUUID()
+        activeRunIdRef.current = requestRunId
         const aguiBody = JSON.stringify({
           threadId,
-          runId: crypto.randomUUID(),
+          runId: requestRunId,
           messages: [{ id: crypto.randomUUID(), role: 'user', content: contentParts }],
           tools: [],
           context: [],
@@ -691,6 +694,9 @@ export const useChatAPI = ({
         }
 
         reconnect.reset()  // Clear persisted cursor on normal stream completion
+        if (activeRunIdRef.current === requestRunId) {
+          activeRunIdRef.current = null
+        }
         onSuccess?.()
       }
     } catch (error) {
@@ -768,6 +774,9 @@ export const useChatAPI = ({
       }])
 
       onError?.(errorMessage)
+      if (activeRunIdRef.current === requestRunId) {
+        activeRunIdRef.current = null
+      }
     }
   }, [handleStreamEvent, setUIState, setMessages, onSessionCreated, currentModelId, currentTemperature, reconnect])
   // sessionId removed from dependency array - using sessionIdRef.current instead
@@ -1190,28 +1199,45 @@ export const useChatAPI = ({
   }, [])
 
   const sendStopSignal = useCallback(async () => {
-    // 1. Abort client-side SSE subscription immediately
-    abortRef.current?.unsubscribe()
-
-    // 2. Send stop signal to backend so the agent can gracefully interrupt
     const currentSessionId = sessionIdRef.current
-    if (!currentSessionId) return
+    const currentRunId = activeRunIdRef.current
+    if (!currentSessionId || !currentRunId) {
+      logger.warn('No active run available to stop')
+      return false
+    }
 
     try {
       const authHeaders = await getAuthHeaders()
-      await fetch(getApiUrl('stream/stop'), {
+      const response = await fetch(getApiUrl('stream/stop'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           ...authHeaders,
         },
-        body: JSON.stringify({ sessionId: currentSessionId }),
+        body: JSON.stringify({
+          sessionId: currentSessionId,
+          runId: currentRunId,
+        }),
+        signal: AbortSignal.timeout(5000),
       })
+      if (!response.ok) {
+        const error = await response.text()
+        throw new Error(`Stop request failed (${response.status}): ${error}`)
+      }
+
+      // Stop delivery is durable now; disconnect the local stream relay.
+      abortRef.current?.unsubscribe()
+      abortRef.current = null
+      if (activeRunIdRef.current === currentRunId) {
+        activeRunIdRef.current = null
+      }
       logger.debug('Stop signal sent to backend')
+      return true
     } catch (error) {
       logger.error('Failed to send stop signal:', error)
+      return false
     }
-  }, [])
+  }, [getAuthHeaders])
 
   return {
     newChat,
