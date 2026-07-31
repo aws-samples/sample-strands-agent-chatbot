@@ -1,0 +1,10 @@
+# Ruff is installed with a lower bound only (ruff>=0.15.20), so each new minor
+# release can enable additional rules and break CI on unchanged code. Pin the
+# rule set explicitly instead, keeping local runs and CI in agreement.
+#
+#   E4 — import formatting
+#   E7 — statement-level errors
+#   E9 — syntax and IO errors
+#   F  — pyflakes (undefined names, unused imports, f-string bugs)
+[lint]
+select = ["E4", "E7", "E9", "F"]
