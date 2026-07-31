@@ -207,6 +207,15 @@ class TestExtractMetadata:
         ctx.message.metadata = {}
         assert _extract_metadata(ctx) == {}
 
+    def test_code_agent_receives_orchestrator_model_for_diagnostics_only(self):
+        ctx = MagicMock()
+        ctx.metadata = {
+            "session_id": "s1",
+            "orchestrator_model_id": "openai.gpt-5.6-terra",
+        }
+        assert _extract_metadata(ctx)["orchestrator_model_id"] == "openai.gpt-5.6-terra"
+        assert "model_id" not in _extract_metadata(ctx)
+
 
 # ============================================================
 # _format_tool_step

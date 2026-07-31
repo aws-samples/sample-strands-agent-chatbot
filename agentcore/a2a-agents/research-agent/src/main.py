@@ -21,7 +21,6 @@ from datetime import datetime
 
 from fastapi import FastAPI
 from strands import Agent
-from strands.models import BedrockModel
 from strands.multiagent.a2a import A2AServer
 from strands.multiagent.a2a.executor import StrandsA2AExecutor
 from a2a.server.agent_execution import RequestContext
@@ -45,6 +44,7 @@ from tools import (  # noqa: E402
     read_markdown_file
 )
 from tools.generate_chart import generate_chart_tool  # noqa: E402
+from model_factory import build_model  # noqa: E402
 
 # Configure logging
 logging.basicConfig(
@@ -481,28 +481,11 @@ def create_agent(model_id: Optional[str] = None) -> Agent:
     Create the Research Agent with research and document tools.
 
     Args:
-        model_id: Bedrock model ID to use (defaults to MODEL_ID from env)
+        model_id: Model ID to use (defaults to MODEL_ID from env)
     """
-    from botocore.config import Config
-
     # Use provided model_id or fall back to environment variable
     effective_model_id = model_id or MODEL_ID
-
-    # Configure retry for transient Bedrock errors (serviceUnavailableException)
-    retry_config = Config(
-        retries={
-            'max_attempts': 10,
-            'mode': 'adaptive'  # Adaptive retry with exponential backoff
-        },
-        connect_timeout=30,
-        read_timeout=120
-    )
-
-    bedrock_model = BedrockModel(
-        model_id=effective_model_id,
-        region_name=AWS_REGION,
-        boto_client_config=retry_config
-    )
+    model = build_model(effective_model_id, app_region=AWS_REGION)
 
     logger.info(f"Creating agent with model: {effective_model_id}")
 
@@ -520,7 +503,7 @@ def create_agent(model_id: Optional[str] = None) -> Agent:
             "citations and references. Can generate professional charts using Python/matplotlib."
         ),
         system_prompt=system_prompt_with_date,
-        model=bedrock_model,
+        model=model,
         tools=[
             # Research tools
             ddg_web_search,
