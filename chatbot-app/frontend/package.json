@@ -78,10 +78,10 @@
     "@smithy/config-resolver": "^4.4.0",
     "lodash": "^4.18.1",
     "lodash-es": "^4.17.24",
-    "postcss": "^8.5.10",
+    "postcss": "^8.5.18",
     "fast-xml-parser": "^5.3.6",
     "ajv": "^8.18.0",
-    "brace-expansion": ">=1.1.13",
+    "brace-expansion": ">=5.0.8",
     "dompurify": ">=3.2.4",
     "@ag-ui/client": {
       "uuid": ">=11.1.1"
@@ -97,7 +97,10 @@
     "@excalidraw/mermaid-to-excalidraw": {
       "nanoid": "^5.0.9",
       "mermaid": "^10.9.5"
-    }
+    },
+    "@babel/core": "^7.29.6",
+    "vite": "^7.3.4",
+    "sharp": "$sharp"
   },
   "devDependencies": {
     "@next/bundle-analyzer": "^16.2.9",
@@ -112,7 +115,7 @@
     "eslint": "^8",
     "eslint-config-next": "15.4.3",
     "jsdom": "^29.1.1",
-    "postcss": "^8.5.10",
+    "postcss": "^8.5.18",
     "tailwind-scrollbar": "^4.0.2",
     "tailwindcss": "^4.3.2",
     "tailwindcss-animate": "^1.0.7",
