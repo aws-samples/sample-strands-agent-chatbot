@@ -6,7 +6,7 @@ fastapi==0.140.7
 uvicorn[standard]==0.51.0
 
 # Strands Agent Framework
-strands-agents[a2a,otel]>=1.45.0,<2.0.0
+strands-agents[a2a,otel]>=1.50.2,<2.0.0
 strands-agents-tools[a2a_client]>=0.8.2
 mcp>=1.28.1,<2.0.0
 
