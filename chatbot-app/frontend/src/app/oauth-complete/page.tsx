@@ -35,7 +35,10 @@ export default function OAuthCompletePage() {
     const oauthSessionUri = urlParams.get('session_id')
     const elicitationId = STATE_PARAM_ALIASES.map(p => urlParams.get(p)).find(Boolean)
 
-    console.log(
+    // warn, not log: next.config.js strips console.log from production builds,
+    // and this is the only record of which parameter AgentCore echoed
+    // customState back as — the one thing AWS doesn't document.
+    console.warn(
       `[OAuth] Callback received, session_id: ${oauthSessionUri}, ` +
       `elicitation: ${elicitationId}, params: ${[...urlParams.keys()].join(',')}`
     )

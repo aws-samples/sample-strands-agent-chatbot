@@ -83,7 +83,9 @@ export async function POST(request: NextRequest) {
       },
     }))
 
-    console.log(`[Elicitation] Signalled in DynamoDB: user=${user.userId}, eid=${elicitationId}`)
+    // warn, not log: removeConsole strips console.log from production, which
+    // would leave the 3LO completion path with no server-side trace at all.
+    console.warn(`[Elicitation] Signalled in DynamoDB: user=${user.userId}, eid=${elicitationId}`)
 
     return NextResponse.json({ success: true })
 
