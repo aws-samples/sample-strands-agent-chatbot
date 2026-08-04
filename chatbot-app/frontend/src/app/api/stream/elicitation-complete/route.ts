@@ -1,15 +1,17 @@
 /**
  * Elicitation Complete API endpoint
  *
- * Writes the OAuth completion signal directly to the shared DynamoDB store
- * that the orchestrator's elicitation_bridge reads. We do NOT call the
- * orchestrator runtime here — the runtime only trusts user JWTs, and this
- * request originates from a popup context where the Amplify session is
- * sometimes not hydrated yet. The BFF (ECS task) has IAM permissions on the
- * shared DynamoDB users table, so it can write the signal directly.
+ * The OAuth callback page posts here after AgentCore Identity redirects the
+ * user's browser back with session_id + state (= elicitation ID). This is the
+ * "user verification" step of AgentCore's session-binding flow: we verify the
+ * caller's Cognito session and that they own the pending elicitation, then
+ * write the completion signal to the shared DynamoDB store that the
+ * orchestrator's elicitation_bridge polls. The bridge then calls
+ * CompleteResourceTokenAuth from its own workload identity context.
  *
- * Keeping the backend's /invocations handler for `elicitation_complete`
- * is also fine for local/dev testing, but cloud traffic skips it.
+ * We do NOT call the orchestrator runtime here — the runtime only trusts user
+ * JWTs, and the BFF (ECS task) already has IAM permissions on the shared
+ * DynamoDB table.
  */
 import { NextRequest, NextResponse } from 'next/server'
 import {
@@ -18,7 +20,6 @@ import {
   UpdateItemCommand,
 } from '@aws-sdk/client-dynamodb'
 import { extractUserFromRequest } from '@/lib/auth-utils'
-import { getSession } from '@/lib/dynamodb-client'
 
 const AWS_REGION = process.env.AWS_REGION || 'us-west-2'
 const TABLE_NAME = process.env.DYNAMODB_USERS_TABLE || 'strands-agent-chatbot-users-v2'
@@ -35,25 +36,19 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json().catch(() => ({}))
-    const sessionId: string | undefined = body.sessionId
     const elicitationId: string | undefined = body.elicitationId
     const oauthSessionUri: string | undefined = body.oauthSessionUri
 
-    if (!sessionId || !elicitationId || !oauthSessionUri) {
+    if (!elicitationId || !oauthSessionUri) {
       return NextResponse.json(
-        { error: 'sessionId, elicitationId, and oauthSessionUri are required' },
+        { error: 'elicitationId and oauthSessionUri are required' },
         { status: 400 }
       )
     }
 
-    const session = await getSession(user.userId, sessionId)
-    if (!session) {
-      return NextResponse.json({ error: 'Session not found' }, { status: 404 })
-    }
-
     const key = {
-      userId: { S: `ELICIT#${sessionId}` },
-      sk: { S: `EID#${elicitationId}` },
+      userId: { S: `ELICIT#${elicitationId}` },
+      sk: { S: 'META' },
     }
     const pending = await dynamoClient.send(new GetItemCommand({
       TableName: TABLE_NAME,
@@ -88,7 +83,7 @@ export async function POST(request: NextRequest) {
       },
     }))
 
-    console.log(`[Elicitation] Signalled in DynamoDB: user=${user.userId}, session=${sessionId}, eid=${elicitationId}`)
+    console.log(`[Elicitation] Signalled in DynamoDB: user=${user.userId}, eid=${elicitationId}`)
 
     return NextResponse.json({ success: true })
 

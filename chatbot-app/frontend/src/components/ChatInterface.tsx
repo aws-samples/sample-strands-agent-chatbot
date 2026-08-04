@@ -1132,7 +1132,6 @@ export function ChatInterface() {
       {pendingOAuth && (
         <OAuthElicitationDialog
           oauth={pendingOAuth}
-          sessionId={sessionId}
           onCancel={cancelOAuth}
         />
       )}

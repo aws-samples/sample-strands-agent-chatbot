@@ -3,6 +3,25 @@
 import { useEffect, useState, useRef } from 'react'
 import { fetchAuthSession } from 'aws-amplify/auth'
 
+/**
+ * OAuth 3LO callback page (AgentCore Identity session binding).
+ *
+ * AgentCore redirects here after the user consents at the provider, appending:
+ *   - session_id: the Identity authorization session URI, needed for
+ *     CompleteResourceTokenAuth
+ *   - our customState — the elicitation ID the backend generated when it
+ *     requested the authorization URL. AWS documents that customState is
+ *     "sent back to the callback URL" but does not name the parameter, so we
+ *     read the plausible spellings and log the rest.
+ *
+ * Everything needed to complete the flow arrives in the URL, so this page
+ * works regardless of window.opener or storage partitioning in the popup.
+ * The BFF verifies the caller's Cognito session and elicitation ownership
+ * before completing — that is the "user verification" step the AgentCore
+ * session-binding flow requires.
+ */
+
+const STATE_PARAM_ALIASES = ['state', 'customState', 'custom_state']
 export default function OAuthCompletePage() {
   const [status, setStatus] = useState<'loading' | 'success' | 'error'>('loading')
   const [message, setMessage] = useState('Completing authorization...')
@@ -14,8 +33,12 @@ export default function OAuthCompletePage() {
 
     const urlParams = new URLSearchParams(window.location.search)
     const oauthSessionUri = urlParams.get('session_id')
+    const elicitationId = STATE_PARAM_ALIASES.map(p => urlParams.get(p)).find(Boolean)
 
-    console.log(`[OAuth] Callback received, session_id: ${oauthSessionUri}`)
+    console.log(
+      `[OAuth] Callback received, session_id: ${oauthSessionUri}, ` +
+      `elicitation: ${elicitationId}, params: ${[...urlParams.keys()].join(',')}`
+    )
 
     if (!oauthSessionUri) {
       setStatus('error')
@@ -23,24 +46,13 @@ export default function OAuthCompletePage() {
       return
     }
 
-    // Read pending OAuth context saved by the parent window before opening this popup.
-    // Cross-origin OAuth redirects null out window.opener, so we cannot rely on postMessage.
-    let pending: { sessionId?: string; elicitationId?: string } = {}
-    try {
-      const raw = localStorage.getItem('oauth_pending')
-      if (raw) {
-        pending = JSON.parse(raw)
-        localStorage.removeItem('oauth_pending')
-      }
-    } catch { /* ignore parse errors */ }
+    if (!elicitationId) {
+      setStatus('error')
+      setMessage('No authorization state found in URL. Start the authorization from the chat again.')
+      return
+    }
 
     const signalCompletion = async () => {
-      if (!pending.sessionId || !pending.elicitationId) {
-        setStatus('error')
-        setMessage('The pending authorization request was not found. Please try again.')
-        return false
-      }
-
       try {
         const authSession = await fetchAuthSession()
         const accessToken = authSession.tokens?.accessToken?.toString()
@@ -54,37 +66,18 @@ export default function OAuthCompletePage() {
             'Content-Type': 'application/json',
             Authorization: `Bearer ${accessToken}`,
           },
-          body: JSON.stringify({
-            sessionId: pending.sessionId,
-            elicitationId: pending.elicitationId,
-            oauthSessionUri,
-          }),
+          body: JSON.stringify({ elicitationId, oauthSessionUri }),
         })
         if (!response.ok) {
           throw new Error(`OAuth completion failed (${response.status})`)
         }
+        return true
       } catch (e) {
         console.error('[OAuth] Failed to signal via BFF:', e)
         setStatus('error')
         setMessage('Could not verify the authorization session. Please try again.')
         return false
       }
-
-      if (window.opener && !window.opener.closed) {
-        try {
-          window.opener.postMessage(
-            { type: 'oauth_elicitation_complete', sessionId: oauthSessionUri },
-            window.location.origin
-          )
-        } catch (e) {
-          console.warn('[OAuth] Could not notify parent window:', e)
-        }
-      }
-      localStorage.setItem('oauth_completed', JSON.stringify({
-        elicitationId: pending.elicitationId,
-        completedAt: Date.now(),
-      }))
-      return true
     }
 
     signalCompletion().then((completed) => {

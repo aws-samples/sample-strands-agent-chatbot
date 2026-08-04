@@ -1020,7 +1020,6 @@ export const useStreamEvents = ({
 
     console.log(`[OAuth Elicitation] Authorization required for ${serviceName}:`, ev.authUrl)
 
-    const chatSessionId = sessionId
     setSessionState(prev => ({
       ...prev,
       pendingOAuth: {
@@ -1030,17 +1029,19 @@ export const useStreamEvents = ({
         elicitationId: ev.elicitationId,
       }
     }))
+  }, [setSessionState])
 
-    // Persist pending OAuth context so the popup can signal completion
-    // even when window.opener is lost after cross-origin OAuth redirects.
-    try {
-      localStorage.setItem('oauth_pending', JSON.stringify({
-        sessionId: chatSessionId,
-        elicitationId: ev.elicitationId,
-      }))
-    } catch { /* quota exceeded — postMessage fallback still works */ }
-
-  }, [setSessionState, sessionId])
+  // Backend settled the elicitation (completed or timed out) — dismiss the
+  // dialog. The completion itself was signalled popup -> BFF -> DynamoDB, so
+  // this stream event is the only popup-independent way to update parent UI.
+  const handleOAuthElicitationResolvedEvent = useCallback((data: CustomEvent) => {
+    const ev = (data as any).value
+    console.log(`[OAuth Elicitation] Resolved (${ev.status}):`, ev.elicitationId)
+    setSessionState(prev => {
+      if (prev.pendingOAuth && prev.pendingOAuth.elicitationId !== ev.elicitationId) return prev
+      return { ...prev, pendingOAuth: null }
+    })
+  }, [setSessionState])
 
   // Swarm Mode event handlers
   const isCodeAgentExec = (t: ToolExecution) =>
@@ -1516,6 +1517,9 @@ export const useStreamEvents = ({
             case 'oauth_elicitation':
               handleOAuthElicitationEvent(customEvent)
               break
+            case 'oauth_elicitation_resolved':
+              handleOAuthElicitationResolvedEvent(customEvent)
+              break
             case 'code_agent_started':
               handleCodeAgentStartedEvent(customEvent)
               break
@@ -1593,6 +1597,7 @@ export const useStreamEvents = ({
     handleBrowserProgressEvent,
     handleResearchProgressEvent,
     handleOAuthElicitationEvent,
+    handleOAuthElicitationResolvedEvent,
     handleCodeAgentStartedEvent,
     handleCodeAgentHeartbeatEvent,
     handleCodeStepEvent,

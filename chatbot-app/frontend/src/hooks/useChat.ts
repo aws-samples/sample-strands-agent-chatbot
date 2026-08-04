@@ -7,7 +7,6 @@ import { useChatAPI, SessionPreferences } from './useChatAPI'
 import { usePolling, hasOngoingA2ATools, A2A_TOOLS_REQUIRING_POLLING } from './usePolling'
 import { getApiUrl } from '@/config/environment'
 import { generateSessionId } from '@/config/session'
-import { fetchAuthSession } from 'aws-amplify/auth'
 import { apiGet, apiPost } from '@/lib/api-client'
 
 import { WorkspaceDocument } from './useStreamEvents'
@@ -387,56 +386,11 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
     setSessionState(prev => ({ ...prev, browserSession: null }))
   }, [sessionId])
 
-  // ==================== OAUTH COMPLETION LISTENER ====================
-  // Listen for postMessage from OAuth popup window (or popup-close fallback)
-  const oauthSignalledRef = useRef<string | null>(null)
-  useEffect(() => {
-    const handleOAuthMessage = async (event: MessageEvent) => {
-      if (event.origin !== window.location.origin) return
-      if (event.data?.type !== 'oauth_elicitation_complete') return
-
-      const elicitationId = sessionState.pendingOAuth?.elicitationId
-      if (!elicitationId || !sessionState.pendingOAuth) return
-
-      // Deduplicate: only signal once per elicitation (postMessage + popup-close can both fire)
-      if (oauthSignalledRef.current === elicitationId) return
-      oauthSignalledRef.current = elicitationId
-
-      console.log('[useChat] OAuth elicitation completion signal:', event.data)
-
-      try {
-        // BFF writes the completion signal directly to DynamoDB; no auth
-        // header needed. The orchestrator's elicitation_bridge polls DDB.
-        await fetch('/api/stream/elicitation-complete', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sessionId, elicitationId, oauthSessionUri: event.data.sessionId }),
-        })
-      } catch (error) {
-        console.error('[useChat] Failed to signal elicitation complete:', error)
-      }
-
-      setSessionState(prev => ({ ...prev, pendingOAuth: null }))
-    }
-
-    const handleOAuthStorage = (event: StorageEvent) => {
-      if (event.key !== 'oauth_completed' || !event.newValue) return
-      try {
-        const completed = JSON.parse(event.newValue)
-        if (completed.elicitationId !== sessionState.pendingOAuth?.elicitationId) return
-        setSessionState(prev => ({ ...prev, pendingOAuth: null }))
-      } catch {
-        // Ignore malformed cross-window completion signals.
-      }
-    }
-
-    window.addEventListener('message', handleOAuthMessage)
-    window.addEventListener('storage', handleOAuthStorage)
-    return () => {
-      window.removeEventListener('message', handleOAuthMessage)
-      window.removeEventListener('storage', handleOAuthStorage)
-    }
-  }, [sessionState.pendingOAuth, sessionId])
+  // NOTE: OAuth completion is signalled by the popup callback page directly
+  // to the BFF (the elicitation ID travels via AgentCore's customState, so no
+  // popup->parent channel is needed). The dialog here is dismissed by the
+  // `oauth_elicitation_resolved` SSE event from the backend once the paused
+  // tool resumes — see useStreamEvents.
 
   // ==================== ACTIONS ====================
   const newChat = useCallback(async () => {
@@ -729,7 +683,6 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
   }, [sendStopSignal, resetStreamingState])
 
   const cancelOAuth = useCallback(() => {
-    localStorage.removeItem('oauth_pending')
     setSessionState(prev => ({ ...prev, pendingOAuth: null }))
     void stopGeneration()
   }, [stopGeneration])
