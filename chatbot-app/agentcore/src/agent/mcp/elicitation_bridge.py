@@ -298,13 +298,6 @@ def _get_elicitation_store() -> ElicitationStore:
     return _store_instance
 
 
-# ── Public API ─────────────────────────────────────────────────────────
-
-def signal_elicitation_complete(session_id: str, elicitation_id: Optional[str] = None) -> None:
-    store = _get_elicitation_store()
-    store.signal_complete(session_id, elicitation_id)
-
-
 # ── Bridge registry ───────────────────────────────────────────────────
 
 _elicitation_bridges: dict[str, OAuthElicitationBridge] = {}

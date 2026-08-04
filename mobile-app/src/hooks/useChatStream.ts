@@ -93,6 +93,11 @@ export function useChatStream({
           system_prompt: '',
           selected_artifact_id: null,
           enabled_tools: [],
+          // 3LO skills (gmail, github, notion, google-calendar) need the OAuth
+          // callback page the web app hosts; there is no deep-link equivalent
+          // here, so the backend omits them instead of offering tools that
+          // cannot complete authorization. Same flag telegram-app sets.
+          allow_user_federation: false,
         },
       }
 
@@ -140,14 +145,7 @@ export function useChatStream({
     }
   }, [sessionId, abortStream])
 
-  const completeElicitation = useCallback(
-    async (elicitationId?: string) => {
-      await apiPost(ENDPOINTS.elicitationComplete, { sessionId, elicitationId })
-    },
-    [sessionId],
-  )
-
   const getIsStreaming = useCallback(() => handleRef.current?.active ?? false, [])
 
-  return { sendMessage, stopStream, abortStream, completeElicitation, getIsStreaming }
+  return { sendMessage, stopStream, abortStream, getIsStreaming }
 }
