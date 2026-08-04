@@ -13,8 +13,8 @@ export const runtime = 'nodejs'
 const AVAILABLE_MODELS = [
   // Claude (Anthropic) - native Bedrock, prompt caching
   {
-    id: 'us.anthropic.claude-opus-4-8',
-    name: 'Claude Opus 4.8',
+    id: 'us.anthropic.claude-opus-5',
+    name: 'Claude Opus 5',
     provider: 'Anthropic',
     description: 'Most intelligent model, best for complex tasks',
     noTemperature: true
