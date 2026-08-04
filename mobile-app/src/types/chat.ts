@@ -107,6 +107,8 @@ export interface RunAgentInput {
     system_prompt: string
     selected_artifact_id: null
     enabled_tools: string[]
+    /** false opts out of 3LO skills, which need an OAuth callback page. */
+    allow_user_federation?: boolean
   }
 }
 

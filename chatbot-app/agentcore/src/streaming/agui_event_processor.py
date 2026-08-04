@@ -355,12 +355,19 @@ class AGUIStreamEventProcessor:
                     # Task-based polling: check bridge for pending elicitation events
                     elicit_event = elicitation_bridge.get_pending_event_nowait()
                     if elicit_event:
-                        yield self.formatter.format_event(
-                            "oauth_elicitation",
-                            authUrl=elicit_event["auth_url"],
-                            message=elicit_event.get("message", ""),
-                            elicitationId=elicit_event["elicitation_id"],
-                        )
+                        if elicit_event["type"] == "oauth_elicitation_resolved":
+                            yield self.formatter.format_event(
+                                "oauth_elicitation_resolved",
+                                elicitationId=elicit_event["elicitation_id"],
+                                status=elicit_event["status"],
+                            )
+                        else:
+                            yield self.formatter.format_event(
+                                "oauth_elicitation",
+                                authUrl=elicit_event["auth_url"],
+                                message=elicit_event.get("message", ""),
+                                elicitationId=elicit_event["elicitation_id"],
+                            )
 
                     if next_event_task is None:
                         next_event_task = asyncio.ensure_future(stream_aiter.__anext__())

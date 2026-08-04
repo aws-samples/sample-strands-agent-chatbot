@@ -7,10 +7,15 @@ This bridge:
 1. Pushes an event to the outbound queue (SSE stream picks it up)
 2. Waits for the frontend to signal completion via shared store (DynamoDB or in-memory)
 3. Calls CompleteResourceTokenAuth from orchestrator's workload identity context
-4. Returns the result to the MCPClient so the tool can resume
+4. Emits a completion event on the same queue so the frontend can close its dialog
+5. Returns the result to the MCPClient so the tool can resume
+
+The elicitation ID is the sole correlation key. It is a server-generated UUID
+that AgentCore Identity echoes back to the OAuth callback page as customState,
+so the popup needs nothing from browser storage to signal completion.
 
 Cloud mode uses DynamoDB for cross-container signaling (same pattern as StopSignalProvider).
-Local mode uses in-memory threading.Event for simplicity.
+Local mode uses in-memory state for simplicity.
 """
 
 import asyncio
@@ -75,15 +80,30 @@ class OAuthElicitationBridge:
                     await self._complete_token_auth(oauth_session_uri)
 
                 store.clear(self.session_id, elicitation_id)
+                await self._emit_resolution(elicitation_id, "completed")
                 return ElicitResult(action="accept")
             else:
                 logger.warning(f"[Elicitation] Timeout waiting for OAuth: {elicitation_id}")
                 store.clear(self.session_id, elicitation_id)
+                await self._emit_resolution(elicitation_id, "timeout")
                 return ElicitResult(action="cancel")
         except asyncio.TimeoutError:
             logger.warning(f"[Elicitation] Timeout waiting for OAuth: {elicitation_id}")
             store.clear(self.session_id, elicitation_id)
+            await self._emit_resolution(elicitation_id, "timeout")
             return ElicitResult(action="cancel")
+
+    async def _emit_resolution(self, elicitation_id: str, status: str):
+        """Tell the frontend (over its own SSE stream) that the elicitation is
+        settled, so it can dismiss the OAuth dialog without any popup->parent
+        channel (postMessage and shared storage both break across the OAuth
+        redirect chain)."""
+        await self._outbound_queue.put({
+            "type": "oauth_elicitation_resolved",
+            "elicitation_id": elicitation_id,
+            "status": status,
+            "session_id": self.session_id,
+        })
 
     async def _complete_token_auth(self, oauth_session_uri: str):
         """Call CompleteResourceTokenAuth from orchestrator's workload identity context."""
@@ -159,9 +179,13 @@ class DynamoDBElicitationStore(ElicitationStore):
         self._table_name = table_name
 
     def _get_key(self, session_id: str, elicitation_id: str) -> dict:
+        # Keyed by elicitation ID alone: it is a server-generated UUID, and the
+        # OAuth callback page can only present the ID it received as
+        # customState — it has no session context. session_id is kept as an
+        # attribute for observability.
         return {
-            "userId": {"S": f"ELICIT#{session_id}"},
-            "sk": {"S": f"EID#{elicitation_id}"},
+            "userId": {"S": f"ELICIT#{elicitation_id}"},
+            "sk": {"S": "META"},
         }
 
     def register_pending(self, session_id: str, elicitation_id: str, user_id: str) -> None:
@@ -171,6 +195,7 @@ class DynamoDBElicitationStore(ElicitationStore):
                 **self._get_key(session_id, elicitation_id),
                 "status": {"S": "pending"},
                 "ownerUserId": {"S": user_id},
+                "sessionId": {"S": session_id},
                 "ttl": {"N": str(int(time.time()) + 600)},
             },
         )
@@ -181,6 +206,7 @@ class DynamoDBElicitationStore(ElicitationStore):
             item = {
                 **self._get_key(session_id, eid),
                 "status": {"S": "completed"},
+                "sessionId": {"S": session_id},
                 "ttl": {"N": str(int(time.time()) + 600)},
             }
             if oauth_session_uri:
@@ -270,13 +296,6 @@ def _get_elicitation_store() -> ElicitationStore:
                     logger.info("[Elicitation] Using local in-memory store")
                     _store_instance = LocalElicitationStore()
     return _store_instance
-
-
-# ── Public API ─────────────────────────────────────────────────────────
-
-def signal_elicitation_complete(session_id: str, elicitation_id: Optional[str] = None) -> None:
-    store = _get_elicitation_store()
-    store.signal_complete(session_id, elicitation_id)
 
 
 # ── Bridge registry ───────────────────────────────────────────────────

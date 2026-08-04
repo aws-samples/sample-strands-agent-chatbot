@@ -9,7 +9,6 @@ export const TEXT_BUFFER_FLUSH_MS = 120
 export const ENDPOINTS = {
   chat: '/api/stream/chat',
   stop: '/api/stream/stop',
-  elicitationComplete: '/api/stream/elicitation-complete',
   sessionNew: '/api/session/new',
   sessionList: '/api/session/list',
   sessionDelete: '/api/session/delete',

@@ -26,7 +26,6 @@ describe("OAuthElicitationDialog", () => {
     render(
       <OAuthElicitationDialog
         oauth={oauth}
-        sessionId="session-123"
         onCancel={vi.fn()}
       />
     )
@@ -35,14 +34,13 @@ describe("OAuthElicitationDialog", () => {
     expect(screen.getByRole("button", { name: "Continue" })).toBeInTheDocument()
   })
 
-  it("opens the authorization URL and persists callback context", () => {
+  it("opens the authorization URL without touching browser storage", () => {
     const focus = vi.fn()
     const open = vi.spyOn(window, "open").mockReturnValue({ focus } as unknown as Window)
 
     render(
       <OAuthElicitationDialog
         oauth={oauth}
-        sessionId="session-123"
         onCancel={vi.fn()}
       />
     )
@@ -54,13 +52,9 @@ describe("OAuthElicitationDialog", () => {
       "width=500,height=700,scrollbars=yes,resizable=yes"
     )
     expect(focus).toHaveBeenCalled()
-    expect(localStorage.setItem).toHaveBeenCalledWith(
-      "oauth_pending",
-      JSON.stringify({
-        sessionId: "session-123",
-        elicitationId: "elicitation-123",
-      })
-    )
+    // The elicitation ID travels via AgentCore customState, not storage —
+    // storage is invisible to the popup across the OAuth redirect chain.
+    expect(localStorage.setItem).not.toHaveBeenCalled()
   })
 
   it("shows recovery guidance when the popup is blocked", () => {
@@ -69,7 +63,6 @@ describe("OAuthElicitationDialog", () => {
     render(
       <OAuthElicitationDialog
         oauth={oauth}
-        sessionId="session-123"
         onCancel={vi.fn()}
       />
     )
@@ -85,7 +78,6 @@ describe("OAuthElicitationDialog", () => {
     render(
       <OAuthElicitationDialog
         oauth={oauth}
-        sessionId="session-123"
         onCancel={onCancel}
       />
     )

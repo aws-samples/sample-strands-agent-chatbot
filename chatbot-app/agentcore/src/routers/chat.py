@@ -213,14 +213,6 @@ async def invocations(http_request: Request):
         logger.info(f"[Stop] Stop signal set for session={thread_id}, run={run_id}")
         return {"status": "stop_requested", "session_id": thread_id, "run_id": run_id}
 
-    # Elicitation complete — write to shared store (DynamoDB in cloud, in-memory locally)
-    if action == "elicitation_complete":
-        from agent.mcp.elicitation_bridge import signal_elicitation_complete
-        elicitation_id = state.get("elicitation_id")
-        signal_elicitation_complete(thread_id, elicitation_id)
-        logger.info(f"[Elicitation] Complete for session={thread_id}, elicitation_id={elicitation_id}")
-        return {"status": "elicitation_completed"}
-
     # Execution status — check if a buffered execution is still running
     if action == "execution_status":
         execution_id = state.get("execution_id")

@@ -15,24 +15,19 @@ import { PendingOAuthState } from "@/types/events"
 
 interface OAuthElicitationDialogProps {
   oauth: PendingOAuthState
-  sessionId: string
   onCancel: () => void
 }
 
 export function OAuthElicitationDialog({
   oauth,
-  sessionId,
   onCancel,
 }: OAuthElicitationDialogProps) {
   const [popupBlocked, setPopupBlocked] = useState(false)
 
   const openAuthorization = () => {
     setPopupBlocked(false)
-    localStorage.setItem("oauth_pending", JSON.stringify({
-      sessionId,
-      elicitationId: oauth.elicitationId,
-    }))
-
+    // No context handoff needed: AgentCore echoes the elicitation ID back to
+    // the callback page as the `state` query parameter.
     const popup = window.open(
       oauth.authUrl,
       "oauth_popup",
