@@ -24,9 +24,17 @@ from strands.models import BedrockModel, CacheConfig
 logger = logging.getLogger(__name__)
 
 
-# Model IDs (substring match) that reject the `temperature` inference param:
-# Anthropic extended-thinking Opus, Sonnet 5, and OpenAI gpt-5.x reasoning models.
-NO_TEMPERATURE_MODELS = ("opus-4-7", "opus-4-8", "sonnet-5", "gpt-5")
+# Reasoning models that reject the `temperature` inference param. Listed by
+# exact ID rather than substring: a substring like "opus-5" also matches
+# "opus-4-5", which does accept temperature. Add an entry when a model is added
+# to the picker.
+NO_TEMPERATURE_MODELS = frozenset({
+    "us.anthropic.claude-opus-5",
+    "us.anthropic.claude-sonnet-5",
+    "openai.gpt-5.6-sol",
+    "openai.gpt-5.6-terra",
+    "openai.gpt-5.6-luna",
+})
 
 
 @dataclass(frozen=True)
@@ -68,7 +76,7 @@ NATIVE_MODEL_REGION_OVERRIDES: dict[str, str] = {
 
 
 def model_rejects_temperature(model_id: str) -> bool:
-    return any(tag in model_id for tag in NO_TEMPERATURE_MODELS)
+    return model_id in NO_TEMPERATURE_MODELS
 
 
 _bedrock_api_key: Optional[str] = None

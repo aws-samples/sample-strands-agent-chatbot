@@ -37,21 +37,17 @@ resource "aws_bedrockagentcore_oauth2_credential_provider" "google" {
 resource "aws_bedrockagentcore_oauth2_credential_provider" "github" {
   count = local.github_enabled ? 1 : 0
 
-  name                       = "github-oauth-provider"
-  credential_provider_vendor = "CustomOauth2"
+  name = "github-oauth-provider"
+
+  # Built-in vendor, not CustomOauth2: GitHub publishes no discovery document,
+  # so a custom provider can't describe the authorize request and Identity
+  # rejects it with 400 "Invalid request".
+  credential_provider_vendor = "GithubOauth2"
 
   oauth2_provider_config {
-    custom_oauth2_provider_config {
+    github_oauth2_provider_config {
       client_id     = var.github_client_id
       client_secret = var.github_client_secret
-
-      oauth_discovery {
-        authorization_server_metadata {
-          issuer                 = "https://github.com"
-          authorization_endpoint = "https://github.com/login/oauth/authorize"
-          token_endpoint         = "https://github.com/login/oauth/access_token"
-        }
-      }
     }
   }
 

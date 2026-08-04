@@ -160,6 +160,9 @@ export async function POST(request: NextRequest) {
     let request_type: string | undefined = state.request_type
     let selected_artifact_id: string | undefined = state.selected_artifact_id
     let system_prompt: string | undefined = state.system_prompt
+    // Clients without an OAuth callback page (mobile) opt out of 3LO skills.
+    // Only an explicit false disables them, so web keeps the default.
+    const allow_user_federation: boolean = state.allow_user_federation !== false
 
     // Extract user message from the last element of body.messages.
     // content may be a string (text-only) or an InputContentPart[] (multimodal).
@@ -395,6 +398,7 @@ export async function POST(request: NextRequest) {
             ...(selected_artifact_id && { selected_artifact_id }),
             ...(request_type && { request_type }),
             ...(disabled_skills.length > 0 && { disabled_skills }),
+            ...(!allow_user_federation && { allow_user_federation: false }),
           }
 
           const aguiBody = {

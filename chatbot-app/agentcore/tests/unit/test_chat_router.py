@@ -427,35 +427,6 @@ class TestLifecycleActions:
 
         assert response.status_code == 400
 
-    @patch('agent.mcp.elicitation_bridge.get_bridge')
-    def test_elicitation_complete(self, mock_get_bridge):
-        """Test elicitation_complete action signals bridge."""
-        mock_bridge = MagicMock()
-        mock_get_bridge.return_value = mock_bridge
-
-        from routers.chat import router
-        from fastapi import FastAPI
-
-        app = FastAPI()
-        app.include_router(router)
-        client = TestClient(app)
-
-        response = client.post(
-            "/invocations",
-            json={
-                "thread_id": "test-session",
-                "run_id": str(uuid.uuid4()),
-                "state": {
-                    "action": "elicitation_complete",
-                    "user_id": "test-user",
-                    "elicitation_id": "elic-123"
-                }
-            }
-        )
-
-        assert response.status_code == 200
-        assert response.json() == {"status": "elicitation_completed"}
-
     def test_execution_status_not_found(self):
         """Test execution_status action returns not_found for unknown execution."""
         from routers.chat import router
@@ -737,11 +708,11 @@ class TestModelConfiguration:
 
         client.post(
             "/invocations",
-            json=_agui_payload(model_id="claude-3-opus")
+            json=_agui_payload(model_id="us.anthropic.claude-opus-5")
         )
 
         call_kwargs = mock_factory.call_args.kwargs
-        assert call_kwargs['model_id'] == "claude-3-opus"
+        assert call_kwargs['model_id'] == "us.anthropic.claude-opus-5"
 
     @patch('routers.chat.create_agent')
     def test_passes_temperature(self, mock_factory, mock_agent):

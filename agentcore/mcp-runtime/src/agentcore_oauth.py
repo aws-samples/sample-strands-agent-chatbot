@@ -125,7 +125,7 @@ class OAuthHelper:
         logger.info(f"[OAuth] Scopes: {scopes}")
         logger.info(f"[OAuth] Callback URL: {self.callback_url}")
 
-    async def get_access_token(self, force: bool = False) -> TokenResult:
+    async def get_access_token(self, force: bool = False, custom_state: Optional[str] = None) -> TokenResult:
         """Get OAuth access token from AgentCore Token Vault.
 
         This method bypasses the @requires_access_token decorator and directly
@@ -139,6 +139,9 @@ class OAuthHelper:
                 always starts a new 3LO flow, even if a cached token exists.
                 Use this after the provider returns 401/403 on a cached token
                 (Vault cannot detect server-side revocations on its own).
+            custom_state: Opaque string Identity echoes back to the callback
+                URL. We pass the elicitation ID so the callback page can
+                correlate the redirect without any browser-side storage.
 
         Returns:
             TokenResult: Contains either token (cache hit) or auth_url (consent needed)
@@ -157,7 +160,7 @@ class OAuthHelper:
 
         # Direct API call to get OAuth2 token
         try:
-            response = self._identity_client.dp_client.get_resource_oauth2_token(
+            kwargs = dict(
                 resourceCredentialProviderName=self.provider_name,
                 scopes=self.scopes,
                 oauth2Flow="USER_FEDERATION",
@@ -165,6 +168,9 @@ class OAuthHelper:
                 resourceOauth2ReturnUrl=self.callback_url,
                 forceAuthentication=force,
             )
+            if custom_state:
+                kwargs["customState"] = custom_state
+            response = self._identity_client.dp_client.get_resource_oauth2_token(**kwargs)
         except Exception as e:
             logger.error(f"[OAuth] Failed to get token from Identity service: {e}")
             raise
@@ -215,7 +221,11 @@ async def get_token_with_elicitation(
     """
     from mcp.server.elicitation import AcceptedUrlElicitation
 
-    result = await oauth.get_access_token(force=force)
+    # Generated before the token request so it can ride along as customState:
+    # Identity echoes it onto the callback redirect, which is how the frontend
+    # callback page correlates the redirect to this elicitation.
+    elicitation_id = str(uuid.uuid4())
+    result = await oauth.get_access_token(force=force, custom_state=elicitation_id)
 
     if result.token:
         return result.token
@@ -224,7 +234,7 @@ async def get_token_with_elicitation(
         elicit_result = await ctx.elicit_url(
             message=f"{service_name} authorization required",
             url=result.auth_url,
-            elicitation_id=str(uuid.uuid4()),
+            elicitation_id=elicitation_id,
         )
 
         if isinstance(elicit_result, AcceptedUrlElicitation):

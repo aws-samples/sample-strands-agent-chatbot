@@ -220,9 +220,12 @@ class TestGetTokenWithElicitation:
 
         call_count = 0
 
-        async def mock_get_access_token(force=False):
+        seen_custom_states = []
+
+        async def mock_get_access_token(force=False, custom_state=None):
             nonlocal call_count
             call_count += 1
+            seen_custom_states.append(custom_state)
             if call_count == 1:
                 return TokenResult(auth_url="https://consent.url")
             return TokenResult(token="post-consent-token")
@@ -237,6 +240,11 @@ class TestGetTokenWithElicitation:
             token = asyncio.run(get_token_with_elicitation(ctx, oauth, "Gmail"))
 
         assert token == "post-consent-token"
+        # The elicitation ID given to elicit_url must equal the customState of
+        # the auth-URL request: Identity echoes it back to the callback page,
+        # which is the only correlation channel between popup and elicitation.
+        elicit_kwargs = ctx.elicit_url.call_args.kwargs
+        assert seen_custom_states[0] == elicit_kwargs["elicitation_id"]
 
 
 # ============================================================

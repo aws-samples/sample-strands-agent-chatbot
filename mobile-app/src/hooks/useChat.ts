@@ -193,7 +193,7 @@ export function useChat({ sessionId, modelId, onTitleUpdated }: UseChatOptions) 
     )
   }, [attemptReconnect, handleEvent, resetStreamState, resetReconnect])
 
-  const { sendMessage: streamSend, stopStream: rawStopStream, abortStream, completeElicitation } = useChatStream({
+  const { sendMessage: streamSend, stopStream: rawStopStream, abortStream } = useChatStream({
     sessionId,
     modelId,
     onEvent: handleEvent,
@@ -484,15 +484,12 @@ export function useChat({ sessionId, modelId, onTitleUpdated }: UseChatOptions) 
     [pendingInterrupt, setPendingInterrupt, streamSend],
   )
 
-  const dismissOAuth = useCallback(
-    async () => {
-      if (pendingOAuth) {
-        await completeElicitation(pendingOAuth.elicitationId)
-      }
-      setPendingOAuth(null)
-    },
-    [pendingOAuth, completeElicitation, setPendingOAuth],
-  )
+  // Only reachable if the backend ever streams an elicitation despite
+  // allow_user_federation=false: dismiss locally and let the paused tool time
+  // out. There is no callback page here to complete authorization with.
+  const dismissOAuth = useCallback(() => {
+    setPendingOAuth(null)
+  }, [setPendingOAuth])
 
   return {
     messages,
