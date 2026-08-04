@@ -7,7 +7,7 @@ uvicorn[standard]==0.52.0
 
 # Strands Agent Framework
 strands-agents[a2a,otel]>=1.50.2,<2.0.0
-strands-agents-tools[a2a_client]>=0.8.2
+strands-agents-tools[a2a_client]>=0.8.5
 mcp>=1.28.1,<2.0.0
 
 # OpenAI SDK - required for Bedrock Mantle OpenAI-compatible models (gpt-5.x, grok, gemma-4)
