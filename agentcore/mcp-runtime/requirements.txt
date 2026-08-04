@@ -1,4 +1,6 @@
-mcp>=1.26.0
+# Upper bound required: mcp 2.0 removed mcp.server.fastmcp, which this server
+# imports. Matches the orchestrator's pin.
+mcp>=1.26.0,<2.0.0
 bedrock-agentcore
 httpx>=0.25.0
 boto3>=1.40.0
