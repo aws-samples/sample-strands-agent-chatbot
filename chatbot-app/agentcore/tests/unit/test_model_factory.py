@@ -28,8 +28,7 @@ def _reset_key_cache():
 
 class TestTemperatureGuard:
     @pytest.mark.parametrize("model_id", [
-        "us.anthropic.claude-opus-4-7",
-        "us.anthropic.claude-opus-4-8",
+        "us.anthropic.claude-opus-5",
         "us.anthropic.claude-sonnet-5",
         "openai.gpt-5.6-sol",
         "openai.gpt-5.6-terra",
@@ -45,6 +44,18 @@ class TestTemperatureGuard:
     ])
     def test_allows(self, model_id):
         assert model_rejects_temperature(model_id) is False
+
+    def test_guard_matches_whole_ids_not_substrings(self):
+        """Every entry must be matched as a whole ID.
+
+        A substring check would let a longer, unrelated ID that merely contains
+        an entry be treated as temperature-rejecting — e.g. a future
+        "…claude-opus-5-lite" or a "…claude-sonnet-5-preview" snapshot.
+        """
+        for entry in mf.NO_TEMPERATURE_MODELS:
+            assert model_rejects_temperature(entry) is True
+            assert model_rejects_temperature(f"{entry}-preview") is False
+            assert model_rejects_temperature(f"prefixed.{entry}") is False
 
 
 class TestBedrockRouting:
@@ -63,7 +74,7 @@ class TestBedrockRouting:
 
     def test_no_temperature_for_opus(self):
         with patch.object(mf, "BedrockModel") as MockBedrock:
-            build_model("us.anthropic.claude-opus-4-8", temperature=0.7)
+            build_model("us.anthropic.claude-opus-5", temperature=0.7)
             assert "temperature" not in MockBedrock.call_args.kwargs
 
     def test_no_cache_when_disabled(self):

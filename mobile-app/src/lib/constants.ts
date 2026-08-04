@@ -31,7 +31,7 @@ export interface ModelInfo {
 }
 
 export const AVAILABLE_MODELS: ModelInfo[] = [
-  { id: 'us.anthropic.claude-opus-4-8', name: 'Claude Opus 4.8', provider: 'Anthropic', description: 'Most intelligent model' },
+  { id: 'us.anthropic.claude-opus-5', name: 'Claude Opus 5', provider: 'Anthropic', description: 'Most intelligent model' },
   { id: 'us.anthropic.claude-sonnet-5', name: 'Claude Sonnet 5', provider: 'Anthropic', description: 'Balanced performance' },
   { id: 'us.anthropic.claude-haiku-4-5-20251001-v1:0', name: 'Claude Haiku 4.5', provider: 'Anthropic', description: 'Fast and efficient' },
   { id: 'openai.gpt-5.6-sol', name: 'GPT-5.6 Sol', provider: 'OpenAI', description: 'Flagship frontier model' },
