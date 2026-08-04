@@ -604,64 +604,22 @@ module "runtime_mcp_3lo" {
 # ============================================================
 # 3LO Workload Identity — OAuth callback URL registration
 # ============================================================
-# After the MCP 3LO Runtime is created, AgentCore auto-creates a
-# Workload Identity. We must update it with the frontend callback URL
-# so AgentCore redirects the user back after OAuth consent.
+# AgentCore creates a workload identity alongside the MCP 3LO runtime. The
+# 3LO flow requires our callback page to be registered on it as an
+# AllowedResourceOauth2ReturnUrl, otherwise GetResourceOauth2Token rejects
+# resourceOauth2ReturnUrl. Managed here (not in the runtime module) because the
+# URL comes from the chat module, and importing the service-created identity
+# keeps it declarative rather than a local-exec that silently no-ops.
 
-resource "null_resource" "mcp_3lo_workload_identity" {
-  triggers = {
-    runtime_arn  = module.runtime_mcp_3lo.runtime_arn
-    callback_url = "https://${module.chat.cloudfront_domain_name}/oauth-complete"
+resource "aws_bedrockagentcore_workload_identity" "mcp_3lo" {
+  name                                = module.runtime_mcp_3lo.workload_identity_name
+  allowed_resource_oauth2_return_urls = ["https://${module.chat.cloudfront_domain_name}/oauth-complete"]
+
+  lifecycle {
+    # AgentCore owns this identity's lifecycle: deleting it would break the
+    # runtime, and its name is derived from the runtime ID.
+    prevent_destroy = true
   }
-
-  provisioner "local-exec" {
-    command = <<-EOT
-      set -e
-
-      RUNTIME_ARN="${module.runtime_mcp_3lo.runtime_arn}"
-      CALLBACK_URL="https://${module.chat.cloudfront_domain_name}/oauth-complete"
-      REGION="${var.aws_region}"
-
-      # Get Workload Identity ARN from MCP 3LO Runtime (retry up to 60s for async provisioning)
-      WI_ARN=""
-      for i in 1 2 3 4 5 6; do
-        WI_ARN=$(python3 -c "
-import boto3, sys
-client = boto3.client('bedrock-agentcore-control', region_name='$REGION')
-resp = client.get_agent_runtime(agentRuntimeArn='$RUNTIME_ARN')
-wi = resp.get('workloadIdentityDetails', {}).get('workloadIdentityArn', '')
-print(wi, end='')
-" 2>/dev/null || echo "")
-        if [ -n "$WI_ARN" ]; then break; fi
-        echo "Waiting for Workload Identity provisioning... (attempt $i/6)"
-        sleep 10
-      done
-
-      if [ -z "$WI_ARN" ]; then
-        echo "WARNING: Workload Identity not available after 60s — skipping. Run 'terraform apply' again after runtime is fully provisioned."
-        exit 0
-      fi
-
-      echo "Workload Identity: $WI_ARN"
-      echo "Callback URL: $CALLBACK_URL"
-
-      # Extract workload identity name from ARN (last segment after /)
-      WI_NAME=$(echo "$WI_ARN" | grep -o '[^/]*$')
-
-      # Update Workload Identity with allowed callback URLs
-      python3 -c "
-import boto3
-client = boto3.client('bedrock-agentcore-control', region_name='$REGION')
-client.update_workload_identity(
-    name='$WI_NAME',
-    allowedResourceOauth2ReturnUrls=['$CALLBACK_URL']
-)
-print('Workload Identity updated successfully: $WI_NAME')
-"
-    EOT
-  }
-
-  depends_on = [module.runtime_mcp_3lo, module.chat]
 }
 
 # Store OAuth provider callback URLs in SSM for user reference.

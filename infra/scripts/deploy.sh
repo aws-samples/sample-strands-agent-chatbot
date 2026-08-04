@@ -656,6 +656,18 @@ reconcile_registry_record_drift() {
 }
 
 # ------------------------------------------------------------
+# Is an address already tracked in state?
+# `terraform state list | grep -q` looks right but fails under `set -o
+# pipefail`: grep exits on the first match, terraform dies of SIGPIPE, and the
+# pipeline reports failure even on a hit. Capture first, then match.
+# ------------------------------------------------------------
+tf_state_has() {
+  local addr="$1" state
+  state=$(terraform state list 2>/dev/null || true)
+  printf '%s\n' "$state" | grep -qx "$addr"
+}
+
+# ------------------------------------------------------------
 # Import pre-existing OAuth2 credential providers into state.
 # Runs before apply. AgentCore keeps providers account-wide, so a partial
 # destroy (or a tool deleting them out-of-band) can leave state empty while
@@ -673,7 +685,7 @@ import_orphan_oauth_providers() {
     [ -z "$enabled" ] && continue
     addr="module.oauth_providers.aws_bedrockagentcore_oauth2_credential_provider.${p}[0]"
     # Already tracked — nothing to do.
-    if terraform state list 2>/dev/null | grep -qx "$addr"; then
+    if tf_state_has "$addr"; then
       continue
     fi
     # Best-effort probe: attempt import; ignore failure (resource may not exist).
@@ -685,6 +697,54 @@ import_orphan_oauth_providers() {
       echo ">>> Imported existing OAuth provider: $name"
     fi
   done
+}
+
+# ------------------------------------------------------------
+# Import the MCP 3LO workload identity into state.
+# AgentCore creates it with the runtime, so terraform can never create it —
+# without this, apply fails with "already exists". Name is only known after
+# the runtime exists, so this can't be a declarative import block.
+# ------------------------------------------------------------
+import_mcp_3lo_workload_identity() {
+  cd "$ENV_DIR"
+  local addr="aws_bedrockagentcore_workload_identity.mcp_3lo"
+  tf_state_has "$addr" && return 0
+
+  local runtime_arn wi_name
+  runtime_arn=$(terraform output -raw mcp_3lo_runtime_arn 2>/dev/null || true)
+  # First-ever apply: the runtime doesn't exist yet, so there is nothing to
+  # import. Terraform creates the resource, which no-ops into the identity
+  # AgentCore just made.
+  [ -z "$runtime_arn" ] && return 0
+
+  # GetAgentRuntime takes the runtime ID (the ARN's last segment), not the ARN.
+  wi_name=$("$DEPLOY_VENV/bin/python" - "${runtime_arn##*/}" "$AWS_REGION" <<'PY'
+import sys, boto3
+runtime_id, region = sys.argv[1], sys.argv[2]
+try:
+    c = boto3.client("bedrock-agentcore-control", region_name=region)
+    wi = c.get_agent_runtime(agentRuntimeId=runtime_id).get("workloadIdentityDetails", {})
+    print(wi.get("workloadIdentityArn", "").rpartition("/")[2], end="")
+except Exception as e:
+    sys.stderr.write(f"Could not resolve workload identity: {e}\n")
+PY
+)
+  if [ -z "$wi_name" ]; then
+    echo "WARNING: could not resolve the MCP 3LO workload identity name; apply may fail with 'already exists'."
+    return 0
+  fi
+
+  # Failure is reported, not swallowed: without the import, apply dies on
+  # "already exists" and 3LO silently loses its return URL.
+  if terraform import -var="aws_region=${AWS_REGION}" \
+      -var="enable_tavily=$([ "$SKIP_TAVILY" = true ] && echo false || echo true)" \
+      -var="enable_google_search=$([ "$SKIP_GOOGLE_SEARCH" = true ] && echo false || echo true)" \
+      -var="enable_google_maps=$([ "$SKIP_GOOGLE_MAPS" = true ] && echo false || echo true)" \
+      "$addr" "$wi_name" >/dev/null; then
+    echo ">>> Imported MCP 3LO workload identity: $wi_name"
+  else
+    echo "WARNING: failed to import workload identity $wi_name (see error above)."
+  fi
 }
 
 # ------------------------------------------------------------
@@ -716,6 +776,7 @@ case "$ACTION" in
   apply)
     tf_init_if_needed
     import_orphan_oauth_providers
+    import_mcp_3lo_workload_identity
     clean_failed_registry_stacks
     reconcile_registry_record_drift
     cd "$ENV_DIR"
