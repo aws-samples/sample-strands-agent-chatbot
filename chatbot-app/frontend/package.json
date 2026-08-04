@@ -124,7 +124,7 @@
     "tailwind-scrollbar": "^4.0.2",
     "tailwindcss": "^4.3.2",
     "tailwindcss-animate": "^1.0.7",
-    "typescript": "^5",
+    "typescript": "^7",
     "vitest": "^3.2.6",
     "ws": "^8.21.1"
   }
