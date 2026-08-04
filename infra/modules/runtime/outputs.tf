@@ -17,6 +17,16 @@ output "runtime_invocation_url" {
   ])
 }
 
+# Name of the workload identity AgentCore creates alongside the runtime.
+# Needed to register OAuth 2.0 return URLs for 3LO. Empty until the runtime
+# finishes provisioning.
+output "workload_identity_name" {
+  value = try(
+    basename(aws_bedrockagentcore_agent_runtime.this.workload_identity_details[0].workload_identity_arn),
+    ""
+  )
+}
+
 output "ecr_repository_url" {
   value = aws_ecr_repository.this.repository_url
 }
