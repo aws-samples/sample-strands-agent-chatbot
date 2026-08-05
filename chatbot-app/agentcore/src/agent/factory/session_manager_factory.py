@@ -82,6 +82,16 @@ def get_sessions_dir() -> Path:
     return sessions_dir
 
 
+def _threshold_for_model(model_id: Optional[str]) -> int:
+    """Compaction threshold for a model, from its measured context window."""
+    from agent.config.constants import compaction_threshold_for
+    # agent.config, not agents.model_factory: importing anything under the
+    # agents package pulls in ChatAgent and its optional native deps.
+    from agent.config.model_context_windows import get_max_input_tokens
+
+    return compaction_threshold_for(get_max_input_tokens(model_id))
+
+
 @dataclass
 class CompactionConfig:
     """Configuration for context compaction."""
@@ -92,13 +102,24 @@ class CompactionConfig:
     metrics_only: bool = False
 
     @classmethod
-    def from_env(cls, enabled: bool = True, metrics_only: bool = False) -> "CompactionConfig":
-        """Create config from environment variables."""
+    def from_env(
+        cls,
+        enabled: bool = True,
+        metrics_only: bool = False,
+        model_id: Optional[str] = None,
+    ) -> "CompactionConfig":
+        """Create config from environment variables.
+
+        The threshold is derived from the model's measured context window unless
+        COMPACTION_TOKEN_THRESHOLD pins it explicitly. Sizing it per model matters
+        because the picker spans 131k to 1.05M tokens: one fixed number either
+        wastes most of a 1M window or overflows the smallest one.
+        """
         return cls(
             enabled=enabled,
             token_threshold=int(os.environ.get(
                 EnvVars.COMPACTION_TOKEN_THRESHOLD,
-                str(DEFAULT_COMPACTION_TOKEN_THRESHOLD)
+                str(_threshold_for_model(model_id))
             )),
             protected_turns=int(os.environ.get(
                 EnvVars.COMPACTION_PROTECTED_TURNS,
@@ -151,6 +172,7 @@ def create_compacting_session_manager(
     compaction_config: Optional[CompactionConfig] = None,
     summarization_strategy_id: Optional[str] = None,
     enable_prompt_caching: bool = True,
+    model_id: Optional[str] = None,
 ) -> Any:
     """
     Create CompactingSessionManager for cloud mode.
@@ -174,7 +196,7 @@ def create_compacting_session_manager(
         raise ValueError("memory_id is required for CompactingSessionManager")
 
     aws_region = get_aws_region()
-    config = compaction_config or CompactionConfig.from_env()
+    config = compaction_config or CompactionConfig.from_env(model_id=model_id)
 
     agentcore_config = create_agentcore_memory_config(
         session_id=session_id,
@@ -231,6 +253,7 @@ def create_session_manager(
     compaction_enabled: bool = True,
     summarization_strategy_id: Optional[str] = None,
     use_buffer: bool = True,
+    model_id: Optional[str] = None,
 ) -> Any:
     """
     Create appropriate session manager based on environment and mode.
@@ -245,6 +268,8 @@ def create_session_manager(
         compaction_enabled: Whether to enable context compaction (text mode)
         summarization_strategy_id: Strategy ID for LTM summarization (text mode)
         use_buffer: Whether to wrap with LocalSessionBuffer (text mode, local only)
+        model_id: Model being used, so the compaction threshold can be sized to
+            its context window. Falls back to a conservative default if omitted.
 
     Returns:
         Configured session manager instance
@@ -278,6 +303,7 @@ def create_session_manager(
             mode=mode,
             compaction_enabled=compaction_enabled,
             summarization_strategy_id=summarization_strategy_id,
+            model_id=model_id,
         )
     else:
         # Local mode
@@ -296,6 +322,7 @@ def _create_cloud_session_manager(
     mode: str,
     compaction_enabled: bool,
     summarization_strategy_id: Optional[str],
+    model_id: Optional[str] = None,
 ) -> Any:
     """Create session manager for cloud deployment."""
     from agent.session.compacting_session_manager import CompactingSessionManager
@@ -312,7 +339,7 @@ def _create_cloud_session_manager(
     if mode == "text":
         # Text mode: Full compaction support
         if compaction_enabled:
-            config = CompactionConfig.from_env(enabled=True)
+            config = CompactionConfig.from_env(enabled=True, model_id=model_id)
             return CompactingSessionManager(
                 agentcore_memory_config=agentcore_config,
                 region_name=aws_region,

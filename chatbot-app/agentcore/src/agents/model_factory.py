@@ -21,6 +21,15 @@ from typing import Optional
 import boto3
 from strands.models import BedrockModel, CacheConfig
 
+# Re-exported for callers that already reach for model_factory. The registry
+# itself lives in its own module so the session manager can size compaction
+# without importing the agent stack.
+from agent.config.model_context_windows import (  # noqa: F401
+    DEFAULT_MAX_INPUT_TOKENS,
+    MODEL_MAX_INPUT_TOKENS,
+    get_max_input_tokens,
+)
+
 logger = logging.getLogger(__name__)
 
 
