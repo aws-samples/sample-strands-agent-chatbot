@@ -114,7 +114,16 @@ export function Canvas({
   justUpdated = false,
   sessionId,
 }: CanvasProps) {
-  const selectedArtifact = artifacts.find(a => a.id === selectedArtifactId)
+  const selectedArtifactRaw = artifacts.find(a => a.id === selectedArtifactId)
+
+  // A pending research approval outranks whatever artifact happens to be open.
+  // The approval UI lives in ResearchArtifact, which only renders when nothing is
+  // selected — so once a previous research run had produced an artifact (and
+  // auto-selected it), the next run's approval was invisible and the turn could
+  // not be answered or stopped.
+  const awaitingResearchApproval = !!researchState?.showPlanConfirm
+  const selectedArtifact = awaitingResearchApproval ? undefined : selectedArtifactRaw
+
   const previewContentRef = useRef<HTMLDivElement>(null)
 
   const displayArtifacts = artifacts

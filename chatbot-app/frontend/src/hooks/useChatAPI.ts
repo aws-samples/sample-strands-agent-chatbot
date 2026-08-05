@@ -165,6 +165,8 @@ interface UseChatAPIProps {
   setSessionId: React.Dispatch<React.SetStateAction<string>>
   currentModelId: string
   currentTemperature: number
+  /** Ask the backend to append the concise response-style prompt. */
+  conciseMode?: boolean
 }
 
 // Session preferences returned when loading a session
@@ -194,11 +196,16 @@ export const useChatAPI = ({
   setSessionId,
   currentModelId,
   currentTemperature,
+  conciseMode = false,
 }: UseChatAPIProps) => {
 
   const abortRef = useRef<{ unsubscribe: () => void } | null>(null)
   const sessionIdRef = useRef<string | null>(null)
   const activeRunIdRef = useRef<string | null>(null)
+  // Read through a ref: adding conciseMode to sendMessage's deps would rebuild
+  // it whenever the toggle flips, and useChat's queue flush closes over it.
+  const conciseModeRef = useRef(conciseMode)
+  conciseModeRef.current = conciseMode
   const reconnect = useSSEReconnect()
 
   // Restore last session on page load (with timeout check) and trigger warmup
@@ -514,6 +521,7 @@ export const useChatAPI = ({
             model_id: currentModelId,
             temperature: currentTemperature,
             request_type: "skill",
+            ...(conciseModeRef.current && { concise_mode: true }),
             ...(systemPrompt && { system_prompt: systemPrompt }),
             ...(selectedArtifactId && { selected_artifact_id: selectedArtifactId }),
           },
@@ -586,6 +594,11 @@ export const useChatAPI = ({
 
         const reader = response.body?.getReader()
         const decoder = new TextDecoder()
+
+        // A turn that stops at an interrupt (HITL approval) closes its stream
+        // normally, so completion below must not treat it as finished: the run is
+        // parked mid-turn and the user still needs to be able to stop it.
+        let endedAtInterrupt = false
 
         if (!reader) {
           throw new Error('No response body reader available')
@@ -665,6 +678,10 @@ export const useChatAPI = ({
                   logger.info('[useChatAPI] Received metadata event:', eventData)
                 }
 
+                if (eventData.type === 'CUSTOM' && eventData.name === 'interrupt') {
+                  endedAtInterrupt = true
+                }
+
                 if (eventData.type && (AGUI_EVENT_TYPES as readonly string[]).includes(eventData.type)) {
                   handleStreamEvent(eventData as AGUIStreamEvent)
                 }
@@ -694,7 +711,10 @@ export const useChatAPI = ({
         }
 
         reconnect.reset()  // Clear persisted cursor on normal stream completion
-        if (activeRunIdRef.current === requestRunId) {
+        // Keep the run id when the turn parked at an interrupt. Clearing it left
+        // the UI showing a stop button that could not work — stopGeneration had
+        // no run to target and only logged "No active run available to stop".
+        if (activeRunIdRef.current === requestRunId && !endedAtInterrupt) {
           activeRunIdRef.current = null
         }
         onSuccess?.()
