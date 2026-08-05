@@ -41,34 +41,21 @@ def _agui_payload(
 # ============================================================
 
 class TestPingEndpoint:
-    """Tests for the /ping health check endpoint."""
+    """/ping is owned by routers.health — see test_health_router.py.
 
-    def test_ping_returns_healthy(self):
-        """Test that ping returns healthy status."""
+    The chat router used to declare a second /ping. It never served a request:
+    main.py registers health.router first and FastAPI keeps the first match, so
+    the duplicate shadowed nothing and drifted out of spec unnoticed.
+    """
+
+    def test_chat_router_does_not_declare_ping(self):
         from routers.chat import router
-        from fastapi import FastAPI
 
-        app = FastAPI()
-        app.include_router(router)
-        client = TestClient(app)
-
-        response = client.get("/ping")
-
-        assert response.status_code == 200
-        assert response.json() == {"status": "healthy"}
-
-    def test_ping_is_get_method(self):
-        """Test that ping only accepts GET requests."""
-        from routers.chat import router
-        from fastapi import FastAPI
-
-        app = FastAPI()
-        app.include_router(router)
-        client = TestClient(app)
-
-        # POST should fail
-        response = client.post("/ping")
-        assert response.status_code == 405
+        paths = {route.path for route in router.routes}
+        assert "/ping" not in paths, (
+            "/ping must be declared once, in routers.health; a second "
+            "declaration is dead code that silently diverges"
+        )
 
 
 # ============================================================

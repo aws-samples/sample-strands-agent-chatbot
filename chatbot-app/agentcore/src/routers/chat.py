@@ -20,6 +20,7 @@ import os
 import time
 
 from models.schemas import FileContent
+from agent import async_tasks
 from agent.processor.multimodal_builder import build_prompt
 from agents.factory import create_agent
 from streaming.agui_event_processor import AGUIStreamEventProcessor
@@ -252,12 +253,6 @@ async def invocations(http_request: Request):
     return await _handle_agui_invocation(body, http_request)
 
 
-@router.get("/ping")
-async def ping():
-    """Health check endpoint required by AgentCore Runtime."""
-    return {"status": "healthy"}
-
-
 @router.get("/execution-status")
 async def get_execution_status(executionId: str):
     """Check execution status. Local-mode convenience endpoint."""
@@ -463,6 +458,11 @@ async def _handle_agui_invocation(body: dict, http_request: Request) -> Streamin
 
         # Run agent as background task — events buffered in execution
         async def run_agui_to_buffer():
+            # Report the run to /ping. It deliberately outlives this request (the
+            # client can disconnect and resume from the buffer), so without this
+            # AgentCore Runtime treats the session as idle and can reclaim the
+            # microVM mid-run.
+            task_id = async_tasks.begin("agent_run", {"execution_id": execution.execution_id})
             try:
                 stream = agui_processor.process_stream(
                     agent.agent,
@@ -479,6 +479,7 @@ async def _handle_agui_invocation(body: dict, http_request: Request) -> Streamin
                 error_event = f'data: {json.dumps({"type": "error", "message": str(e)})}\n\n'
                 execution.append_event(error_event, "error")
             finally:
+                async_tasks.end(task_id)
                 agent.close()
                 if execution.status == ExecutionStatus.RUNNING:
                     execution.status = ExecutionStatus.COMPLETED

@@ -162,8 +162,11 @@ async def send_a2a_message(
     try:
         # Check for local testing mode (per-agent env var)
         # e.g. LOCAL_RESEARCH_AGENT_URL, LOCAL_CODE_AGENT_URL, LOCAL_BROWSER_USE_AGENT_URL
+        # Only this agent's own variable: falling back to the research URL sent
+        # every other agent's traffic to the research runtime, which answers with
+        # a research report instead of failing.
         env_key = "LOCAL_" + agent_id.replace("agentcore_", "").replace("-", "_").upper() + "_URL"
-        local_runtime_url = os.environ.get(env_key) or os.environ.get('LOCAL_RESEARCH_AGENT_URL')
+        local_runtime_url = os.environ.get(env_key)
         if local_runtime_url:
             runtime_url = local_runtime_url
             logger.debug(f"Local test mode ({agent_id}): {runtime_url}")
@@ -511,9 +514,21 @@ def create_a2a_tool(agent_id: str):
         async def tool_impl(plan: str, tool_context: ToolContext = None) -> AsyncGenerator[Dict[str, Any], None]:
             session_id, user_id, model_id, _auth_token = extract_context(tool_context)
 
-            # Prepare metadata
+            # Scope the research agent's session to this call rather than reusing
+            # the chat's session. The research agent derives its report workspace
+            # and chart S3 prefix from this id, so two researches in one chat
+            # would otherwise share a workspace and overwrite each other's
+            # research_report.md. Derived from toolUseId so it is stable for
+            # retries of the same call.
+            tool_use_id = ""
+            if tool_context and getattr(tool_context, 'tool_use', None):
+                tool_use_id = tool_context.tool_use.get('toolUseId', '') or ""
+            research_session_id = f"{session_id}-{tool_use_id}" if tool_use_id else session_id
+
+            # Prepare metadata. session_id is the per-research one so the agent's
+            # workspace matches the session header below.
             metadata = {
-                "session_id": session_id,
+                "session_id": research_session_id,
                 "user_id": user_id,
                 "source": "main_agent",
                 "model_id": model_id,
@@ -525,7 +540,7 @@ def create_a2a_tool(agent_id: str):
             final_result_text = None
 
             # Stream events from A2A agent (including research_step events for real-time UI updates)
-            async for event in send_a2a_message(agent_id, plan, session_id, region, metadata=metadata, auth_token=_auth_token):
+            async for event in send_a2a_message(agent_id, plan, research_session_id, region, metadata=metadata, auth_token=_auth_token):
                 # Yield event FIRST to maintain proper stream order
                 yield event
 
