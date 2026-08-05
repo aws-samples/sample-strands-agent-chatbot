@@ -3,6 +3,7 @@
 import copy
 import json
 import logging
+import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -97,6 +98,10 @@ class CompactingSessionManager(AgentCoreMemorySessionManager):
         )
 
         self.token_threshold = token_threshold
+        # Load-time truncation shares the checkpoint threshold: both answer
+        # "is this conversation big enough to need reducing?". Kept as its own
+        # attribute so it can be tuned independently if the two diverge.
+        self.truncation_threshold = token_threshold
         self.protected_turns = protected_turns
         self.max_tool_content_length = max_tool_content_length
         self.user_id = user_id
@@ -522,6 +527,41 @@ class CompactingSessionManager(AgentCoreMemorySessionManager):
 
         return modified_messages, truncation_count, total_chars_saved
 
+    @staticmethod
+    def _estimate_tokens(messages: List[Dict]) -> int:
+        """Rough token estimate for a message list, used only to decide whether
+        truncation is worth doing at load time.
+
+        The real count is only known after the model call reports usage, so this
+        is a serialized-length heuristic at ~4 chars/token. It is intentionally
+        crude: the decision it feeds is "are we anywhere near the limit", and the
+        accurate number arrives later via update_after_turn().
+
+        Base64 image and document payloads are counted at their encoded length,
+        which overestimates their token cost — that errs toward compacting, which
+        is the safe direction for the media that dominates context size.
+        """
+        try:
+            return len(json.dumps(messages, ensure_ascii=False, default=str)) // 4
+        except (TypeError, ValueError):
+            # Unserializable content: assume it is large rather than skip compaction.
+            return sys.maxsize
+
+    def _should_truncate(self, messages: List[Dict]) -> tuple[bool, int]:
+        """Whether load-time truncation should run, plus the estimate behind it.
+
+        Truncation used to be unconditional, which meant every session load
+        permanently* discarded old tool output and replaced images and documents
+        with placeholders — even for a conversation using a fraction of the
+        window. On the 1M-token models in the picker that threw away detail the
+        model had ample room for.
+
+        (*permanently for that turn only: the stored session is never rewritten,
+        so relaxing this restores full history on the next load.)
+        """
+        estimated = self._estimate_tokens(messages)
+        return estimated >= self.truncation_threshold, estimated
+
     def _has_tool_result(self, message: Dict) -> bool:
         """Check if message contains toolResult block."""
         content = message.get('content', [])
@@ -670,11 +710,31 @@ Please continue the conversation with this context in mind.
                         messages_to_process = self._prepend_summary_to_first_message(messages_to_process, summary_prefix)
                     stage = "checkpoint"
 
-                # Apply truncation
-                protected_indices = self._find_protected_message_indices(messages_to_process, self.protected_turns)
-                truncated_messages, truncation_count, chars_saved = self._truncate_tool_contents(
-                    messages_to_process, protected_indices=protected_indices
-                )
+                # Truncate tool output only when the conversation is actually
+                # near the model's limit. Doing it on every load discarded
+                # detail that a 1M-token model had room for.
+                should_truncate, estimated_tokens = self._should_truncate(messages_to_process)
+                truncation_count = 0
+                if should_truncate:
+                    protected_indices = self._find_protected_message_indices(messages_to_process, self.protected_turns)
+                    truncated_messages, truncation_count, chars_saved = self._truncate_tool_contents(
+                        messages_to_process, protected_indices=protected_indices
+                    )
+                    logger.info(
+                        f"[Compaction] Truncated {truncation_count} block(s): "
+                        f"~{estimated_tokens:,} estimated tokens >= {self.truncation_threshold:,} threshold"
+                    )
+                else:
+                    truncated_messages = messages_to_process
+                    # info, not debug: this is the decision the model-sized
+                    # threshold exists to make, and the only record of which
+                    # threshold was in effect for this model. At debug level it
+                    # is absent from deployed logs, leaving no way to tell an
+                    # intentional skip from compaction silently not running.
+                    logger.info(
+                        f"[Compaction] Skipped truncation: ~{estimated_tokens:,} estimated tokens "
+                        f"< {self.truncation_threshold:,} threshold"
+                    )
 
                 if truncation_count > 0:
                     stage = "checkpoint+truncation" if stage == "checkpoint" else "truncation"

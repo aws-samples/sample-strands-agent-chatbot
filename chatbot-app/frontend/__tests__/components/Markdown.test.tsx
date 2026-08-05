@@ -280,4 +280,73 @@ describe('Markdown', () => {
       expect(link).toHaveAttribute('href', longUrl)
     })
   })
+
+  // Before math support, LaTeX arrived as literal text: "\\mathbb 1" stayed
+  // visible, "\\[" lost its backslash to markdown escaping and left a stray "[",
+  // and subscripts like y_{qi} were parsed as markdown emphasis, which rendered
+  // the surrounding line as a heading.
+  describe('Math rendering', () => {
+    const katex = (c: HTMLElement) => c.querySelector('.katex')
+
+    it('renders display math delimited by $$', () => {
+      const { container } = render(<Markdown>{'$$a^2 + b^2 = c^2$$'}</Markdown>)
+      expect(katex(container)).toBeTruthy()
+    })
+
+    it('renders display math delimited by escaped brackets', () => {
+      const { container } = render(
+        <Markdown>{'\\[ A(q,G) \\neq A(q,G^{do(z_i=z_i\')}) \\]'}</Markdown>,
+      )
+      expect(katex(container)).toBeTruthy()
+    })
+
+    // Asserts on .katex-html, the visually rendered part. KaTeX also emits a
+    // MathML <annotation> holding the original LaTeX for accessibility, so the
+    // raw source legitimately remains in container.textContent.
+    it('does not leave LaTeX commands as visible text', () => {
+      const { container } = render(<Markdown>{'$$\\Delta_{qi} = \\mathbb 1$$'}</Markdown>)
+      expect(katex(container)).toBeTruthy()
+      const rendered = container.querySelector('.katex-html')
+      expect(rendered?.textContent).not.toContain('\\mathbb')
+      expect(rendered?.textContent).toContain('Δ')
+    })
+
+    it('renders subscripts without turning the line into a heading', () => {
+      const { container } = render(<Markdown>{'$$y_{qi} + \\Delta_{qi}$$'}</Markdown>)
+      expect(katex(container)).toBeTruthy()
+      expect(container.querySelector('h1, h2, h3')).toBeNull()
+    })
+
+    // A lone $ is currency or a shell variable far more often than math here,
+    // which is why singleDollarTextMath is disabled.
+    it('leaves single-dollar amounts alone', () => {
+      const { container } = render(
+        <Markdown>{'Input costs $5 per MTok and output costs $25 per MTok.'}</Markdown>,
+      )
+      expect(katex(container)).toBeNull()
+      expect(container.textContent).toContain('$5')
+      expect(container.textContent).toContain('$25')
+    })
+
+    it('leaves shell variables alone', () => {
+      const { container } = render(<Markdown>{'Run `echo $PATH` and check $HOME.'}</Markdown>)
+      expect(katex(container)).toBeNull()
+      expect(container.textContent).toContain('$HOME')
+    })
+
+    it('leaves bracket delimiters inside code untouched', () => {
+      const { container } = render(<Markdown>{'Use `\\[ x \\]` for display math.'}</Markdown>)
+      expect(katex(container)).toBeNull()
+      expect(container.textContent).toContain('\\[ x \\]')
+    })
+
+    // throwOnError is off so one bad formula cannot blank the whole message.
+    it('still renders surrounding text when a formula is malformed', () => {
+      const { container } = render(
+        <Markdown>{'Before.\n\n$$\\frac{1}{$$\n\nAfter.'}</Markdown>,
+      )
+      expect(container.textContent).toContain('Before.')
+      expect(container.textContent).toContain('After.')
+    })
+  })
 })

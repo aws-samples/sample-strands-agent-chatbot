@@ -2,7 +2,10 @@ import React, { memo, useMemo, useState, useEffect } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkBreaks from 'remark-breaks';
+import remarkMath from 'remark-math';
 import rehypeRaw from 'rehype-raw';
+import rehypeKatex from 'rehype-katex';
+import 'katex/dist/katex.min.css';
 import { CodeBlock } from './CodeBlock';
 import { ChartRenderer, ImageRenderer } from '../canvas';
 import { CitationLink } from './CitationLink';
@@ -86,6 +89,36 @@ const stripResearchTags = (content: string): string => {
   }
   // Remove any remaining <research> or </research> tags
   return content.replace(/<\/?research>/g, '');
+};
+
+/**
+ * Rewrites LaTeX's \[...\] and \(...\) delimiters to the $$...$$ form.
+ *
+ * remark-math only recognizes dollar delimiters, but models frequently emit the
+ * bracket form. Left alone, markdown consumes the backslash and the formula
+ * arrives as literal text with a stray "[" on its own line — the exact breakage
+ * this fixes.
+ *
+ * Inline \(...\) becomes $$...$$ too: with singleDollarTextMath disabled, $$ is
+ * the only inline form available, and it renders inline when kept on one line.
+ *
+ * Fenced and inline code are left untouched so documentation that shows these
+ * delimiters literally still reads correctly.
+ */
+const normalizeMathDelimiters = (content: string): string => {
+  if (!content.includes('\\[') && !content.includes('\\(')) return content;
+
+  // Split on code spans/fences and only rewrite the segments outside them.
+  const segments = content.split(/(```[\s\S]*?```|`[^`\n]*`)/g);
+  return segments
+    .map((segment, index) => {
+      // Odd indices are the captured code segments.
+      if (index % 2 === 1) return segment;
+      return segment
+        .replace(/\\\[([\s\S]*?)\\\]/g, (_m, body) => `$$${body}$$`)
+        .replace(/\\\(([\s\S]*?)\\\)/g, (_m, body) => `$$${body}$$`);
+    })
+    .join('');
 };
 
 /**
@@ -263,7 +296,16 @@ const components: Partial<Components> = {
 };
 
 const getRemarkPlugins = (preserveLineBreaks?: boolean) => {
-  const plugins: any[] = [[remarkGfm, { singleTilde: false }]];
+  const plugins: any[] = [
+    [remarkGfm, { singleTilde: false }],
+    // Display math only: $$...$$ and \[...\].
+    //
+    // singleDollarTextMath is off because a lone $ is far more often currency or
+    // a shell variable than math in this app's answers — "from $5 to $25" would
+    // otherwise render as a formula. Two or more dollars still work for inline
+    // math when a model really means it.
+    [remarkMath, { singleDollarTextMath: false }],
+  ];
   if (preserveLineBreaks) {
     plugins.push(remarkBreaks);
   }
@@ -395,11 +437,23 @@ const NonMemoizedMarkdown = ({
     const parsed = parseContentWithCharts(children);
     return parsed.map(part =>
       part.type === 'text'
-        ? { ...part, content: normalizeCodeFences(stripResearchTags(part.content)) }
+        ? {
+            ...part,
+            content: normalizeMathDelimiters(
+              normalizeCodeFences(stripResearchTags(part.content)),
+            ),
+          }
         : part
     );
   }, [children]);
   const remarkPlugins = useMemo(() => getRemarkPlugins(preserveLineBreaks), [preserveLineBreaks]);
+  // rehypeRaw first: it parses embedded HTML, and running KaTeX before it would
+  // let raw-HTML handling mangle the markup KaTeX produces. throwOnError keeps a
+  // malformed formula from taking down the whole message render.
+  const rehypePlugins = useMemo(
+    () => [rehypeRaw, [rehypeKatex, { throwOnError: false, strict: false }]] as any[],
+    [],
+  );
 
   // Font size mapping (in pixels)
   const fontSizeMap: Record<string, string> = {
@@ -438,7 +492,7 @@ const NonMemoizedMarkdown = ({
             <ReactMarkdown
               key={index}
               remarkPlugins={remarkPlugins}
-              rehypePlugins={[rehypeRaw]}
+              rehypePlugins={rehypePlugins}
               components={components}
               urlTransform={customUrlTransform}
             >

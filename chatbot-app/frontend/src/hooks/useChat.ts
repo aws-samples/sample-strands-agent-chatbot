@@ -5,6 +5,7 @@ import { detectBackendUrl } from '@/utils/chat'
 import { useStreamEvents } from './useStreamEvents'
 import { useChatAPI, SessionPreferences } from './useChatAPI'
 import { usePolling, hasOngoingA2ATools, A2A_TOOLS_REQUIRING_POLLING } from './usePolling'
+import { useMessageQueue, QueuedMessage, QueueHoldReason } from './useMessageQueue'
 import { getApiUrl } from '@/config/environment'
 import { generateSessionId } from '@/config/session'
 import { apiGet, apiPost } from '@/lib/api-client'
@@ -42,6 +43,14 @@ interface UseChatReturn {
   toggleProgressPanel: () => void
   sendMessage: (text: string, files?: File[], systemPrompt?: string, selectedArtifactId?: string | null) => Promise<void>
   stopGeneration: () => Promise<void>
+  // Queue for turns composed while the agent is busy
+  queuedMessages: QueuedMessage[]
+  queueHoldReason: QueueHoldReason | null
+  enqueueMessage: (text: string, files?: File[], systemPrompt?: string, selectedArtifactId?: string | null) => void
+  removeQueuedMessage: (id: string) => void
+  clearQueuedMessages: () => void
+  /** User confirmed a held queue: resume and send the next message now. */
+  releaseQueue: () => void
   newChat: () => Promise<void>
   compactSession: () => Promise<void>
   truncateFromMessage: (message: Message) => Promise<void>
@@ -59,6 +68,9 @@ interface UseChatReturn {
   currentModelId: string
   currentTemperature: number
   updateModelConfig: (modelId: string, temperature?: number) => void
+  // Response style
+  conciseMode: boolean
+  toggleConciseMode: () => void
   // Legacy swarm progress — kept as an optional passthrough from session state
   // so history playback still renders old SwarmProgress panels. Swarm mode
   // itself has been removed from the product.
@@ -83,6 +95,10 @@ interface UseChatReturn {
   isReconnecting: boolean
   reconnectAttempt: number
 }
+
+// Read on mount rather than in useState's initializer: this hook renders on the
+// server first, where localStorage does not exist.
+const CONCISE_MODE_KEY = 'chat-concise-mode'
 
 // Default preferences when session has no saved preferences
 const DEFAULT_PREFERENCES: SessionPreferences = {
@@ -109,6 +125,21 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
   // Per-session model state (not written to global profile on session switch)
   const [currentModelId, setCurrentModelId] = useState(DEFAULT_PREFERENCES.lastModel!)
   const [currentTemperature, setCurrentTemperature] = useState(0.5)
+
+  // Response style. Persisted in localStorage because it is a preference about
+  // how the user likes to read, not a property of any one conversation — it
+  // should survive a reload and apply to new sessions too.
+  const [conciseMode, setConciseMode] = useState(false)
+  useEffect(() => {
+    setConciseMode(localStorage.getItem(CONCISE_MODE_KEY) === 'true')
+  }, [])
+  const toggleConciseMode = useCallback(() => {
+    setConciseMode(prev => {
+      const next = !prev
+      localStorage.setItem(CONCISE_MODE_KEY, String(next))
+      return next
+    })
+  }, [])
 
 
   // Ref for onSessionLoaded callback to avoid stale closure in useCallback
@@ -141,6 +172,10 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
   const currentTurnIdRef = useRef<string | null>(null)
   const currentSessionIdRef = useRef<string | null>(null)
   const messagesRef = useRef<Message[]>([])
+  // Set once the queue hook is initialized below; newChat and respondToInterrupt
+  // are declared before it.
+  const clearQueuedMessagesRef = useRef<() => void>(() => {})
+  const releaseHoldRef = useRef<() => void>(() => {})
 
   // Keep refs in sync with state
   useEffect(() => {
@@ -228,6 +263,7 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
     onSessionCreated: handleSessionCreated,
     currentModelId,
     currentTemperature,
+    conciseMode,
   })
 
   // Initialize polling with apiLoadSession (now available)
@@ -412,11 +448,17 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
       })
       setUIState(prev => ({ ...prev, isTyping: false, agentStatus: 'idle' }))
       setMessages([])
+      // Queued turns were composed against the conversation being discarded.
+      clearQueuedMessagesRef.current()
     }
   }, [apiNewChat, stopPolling])
 
+  // Answering an approval resumes the same turn, so the queue must keep waiting
+  // for that turn to finish rather than treating the hold as resolved. Clearing
+  // the hold here is enough: the resumed turn settles through the normal path.
   const respondToInterrupt = useCallback(async (interruptId: string, response: string) => {
     if (!sessionState.interrupt) return
+    releaseHoldRef.current()
 
     setSessionState(prev => ({ ...prev, interrupt: null }))
 
@@ -501,11 +543,16 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
 
     const messageToSend = text.trim() || (files && files.length > 0 ? "Please analyze the uploaded file(s)." : "")
 
+    // Turn outcome for the queue: the stream closing normally is the only point
+    // where flushing the next queued message can be safe. Whether it actually
+    // is safe also depends on interrupt/OAuth state, which is checked in the
+    // effect below once React has committed this turn's events.
     await apiSendMessage(
       messageToSend,
       files,
-      () => {},
+      () => { setTurnSettled({ outcome: 'finished' }) },
       () => {
+        setTurnSettled({ outcome: 'error' })
         setSessionState(prev => ({
           reasoning: null,
           streaming: null,
@@ -522,6 +569,89 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
       selectedArtifactId
     )
   }, [apiSendMessage, setUIState])
+
+  // ==================== MESSAGE QUEUE ====================
+  // Turns composed while the agent is busy are queued and flushed here.
+  //
+  // The flush is driven by an explicit turn outcome plus an effect, not by
+  // watching agentStatus: 'idle' is also set for interrupts and aborts, where
+  // sending would corrupt the session (see useMessageQueue for the details).
+  // Routing through state also guarantees the interrupt/pendingOAuth flags are
+  // read after React has committed the finishing turn's events, rather than from
+  // the stale snapshot the send callback closed over.
+  const [turnSettled, setTurnSettled] = useState<{ outcome: 'finished' | 'error' } | null>(null)
+
+  // sendMessage is recreated on each render; the queue's send must not be, or
+  // every render would rebuild flushNext and retrigger the effect below.
+  const sendMessageRef = useRef(sendMessage)
+  sendMessageRef.current = sendMessage
+
+  const {
+    queue: queuedMessages,
+    holdReason: queueHoldReason,
+    enqueue,
+    remove: removeQueuedMessage,
+    clear: clearQueuedMessages,
+    flushNext,
+    hold: holdQueue,
+    release: releaseHold,
+    retainSession: retainQueueSession,
+  } = useMessageQueue({
+    send: useCallback(
+      (text, files, systemPrompt, selectedArtifactId) =>
+        sendMessageRef.current(text, files, systemPrompt, selectedArtifactId),
+      [],
+    ),
+  })
+
+  clearQueuedMessagesRef.current = clearQueuedMessages
+  releaseHoldRef.current = releaseHold
+
+  const enqueueMessage = useCallback((
+    text: string,
+    files?: File[],
+    systemPrompt?: string,
+    selectedArtifactId?: string | null,
+  ) => {
+    enqueue({
+      text,
+      files: files ?? [],
+      sessionId,
+      systemPrompt,
+      selectedArtifactId,
+    })
+  }, [enqueue, sessionId])
+
+  useEffect(() => {
+    if (!turnSettled) return
+    setTurnSettled(null)
+
+    if (turnSettled.outcome === 'error') {
+      holdQueue('error')
+      return
+    }
+
+    void flushNext(sessionId, {
+      hasInterrupt: sessionState.interrupt !== null,
+      hasPendingOAuth: !!sessionState.pendingOAuth,
+    })
+  }, [turnSettled, flushNext, holdQueue, sessionId, sessionState.interrupt, sessionState.pendingOAuth])
+
+  // Queued messages belong to the session they were composed in.
+  useEffect(() => {
+    retainQueueSession(sessionId)
+  }, [sessionId, retainQueueSession])
+
+  // "Send" on the hold prompt: clear the hold, then dispatch immediately.
+  // The blockers are re-checked, so confirming while an approval is still
+  // pending re-holds rather than sending into a parked run.
+  const releaseQueue = useCallback(() => {
+    releaseHold()
+    void flushNext(sessionId, {
+      hasInterrupt: sessionState.interrupt !== null,
+      hasPendingOAuth: !!sessionState.pendingOAuth,
+    })
+  }, [releaseHold, flushNext, sessionId, sessionState.interrupt, sessionState.pendingOAuth])
 
   // localStorage key for compact recovery across browser refresh
   const getCompactPendingKey = (sid: string) => `compact_pending_${sid}`
@@ -673,6 +803,9 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
     if (stopped) {
       // The durable stop request has been accepted; the local stream can now close.
       resetStreamingState()
+      // Stopping is a deliberate interruption, so don't immediately send whatever
+      // was queued — that would look like the stop was ignored.
+      holdQueue('stopped')
       return
     }
 
@@ -680,7 +813,7 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
       ...prev,
       agentStatus: previousStatus === 'stopping' ? 'thinking' : previousStatus,
     }))
-  }, [sendStopSignal, resetStreamingState])
+  }, [sendStopSignal, resetStreamingState, holdQueue])
 
   const cancelOAuth = useCallback(() => {
     setSessionState(prev => ({ ...prev, pendingOAuth: null }))
@@ -956,6 +1089,12 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
     toggleProgressPanel,
     sendMessage,
     stopGeneration,
+    queuedMessages,
+    queueHoldReason,
+    enqueueMessage,
+    removeQueuedMessage,
+    clearQueuedMessages,
+    releaseQueue,
     newChat,
     compactSession,
     truncateFromMessage,
@@ -973,6 +1112,9 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
     currentModelId,
     currentTemperature,
     updateModelConfig,
+    // Response style
+    conciseMode,
+    toggleConciseMode,
     swarmProgress: sessionState.swarmProgress,
     // Voice mode
     addVoiceToolExecution,

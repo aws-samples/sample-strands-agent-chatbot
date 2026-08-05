@@ -65,7 +65,26 @@ DEFAULT_PROJECT_NAME = "strands-agent-chatbot"
 # Session & Compaction Configuration
 # =============================================================================
 
-# Default token threshold for compaction (triggers checkpoint)
+# Fraction of the model's context window that may be filled before compaction
+# starts. Sized off the model rather than a fixed token count because the picker
+# spans an 8x range of context windows (131k to 1.05M) — see
+# MODEL_MAX_INPUT_TOKENS in agents/model_factory.py.
+COMPACTION_CONTEXT_RATIO = 0.7
+
+# Hard ceiling on the compaction threshold, independent of the ratio.
+#
+# On a 1M model the ratio alone would wait until 700k, which is the worst place
+# to start: summarizing 700k of history is itself a slow, expensive model call
+# that is prone to throttling, and proactive compression failures are swallowed
+# rather than retried. Capping keeps the work bounded on large-context models
+# while the ratio still governs small ones.
+COMPACTION_TOKEN_CAP = 500_000
+
+# Floor, so a small-context model still gets a usable amount of history rather
+# than compacting almost immediately.
+COMPACTION_TOKEN_FLOOR = 50_000
+
+# Retained for callers that construct a threshold without knowing the model.
 DEFAULT_COMPACTION_TOKEN_THRESHOLD = 100_000
 
 # Number of recent turns to protect from truncation
@@ -73,6 +92,16 @@ DEFAULT_COMPACTION_PROTECTED_TURNS = 2
 
 # Maximum characters for tool content before truncation
 DEFAULT_MAX_TOOL_CONTENT_LENGTH = 500
+
+
+def compaction_threshold_for(max_input_tokens: int) -> int:
+    """Token count at which compaction should begin for a given context window.
+
+    min(window * ratio, cap), then floored — so 1M models compact at the cap and
+    small models scale with their own window.
+    """
+    scaled = int(max_input_tokens * COMPACTION_CONTEXT_RATIO)
+    return max(COMPACTION_TOKEN_FLOOR, min(scaled, COMPACTION_TOKEN_CAP))
 
 
 # =============================================================================

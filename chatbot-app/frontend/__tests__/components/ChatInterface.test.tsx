@@ -26,6 +26,14 @@ const mockUseChat: {
   toggleProgressPanel: ReturnType<typeof vi.fn>
   sendMessage: ReturnType<typeof vi.fn>
   stopGeneration: ReturnType<typeof vi.fn>
+  queuedMessages: any[]
+  queueHoldReason: string | null
+  enqueueMessage: ReturnType<typeof vi.fn>
+  removeQueuedMessage: ReturnType<typeof vi.fn>
+  clearQueuedMessages: ReturnType<typeof vi.fn>
+  releaseQueue: ReturnType<typeof vi.fn>
+  conciseMode: boolean
+  toggleConciseMode: ReturnType<typeof vi.fn>
   newChat: ReturnType<typeof vi.fn>
   sessionId: string | null
   loadSession: ReturnType<typeof vi.fn>
@@ -47,6 +55,14 @@ const mockUseChat: {
   toggleProgressPanel: vi.fn(),
   sendMessage: vi.fn(),
   stopGeneration: vi.fn(),
+  queuedMessages: [],
+  queueHoldReason: null,
+  enqueueMessage: vi.fn(),
+  removeQueuedMessage: vi.fn(),
+  clearQueuedMessages: vi.fn(),
+  releaseQueue: vi.fn(),
+  conciseMode: false,
+  toggleConciseMode: vi.fn(),
   newChat: vi.fn().mockResolvedValue(undefined),
   sessionId: null,
   loadSession: vi.fn().mockResolvedValue(undefined),
