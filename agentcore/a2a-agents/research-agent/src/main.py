@@ -14,7 +14,8 @@ For local testing:
 import logging
 import os
 import sys
-import uuid
+import contextvars
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 from datetime import datetime
@@ -45,6 +46,7 @@ from tools import (  # noqa: E402
 )
 from tools.generate_chart import generate_chart_tool  # noqa: E402
 from model_factory import build_model  # noqa: E402
+import async_tasks  # noqa: E402
 
 # Configure logging
 logging.basicConfig(
@@ -54,10 +56,37 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class _RequestState:
+    """Per-request streaming state.
+
+    Step numbering and the report location belong to one research run. Holding
+    them on the executor made them shared: the executor is a single instance, so
+    two researches running at once traded step numbers and could resolve each
+    other's report. See tests/test_concurrent_research.py.
+    """
+
+    session_id: Optional[str]
+    user_id: str
+    model_id: Optional[str] = None
+    current_tool_use_id: Optional[str] = None
+    step_counter: int = 0
+
+
+# Each A2A request runs as its own asyncio task, and a ContextVar read resolves to
+# the value set by that task. Preferred over a dict keyed on the request: there is
+# no key to collide, and nothing to clean up when a request ends — the value goes
+# out of scope with its task.
+_request_state: contextvars.ContextVar[_RequestState] = contextvars.ContextVar("research_request_state")
+
+
 class MetadataAwareExecutor(StrandsA2AExecutor):
     """
     Custom A2A Executor that extracts metadata (model_id, session_id, user_id)
     from RequestContext and passes to agent's invocation_state.
+
+    Agents are built per A2A context by the base class (agent_factory mode), so
+    concurrent researches never share conversation state.
     """
 
     # Tool name to user-friendly status mapping
@@ -71,19 +100,31 @@ class MetadataAwareExecutor(StrandsA2AExecutor):
         "generate_chart_tool": "Generating chart",
     }
 
-    def __init__(self, agent_cache: dict):
+    def __init__(self, agent_factory):
         """
-        Initialize with agent cache instead of single agent.
-
         Args:
-            agent_cache: Dict mapping model_id to Agent instances
+            agent_factory: Callable ``(context_id, model_id) -> Agent``. The base
+                class calls its factory once per A2A context and gives each
+                context its own agent and lock, which is what isolates concurrent
+                researches.
         """
-        # Don't call super().__init__() since we'll override agent selection
-        self.agent_cache = agent_cache
-        self._current_tool_use_id = None  # Track current tool to avoid duplicate updates
-        self._step_counter = 0  # Counter for step artifacts
+        # The base class's factory takes only context_id; the model to use arrives
+        # per request in the message metadata, which _execute_streaming has already
+        # put in the request state by the time the factory runs.
+        self._agent_builder = agent_factory
+        super().__init__(agent_factory=self._build_context_agent)
 
-    async def _handle_streaming_event(self, event: dict, updater: TaskUpdater) -> None:
+    def _build_context_agent(self, context_id: str) -> Agent:
+        """Build this context's agent using the requesting call's model.
+
+        model_id is None when no request is in flight, which is how the base class
+        builds a representative agent for the AgentCard at startup. build_agent
+        maps that to the default model.
+        """
+        state = _request_state.get(None)
+        return self._agent_builder(context_id, state.model_id if state else None)
+
+    async def _handle_streaming_event(self, event: dict, updater: TaskUpdater, stream_state=None) -> None:
         """
         Override to stream tool execution status in real-time.
 
@@ -92,7 +133,11 @@ class MetadataAwareExecutor(StrandsA2AExecutor):
         - tool_result: When a tool completes
         - data: Text content being generated (thinking)
         - result: Final agent result
+
+        stream_state is the base class's A2A-compliant streaming state; accepted
+        to match its signature and passed through untouched.
         """
+        state = _request_state.get()
         event_type = event.get("type", "unknown")
         event_keys = list(event.keys())
         logger.debug(f"[MetadataAwareExecutor] Event - type: {event_type}, keys: {event_keys}")
@@ -105,9 +150,9 @@ class MetadataAwareExecutor(StrandsA2AExecutor):
             tool_name = tool_use.get("name", "")
 
             # Only send update if this is a new tool (avoid duplicates from streaming chunks)
-            if tool_use_id and tool_use_id != self._current_tool_use_id:
-                self._current_tool_use_id = tool_use_id
-                self._step_counter += 1
+            if tool_use_id and tool_use_id != state.current_tool_use_id:
+                state.current_tool_use_id = tool_use_id
+                state.step_counter += 1
 
                 # Get user-friendly status message
                 status_message = self.TOOL_STATUS_MAP.get(tool_name, f"Running {tool_name}")
@@ -127,14 +172,14 @@ class MetadataAwareExecutor(StrandsA2AExecutor):
 
                 await updater.add_artifact(
                     parts=[Part(root=TextPart(text=step_text))],
-                    name=f"research_step_{self._step_counter}"
+                    name=f"research_step_{state.step_counter}"
                 )
-                logger.info(f"[MetadataAwareExecutor] Streamed step {self._step_counter}: {status_message}")
+                logger.info(f"[MetadataAwareExecutor] Streamed step {state.step_counter}: {status_message}")
 
         # Handle tool result - could add completion status here if needed
         elif event.get("type") == "tool_result":
             # Tool completed - reset current tool tracking
-            self._current_tool_use_id = None
+            state.current_tool_use_id = None
 
         # Handle text data (thinking/response generation)
         elif "data" in event:
@@ -144,17 +189,16 @@ class MetadataAwareExecutor(StrandsA2AExecutor):
 
         # Handle final result
         elif "result" in event:
-            await self._handle_agent_result(event["result"], updater)
+            await self._handle_agent_result(event["result"], updater, stream_state)
 
     async def _execute_streaming(self, context: RequestContext, updater: TaskUpdater) -> None:
         """
-        Override to inject metadata into invocation_state and use appropriate model.
-        """
-        # Reset step tracking for new request
-        self._current_tool_use_id = None
-        self._step_counter = 0
+        Override to inject metadata into invocation_state.
 
-        # Extract metadata from RequestContext (need session_id early for file cleanup)
+        Agent selection is the base class's job in agent_factory mode: it builds
+        one agent per A2A context and serializes only within that context.
+        """
+        # Extract metadata from RequestContext
         # Try both params.metadata (MessageSendParams) and message.metadata (Message)
         # Streaming client may put metadata in Message.metadata
         metadata = context.metadata  # MessageSendParams.metadata
@@ -167,37 +211,9 @@ class MetadataAwareExecutor(StrandsA2AExecutor):
 
         logger.info(f"[MetadataAwareExecutor] Extracted metadata - model_id: {model_id}, session_id: {session_id}, user_id: {user_id}")
 
-        # Clear previous research file for this session (prevent cumulative results)
-        if session_id:
-            try:
-                from report_manager import get_report_manager
-                manager = get_report_manager(session_id, user_id)
-                markdown_file = os.path.join(manager.workspace, "research_report.md")
-                if os.path.exists(markdown_file):
-                    os.remove(markdown_file)
-                    logger.info(f"[MetadataAwareExecutor] Cleared previous research file: {markdown_file}")
-            except Exception as e:
-                logger.warning(f"[MetadataAwareExecutor] Failed to clear previous research file: {e}")
-
-        # Get or create agent with specified model_id
-        if model_id and model_id in self.agent_cache:
-            agent = self.agent_cache[model_id]
-            logger.info(f"[MetadataAwareExecutor] Using cached agent with model: {model_id}")
-        elif model_id:
-            # Create new agent with this model_id
-            logger.info(f"[MetadataAwareExecutor] Creating new agent with model: {model_id}")
-            agent = create_agent(model_id)
-            self.agent_cache[model_id] = agent
-        else:
-            # Fallback to default agent
-            default_model = MODEL_ID
-            if default_model not in self.agent_cache:
-                self.agent_cache[default_model] = create_agent(default_model)
-            agent = self.agent_cache[default_model]
-            logger.info(f"[MetadataAwareExecutor] Using default agent with model: {default_model}")
-
-        # Temporarily set self.agent for parent class methods
-        self.agent = agent
+        # No pre-run clearing of research_report.md: the session id is scoped per
+        # research now, so there is no stale file to clear, and deleting by
+        # session would destroy a concurrent research's in-progress report.
 
         # Convert A2A message parts to Strands ContentBlocks
         if context.message and hasattr(context.message, "parts"):
@@ -218,14 +234,26 @@ class MetadataAwareExecutor(StrandsA2AExecutor):
 
         logger.info(f"[MetadataAwareExecutor] Invoking agent with invocation_state: {invocation_state}")
 
-        # Store session info for _handle_agent_result
-        self._current_session_id = session_id
-        self._current_user_id = user_id
+        # Scope streaming state to this request so concurrent researches cannot
+        # trade step numbers or resolve each other's report. Set before the base
+        # class builds this context's agent, which reads model_id from here.
+        _request_state.set(_RequestState(session_id=session_id, user_id=user_id, model_id=model_id))
+
+        # Report this research to /ping as in-flight work. The A2A SDK keeps
+        # consuming events after the client disconnects, so the run outlives the
+        # request and the platform would otherwise reclaim the container while
+        # the report is still being written.
+        task_id = async_tasks.begin("research", {"session_id": session_id})
 
         try:
-            # Use agent.stream_async with invocation_state
-            async for event in agent.stream_async(content_blocks, invocation_state=invocation_state):
-                await self._handle_streaming_event(event, updater)
+            # Delegate to the base class so the per-context agent and lock apply.
+            await self._run_with_context_agent(
+                context.context_id,
+                content_blocks,
+                invocation_state,
+                updater,
+                None,
+            )
         except Exception as e:
             error_msg = str(e)
             # Check for Bedrock service errors
@@ -245,10 +273,17 @@ class MetadataAwareExecutor(StrandsA2AExecutor):
             else:
                 logger.exception("Error in streaming execution")
             raise
+        finally:
+            # Always release, including on cancellation: a task left registered
+            # keeps reporting HealthyBusy and pins the session until maxLifetime.
+            async_tasks.end(task_id)
 
-    async def _handle_agent_result(self, result, updater: TaskUpdater) -> None:
+    async def _handle_agent_result(self, result, updater: TaskUpdater, stream_state=None) -> None:
         """
         Override to add markdown content along with agent result before completing.
+
+        stream_state is the base class's A2A-compliant streaming state; accepted
+        to match its signature.
         """
         # Add agent's summary response first (if any)
         if final_content := str(result):
@@ -257,9 +292,11 @@ class MetadataAwareExecutor(StrandsA2AExecutor):
                 name="agent_response",
             )
 
-        # Read markdown file and add as main artifact
-        session_id = getattr(self, '_current_session_id', None)
-        user_id = getattr(self, '_current_user_id', 'default_user')
+        # Read markdown file and add as main artifact. The session comes from
+        # this request's state, never a field shared with other researches.
+        state = _request_state.get()
+        session_id = state.session_id
+        user_id = state.user_id
 
         if session_id:
             try:
@@ -539,38 +576,24 @@ def create_app() -> FastAPI:
         version="1.0.0"
     )
 
-    # Agent cache for reusing agents with the same model_id
-    agent_cache = {}
+    def build_agent(context_id: str, model_id: Optional[str] = None) -> Agent:
+        """Build a dedicated agent for one A2A context.
 
-    def get_or_create_agent(model_id: Optional[str] = None) -> Agent:
-        """Get cached agent or create new one with specified model_id"""
+        Deliberately not cached by model: agents are no longer shared across
+        contexts, which is what stops two concurrent researches from interleaving
+        their conversation state. Construction is cheap next to a research run.
+        """
         effective_model_id = model_id or MODEL_ID
+        logger.info(f"Creating agent for context {context_id} with model: {effective_model_id}")
+        return create_agent(effective_model_id)
 
-        if effective_model_id not in agent_cache:
-            logger.info(f"Creating new agent instance with model: {effective_model_id}")
-            agent_cache[effective_model_id] = create_agent(effective_model_id)
-        else:
-            logger.info(f"Reusing cached agent with model: {effective_model_id}")
-
-        return agent_cache[effective_model_id]
-
-    # Create default agent for A2A Server initialization (required but will be overridden by MetadataAwareExecutor)
-    default_agent = get_or_create_agent()
-
-    # Create Custom Executor with agent cache
-    custom_executor = MetadataAwareExecutor(agent_cache=agent_cache)
-
-    # Create Custom Request Handler with our executor
     task_store = InMemoryTaskStore()
-    custom_request_handler = DefaultRequestHandler(
-        agent_executor=custom_executor,
-        task_store=task_store
-    )
 
-    # Create A2A server with custom request handler
-    # Note: We still need to pass an agent to A2AServer for AgentCard generation
+    # A2AServer builds its own executor, which we replace below with ours; it is
+    # given the factory so it derives the AgentCard from a representative agent
+    # instead of a second long-lived default one.
     a2a_server = A2AServer(
-        agent=default_agent,  # Used only for AgentCard metadata
+        agent_factory=build_agent,
         http_url=runtime_url,
         serve_at_root=True,
         host="0.0.0.0",
@@ -580,76 +603,31 @@ def create_app() -> FastAPI:
         task_store=task_store  # Share the same task store
     )
 
-    # Override the request_handler with our custom one
-    a2a_server.request_handler = custom_request_handler
+    # Swap in our executor: A2AServer has no hook for a custom one, and we need
+    # the metadata extraction and research_step artifacts it adds.
+    a2a_server.request_handler = DefaultRequestHandler(
+        agent_executor=MetadataAwareExecutor(agent_factory=build_agent),
+        task_store=task_store
+    )
 
     logger.info(f"A2A Server configured with MetadataAwareExecutor at {runtime_url}")
 
     @app.get("/ping")
     def ping():
-        """Health check endpoint."""
+        """Report liveness to AgentCore Runtime.
+
+        The status is the platform's only signal for whether this session is
+        idle: "Healthy" makes the microVM eligible for termination after
+        idleRuntimeSessionTimeout, "HealthyBusy" keeps it alive while research is
+        still running. Must stay non-blocking — blocking here would let a busy
+        event loop get the container reclaimed mid-research.
+        """
         return {
-            "status": "healthy",
+            "status": async_tasks.ping_status(),
             "agent": "Research Agent",
             "version": "1.0.0",
             "skills": ["research_topic", "generate_report"]
         }
-
-    @app.post("/research")
-    async def research_topic(request: dict):
-        """
-        Direct endpoint for local testing (non-A2A).
-
-        Request body:
-        {
-            "topic": "Research topic or question",
-            "session_id": "optional-session-id"
-        }
-        """
-        topic = request.get("topic", "")
-        session_id = request.get("session_id", str(uuid.uuid4()))
-
-        if not topic:
-            return {"error": "topic is required"}
-
-        try:
-            logger.info(f"Starting research on topic: {topic} (session: {session_id})")
-
-            # Get default agent
-            agent = get_or_create_agent()
-
-            # Run agent with invocation_state to pass session_id to tools
-            result = await agent.invoke_async(
-                f"Research this topic and create a comprehensive report: {topic}",
-                invocation_state={"request_state": {"session_id": session_id}}
-            )
-
-            # Read the generated markdown document
-            from report_manager import get_report_manager
-            import os
-            manager = get_report_manager(session_id)
-
-            # Read markdown file from workspace
-            markdown_file = os.path.join(manager.workspace, "research_report.md")
-            markdown_content = ""
-            if os.path.exists(markdown_file):
-                with open(markdown_file, 'r', encoding='utf-8') as f:
-                    markdown_content = f.read()
-            else:
-                markdown_content = "No markdown file generated"
-
-            return {
-                "status": "success",
-                "session_id": session_id,
-                "topic": topic,
-                "markdown": markdown_content,
-                "markdown_file": markdown_file,
-                "agent_response": result.output if hasattr(result, 'output') else str(result)
-            }
-
-        except Exception as e:
-            logger.error(f"Error in research_topic: {e}")
-            return {"error": str(e)}
 
     # Mount A2A server with MetadataAwareExecutor
     # This handles ALL A2A protocol endpoints including /, /ping, /.well-known/agent-card.json
