@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
-import { Upload, Send, Square, Loader2, Mic } from "lucide-react"
+import { Upload, Send, Square, Loader2, Mic, CornerDownLeft, Zap } from "lucide-react"
 import { FilePreview } from "@/components/ui/file-preview"
 import { AnimatePresence } from "framer-motion"
 import { VoiceAnimation } from "@/components/VoiceAnimation"
@@ -25,6 +25,14 @@ interface ChatInputAreaProps {
   currentModelId?: string
   onModelChange?: (modelId: string) => void
   onSendMessage: (text: string, files: File[]) => Promise<void>
+  /**
+   * Queue a turn instead of sending it, used while the agent is busy. The
+   * composer stays enabled so the user can keep typing during a long run.
+   */
+  onEnqueueMessage: (text: string, files: File[]) => void
+  /** Concise response style: on while the toggle is lit. */
+  conciseMode: boolean
+  onToggleConciseMode: () => void
   onStopGeneration: () => void
   onConnectVoice: () => Promise<void>
   onDisconnectVoice: () => void
@@ -54,6 +62,9 @@ export function ChatInputArea({
   currentModelId,
   onModelChange,
   onSendMessage,
+  onEnqueueMessage,
+  conciseMode,
+  onToggleConciseMode,
   onStopGeneration,
   onConnectVoice,
   onDisconnectVoice,
@@ -104,6 +115,29 @@ export function ChatInputArea({
     }
   }, [onExportConversation, onNewChat, onCompact, setInputMessage])
 
+  // Single submit path shared by Enter, the form, and the send button.
+  // While the agent is busy the composer stays open and the turn is queued
+  // instead of sent; the parent decides when it is safe to dispatch it.
+  const isBusy = agentStatus !== 'idle'
+  const hasContent = inputMessage.trim().length > 0 || selectedFiles.length > 0
+
+  const submit = useCallback(() => {
+    if (!hasContent || isVoiceActive) return
+    // Slash commands are handled in handleKeyDown.
+    if (inputMessage.trim().startsWith('/')) return
+
+    if (isBusy) {
+      onEnqueueMessage(inputMessage, selectedFiles)
+    } else {
+      void onSendMessage(inputMessage, selectedFiles)
+    }
+    setInputMessage('')
+    setSelectedFiles([])
+  }, [
+    hasContent, isVoiceActive, inputMessage, selectedFiles, isBusy,
+    onEnqueueMessage, onSendMessage, setSelectedFiles,
+  ])
+
   const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.target.files || [])
     setSelectedFiles(prev => [...prev, ...files])
@@ -146,11 +180,7 @@ export function ChatInputArea({
       if (isTouchDevice) return
 
       e.preventDefault()
-      if (agentStatus === 'idle' && (inputMessage.trim() || selectedFiles.length > 0)) {
-        onSendMessage(inputMessage, selectedFiles)
-        setInputMessage('')
-        setSelectedFiles([])
-      }
+      submit()
     }
   }
 
@@ -228,18 +258,9 @@ export function ChatInputArea({
           ''
         }`}>
           <form
-            onSubmit={async (e) => {
+            onSubmit={(e) => {
               e.preventDefault()
-              if (isVoiceActive) return
-
-              // Ignore slash commands (they're handled in handleKeyDown)
-              if (inputMessage.trim().startsWith('/')) return
-
-              if (inputMessage.trim() || selectedFiles.length > 0) {
-                await onSendMessage(inputMessage, selectedFiles)
-                setInputMessage('')
-                setSelectedFiles([])
-              }
+              submit()
             }}
           >
             <Input
@@ -262,10 +283,14 @@ export function ChatInputArea({
                 placeholder={
                   isVoiceActive
                     ? "Voice mode active - click mic to stop"
+                    : isBusy
+                    ? "Send a follow-up — it'll go next"
                     : "Ask me anything..."
                 }
                 className="flex-1 min-h-[52px] max-h-36 border-0 focus:ring-0 focus:ring-offset-0 ring-0 ring-offset-0 resize-none py-2 px-1 leading-relaxed overflow-y-auto bg-transparent transition-all duration-200 placeholder:text-muted-foreground/60 shadow-none"
-                disabled={agentStatus !== 'idle'}
+                // Stays enabled while the agent runs so follow-ups can be queued.
+                // Voice mode still owns the composer exclusively.
+                disabled={isVoiceActive}
                 rows={1}
               />
               <div className="flex items-center gap-1.5 pb-1.5">
@@ -318,8 +343,11 @@ export function ChatInputArea({
                   </TooltipProvider>
                 )}
 
-                {/* Send/Stop Button */}
-                {agentStatus !== 'idle' && !isVoiceActive ? (
+                {/* Queue / Send / Stop.
+                    While the agent runs, the button only becomes "queue" once
+                    there is something to queue — otherwise it stays Stop, so
+                    stopping is never more than one click away. */}
+                {isVoiceActive ? null : isBusy && !hasContent ? (
                   <Button
                     type="button"
                     onClick={onStopGeneration}
@@ -335,23 +363,17 @@ export function ChatInputArea({
                       <Square className="w-4 h-4" />
                     )}
                   </Button>
-                ) : !isVoiceActive ? (
+                ) : (
                   <Button
-                    type="button"
-                    onClick={async (e) => {
-                      e.preventDefault()
-                      if (agentStatus !== 'idle' || (!inputMessage.trim() && selectedFiles.length === 0)) return
-                      await onSendMessage(inputMessage, selectedFiles)
-                      setInputMessage('')
-                      setSelectedFiles([])
-                    }}
-                    disabled={agentStatus !== 'idle' || (!inputMessage.trim() && selectedFiles.length === 0)}
+                    type="submit"
+                    disabled={!hasContent}
                     size="sm"
+                    title={isBusy ? "Queue this message" : "Send"}
                     className="h-9 w-9 p-0 gradient-primary hover:opacity-90 text-primary-foreground rounded-xl transition-all duration-200 disabled:opacity-40"
                   >
-                    <Send className="w-4 h-4" />
+                    {isBusy ? <CornerDownLeft className="w-4 h-4" /> : <Send className="w-4 h-4" />}
                   </Button>
-                ) : null}
+                )}
               </div>
             </div>
           </form>
@@ -378,7 +400,32 @@ export function ChatInputArea({
                   </TooltipContent>
                 </Tooltip>
 
-
+                {/* Concise mode. Icon-only like Upload beside it; the label
+                    lives in the tooltip. When on, the button carries the
+                    active state so the mode is visible without text. */}
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={onToggleConciseMode}
+                      disabled={isVoiceActive}
+                      aria-pressed={conciseMode}
+                      aria-label="Concise replies"
+                      className={`h-9 w-9 p-0 rounded-md transition-all duration-200 disabled:opacity-40 ${
+                        conciseMode
+                          ? 'bg-primary/10 text-primary hover:bg-primary/15'
+                          : 'hover:bg-muted-foreground/10 text-muted-foreground'
+                      }`}
+                    >
+                      <Zap className={`w-4 h-4 ${conciseMode ? 'fill-current' : ''}`} />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    <p>{conciseMode ? 'Concise replies: on' : 'Concise replies'}</p>
+                  </TooltipContent>
+                </Tooltip>
               </div>
             </TooltipProvider>
 

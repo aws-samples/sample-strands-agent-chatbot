@@ -44,12 +44,12 @@ class SkillChatAgent(ChatAgent):
         Skill tools get their guidance from SKILL.md (loaded on-demand).
         System prompt only includes base prompt + date.
         """
-        from agent.config.prompt_builder import BASE_TEXT_PROMPT, get_current_date_pacific
+        from agent.config.prompt_builder import build_text_system_prompt
 
-        return [
-            {"text": BASE_TEXT_PROMPT},
-            {"text": f"Current date: {get_current_date_pacific()}"}
-        ]
+        # Delegates so the concise style swap applies here too. This is the agent
+        # the chat path actually uses, so inlining BASE_TEXT_PROMPT here would
+        # bypass the toggle entirely.
+        return build_text_system_prompt(concise=getattr(self, 'concise_mode', False))
 
     def _load_tools(self):
         """Override: inject tool IDs for skills not in the disabled set."""

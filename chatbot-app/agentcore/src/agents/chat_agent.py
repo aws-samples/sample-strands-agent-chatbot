@@ -74,6 +74,7 @@ class ChatAgent(BaseAgent):
         agent_id: Optional[str] = None,
         auth_token: Optional[str] = None,
         allow_user_federation: bool = True,
+        concise_mode: bool = False,
     ):
         self.agent = None
         self.use_null_conversation_manager = use_null_conversation_manager if use_null_conversation_manager is not None else False
@@ -90,6 +91,7 @@ class ChatAgent(BaseAgent):
             compaction_enabled=compaction_enabled,
             auth_token=auth_token,
             allow_user_federation=allow_user_federation,
+            concise_mode=concise_mode,
         )
 
         # Create Strands agent after base initialization
@@ -97,7 +99,7 @@ class ChatAgent(BaseAgent):
 
     def _build_system_prompt(self) -> Any:
         """Build text-based system prompt using prompt_builder"""
-        return build_text_system_prompt()
+        return build_text_system_prompt(concise=getattr(self, 'concise_mode', False))
 
     def get_model_config(self) -> Dict[str, Any]:
         """Return model configuration"""

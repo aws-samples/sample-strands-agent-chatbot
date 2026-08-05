@@ -372,6 +372,7 @@ async def _handle_agui_invocation(body: dict, http_request: Request) -> Streamin
     request_type = "skill"
     auth_token = http_request.headers.get("authorization")
     allow_user_federation = True
+    concise_mode = False
     selected_artifact_id = None
     if input_data.state and isinstance(input_data.state, dict):
         model_id = input_data.state.get("model_id")
@@ -381,6 +382,7 @@ async def _handle_agui_invocation(body: dict, http_request: Request) -> Streamin
         compaction_enabled = input_data.state.get("compaction_enabled")
         request_type = input_data.state.get("request_type", "skill")
         allow_user_federation = input_data.state.get("allow_user_federation", True) is not False
+        concise_mode = input_data.state.get("concise_mode") is True
         selected_artifact_id = input_data.state.get("selected_artifact_id")
         raw_disabled = input_data.state.get("disabled_skills")
         if isinstance(raw_disabled, list):
@@ -404,6 +406,7 @@ async def _handle_agui_invocation(body: dict, http_request: Request) -> Streamin
             compaction_enabled=compaction_enabled,
             auth_token=auth_token,
             allow_user_federation=allow_user_federation,
+            concise_mode=concise_mode,
         )
 
         agui_processor = AGUIStreamEventProcessor(thread_id=thread_id, run_id=run_id)

@@ -16,6 +16,7 @@ import { OAuthElicitationDialog } from "@/components/OAuthElicitationDialog"
 import { SwarmProgress } from "@/components/SwarmProgress"
 import { Canvas } from "@/components/canvas"
 import { ChatInputArea } from "@/components/chat/ChatInputArea"
+import { QueuedMessages } from "@/components/chat/QueuedMessages"
 import { useResearch } from "@/hooks/useResearch"
 import { Button } from "@/components/ui/button"
 import { SidebarTrigger, SidebarInset, useSidebar } from "@/components/ui/sidebar"
@@ -154,6 +155,12 @@ export function ChatInterface() {
     currentReasoning,
     sendMessage,
     stopGeneration,
+    queuedMessages,
+    queueHoldReason,
+    enqueueMessage,
+    removeQueuedMessage,
+    clearQueuedMessages,
+    releaseQueue,
     newChat,
     compactSession,
     truncateFromMessage,
@@ -175,6 +182,8 @@ export function ChatInterface() {
     addArtifactMessage,
     currentModelId,
     updateModelConfig,
+    conciseMode,
+    toggleConciseMode,
     isReconnecting,
     reconnectAttempt,
     pendingOAuth,
@@ -713,20 +722,28 @@ export function ChatInterface() {
     await loadSession(newSessionId)
   }, [loadSession, forceDisconnectVoice])
 
+  // Artifact context reflects what is open in Canvas right now, so it is
+  // resolved at submit time and carried with the message — a queued turn keeps
+  // the context the user was looking at when they typed it.
+  const buildCurrentArtifactContext = useCallback(() => {
+    const selectedArtifact = selectedArtifactId
+      ? artifacts.find(a => a.id === selectedArtifactId)
+      : undefined
+    return buildArtifactContext(selectedArtifact).artifactContext
+  }, [selectedArtifactId, artifacts])
+
   const handleSendMessage = async (text: string, files: File[]) => {
     if (open) {
       setOpen(false)
     }
     setOpenMobile(false)
 
-    // Build artifact context when an artifact is selected in Canvas
-    const selectedArtifact = selectedArtifactId
-      ? artifacts.find(a => a.id === selectedArtifactId)
-      : undefined
-    const { artifactContext } = buildArtifactContext(selectedArtifact)
-
-    await sendMessage(text, files, artifactContext, selectedArtifactId)
+    await sendMessage(text, files, buildCurrentArtifactContext(), selectedArtifactId)
   }
+
+  const handleEnqueueMessage = useCallback((text: string, files: File[]) => {
+    enqueueMessage(text, files, buildCurrentArtifactContext(), selectedArtifactId)
+  }, [enqueueMessage, buildCurrentArtifactContext, selectedArtifactId])
 
   // Interrupt approval handlers (for browser interrupts - research is handled via useEffect/Canvas)
   const handleApproveInterrupt = useCallback(() => {
@@ -1067,6 +1084,15 @@ export function ChatInterface() {
           </div>
         )}
 
+        {/* Turns queued while the agent is busy */}
+        <QueuedMessages
+          queue={queuedMessages}
+          holdReason={queueHoldReason}
+          onRemove={removeQueuedMessage}
+          onSendNow={releaseQueue}
+          onDiscardAll={clearQueuedMessages}
+        />
+
         {/* Chat Input Area */}
         <ChatInputArea
           selectedFiles={selectedFiles}
@@ -1079,6 +1105,9 @@ export function ChatInterface() {
           currentModelId={currentModelId}
           onModelChange={updateModelConfig}
           onSendMessage={handleSendMessage}
+          onEnqueueMessage={handleEnqueueMessage}
+          conciseMode={conciseMode}
+          onToggleConciseMode={toggleConciseMode}
           onStopGeneration={stopGeneration}
           onConnectVoice={connectVoice}
           onDisconnectVoice={disconnectVoice}

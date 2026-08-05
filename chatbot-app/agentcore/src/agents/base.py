@@ -35,12 +35,16 @@ class BaseAgent(ABC):
         compaction_enabled: Optional[bool] = None,
         auth_token: Optional[str] = None,
         allow_user_federation: bool = True,
+        concise_mode: bool = False,
     ):
         self.session_id = session_id
         self.user_id = user_id or session_id
         self.enabled_tools = enabled_tools
         self.auth_token = auth_token
         self.allow_user_federation = allow_user_federation
+        # Selects the concise style sections in the base prompt. Set before
+        # _build_system_prompt() runs, which reads it.
+        self.concise_mode = concise_mode
         self.gateway_client = None  # Gateway MCP client for lifecycle management
         self._mcp_clients = []
         self._closed = False
@@ -125,7 +129,8 @@ class BaseAgent(ABC):
             session_id=self.session_id,
             user_id=self.user_id,
             mode="text",
-            compaction_enabled=self.compaction_enabled
+            compaction_enabled=self.compaction_enabled,
+            model_id=self.model_id,
         )
 
 

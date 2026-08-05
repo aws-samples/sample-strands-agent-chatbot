@@ -163,6 +163,9 @@ export async function POST(request: NextRequest) {
     // Clients without an OAuth callback page (mobile) opt out of 3LO skills.
     // Only an explicit false disables them, so web keeps the default.
     const allow_user_federation: boolean = state.allow_user_federation !== false
+    // Concise mode: the client sends a flag, the prompt text is added here so it
+    // stays out of the browser bundle and can be tuned without a frontend build.
+    const concise_mode: boolean = state.concise_mode === true
 
     // Extract user message from the last element of body.messages.
     // content may be a string (text-only) or an InputContentPart[] (multimodal).
@@ -364,11 +367,16 @@ export async function POST(request: NextRequest) {
             modelConfig,
           })
 
-          // Merge system prompts: user-provided (artifact context) + model config
-          let finalSystemPrompt = modelConfig.system_prompt
-          if (system_prompt) {
-            finalSystemPrompt = `${modelConfig.system_prompt}\n\n${system_prompt}`
-          }
+          // Merge system prompts: model config + user-provided (artifact context).
+          //
+          // Concise mode is deliberately NOT appended here. Appending a "be brief"
+          // block left it competing with the runtime's base prompt, which mandates
+          // prose over lists and a 1-2 sentence minimum per bullet; the model split
+          // the difference and kept answering at length. The runtime now swaps its
+          // own style sections instead, driven by the concise_mode flag below.
+          const finalSystemPrompt = [modelConfig.system_prompt, system_prompt]
+            .filter(Boolean)
+            .join('\n\n')
 
           // Process inline images in AG-UI messages (resize if needed)
           if (aguiMessages.length > 0) {
@@ -399,6 +407,7 @@ export async function POST(request: NextRequest) {
             ...(request_type && { request_type }),
             ...(disabled_skills.length > 0 && { disabled_skills }),
             ...(!allow_user_federation && { allow_user_federation: false }),
+            ...(concise_mode && { concise_mode: true }),
           }
 
           const aguiBody = {
