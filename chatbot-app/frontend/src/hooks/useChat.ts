@@ -454,8 +454,8 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
   }, [apiNewChat, stopPolling])
 
   // Answering an approval resumes the same turn, so the queue must keep waiting
-  // for that turn to finish rather than treating the hold as resolved. Clearing
-  // the hold here is enough: the resumed turn settles through the normal path.
+  // for that turn to finish rather than treating the hold as resolved: the hold
+  // is cleared here, and the resumed turn reports its own outcome below.
   const respondToInterrupt = useCallback(async (interruptId: string, response: string) => {
     if (!sessionState.interrupt) return
     releaseHoldRef.current()
@@ -473,11 +473,18 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
       await apiSendMessage(
         JSON.stringify([{ interruptResponse: { interruptId, response } }]),
         undefined,
-        undefined,
-        () => setUIState(prev => ({ ...prev, isTyping: false, agentStatus: 'idle' })),
+        // The resumed turn is the one that finishes the work the queue is waiting
+        // on, so it has to settle the turn like any other. Without this the queue
+        // keeps a message that nothing ever flushes.
+        () => { setTurnSettled({ outcome: 'finished' }) },
+        () => {
+          setTurnSettled({ outcome: 'error' })
+          setUIState(prev => ({ ...prev, isTyping: false, agentStatus: 'idle' }))
+        },
       )
     } catch (error) {
       console.error('[Interrupt] Failed to respond to interrupt:', error)
+      setTurnSettled({ outcome: 'error' })
       setUIState(prev => ({ ...prev, isTyping: false, agentStatus: 'idle' }))
     }
   }, [sessionState.interrupt, apiSendMessage])

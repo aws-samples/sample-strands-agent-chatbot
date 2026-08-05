@@ -206,6 +206,41 @@ describe('useChat message queue wiring', () => {
     expect(result.current.queuedMessages.map(m => m.text)).toEqual(['b'])
   })
 
+  // Approving a research resumes the SAME turn. That resumed turn is what
+  // finishes the work the queue is waiting on, so it must settle the turn too —
+  // otherwise the queued message is held by a turn that never reports an outcome.
+  it('flushes the queue after an approved turn completes', async () => {
+    const { result } = await mount()
+    streamState.interrupt = { interrupts: [{ id: 'i1', name: 'approve', reason: { tool_name: 'research_agent' } }] }
+
+    act(() => { result.current.enqueueMessage('follow-up') })
+    await act(async () => { await result.current.sendMessage('research this') })
+    await waitFor(() => expect(result.current.queueHoldReason).toBe('interrupt'))
+
+    // User approves; the run resumes and this time finishes cleanly.
+    streamState.interrupt = null
+    await act(async () => { await result.current.respondToInterrupt('i1', 'yes') })
+
+    await waitFor(() => expect(sentTexts()).toContain('follow-up'))
+    expect(result.current.queuedMessages).toEqual([])
+  })
+
+  it('holds again when the resumed turn errors', async () => {
+    const { result } = await mount()
+    streamState.interrupt = { interrupts: [{ id: 'i1', name: 'approve', reason: { tool_name: 'research_agent' } }] }
+
+    act(() => { result.current.enqueueMessage('follow-up') })
+    await act(async () => { await result.current.sendMessage('research this') })
+    await waitFor(() => expect(result.current.queueHoldReason).toBe('interrupt'))
+
+    streamState.interrupt = null
+    failNextSend = true
+    await act(async () => { await result.current.respondToInterrupt('i1', 'yes') })
+
+    await waitFor(() => expect(result.current.queueHoldReason).toBe('error'))
+    expect(sentTexts()).not.toContain('follow-up')
+  })
+
   it('forwards the artifact context captured at enqueue time', async () => {
     const { result } = await mount()
 

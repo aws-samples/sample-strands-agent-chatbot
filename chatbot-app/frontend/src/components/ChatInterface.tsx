@@ -594,6 +594,16 @@ export function ChatInterface() {
       // Skip already processed
       if (processedResearchIdsRef.current.has(executionId)) continue
 
+      // A research whose artifact already exists finished before this mount:
+      // researchData is derived from message history, so a page reload replays
+      // every past research as freshly "complete" against an empty processed
+      // set. Completing it again would reset the research state and open its
+      // artifact, replacing the approval card for the research starting now.
+      if (artifacts.some(a => a.id === `research-${executionId}`)) {
+        processedResearchIdsRef.current.add(executionId)
+        continue
+      }
+
       if (data.status === 'complete' && data.result) {
         processedResearchIdsRef.current.add(executionId)
 
@@ -632,7 +642,7 @@ export function ChatInterface() {
         }
       }
     }
-  }, [researchData, researchArtifactId, closeCanvas, addArtifact, sessionId, extractResearchContent, openArtifact])
+  }, [researchData, researchArtifactId, artifacts, closeCanvas, addArtifact, sessionId, extractResearchContent, openArtifact])
 
   // Export conversation to text file
   const exportConversation = useCallback(() => {
