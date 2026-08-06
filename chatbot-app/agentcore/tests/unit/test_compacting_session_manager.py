@@ -72,6 +72,81 @@ class TestCompactingSessionManagerInit:
         assert manager.user_id == 'test-user-123'
         assert manager.summarization_strategy_id == 'custom-strategy-123'
 
+
+class TestMailboxPersistenceScope:
+    @pytest.fixture
+    def manager(self):
+        with patch(
+            'agent.session.compacting_session_manager.AgentCoreMemorySessionManager.__init__'
+        ) as parent_init:
+            parent_init.return_value = None
+            from agent.session.compacting_session_manager import CompactingSessionManager
+
+            config = MagicMock()
+            config.memory_id = "memory-1"
+            config.session_id = "session-1"
+            config.actor_id = "user-1"
+            manager = CompactingSessionManager(config)
+            manager.config = config
+            manager.memory_client = MagicMock()
+            return manager
+
+    @patch(
+        'agent.session.compacting_session_manager.AgentCoreMemorySessionManager.create_message'
+    )
+    def test_scope_adds_stable_metadata_and_client_token(self, parent_create, manager):
+        from strands.types.session import SessionMessage
+
+        parent_create.return_value = {"eventId": "stored-1"}
+        message = SessionMessage.from_message(
+            {"role": "user", "content": [{"text": "internal"}]},
+            0,
+        )
+
+        with manager.mailbox_event_scope("mailbox-event-1"):
+            result = manager.create_message("session-1", "default", message)
+
+        assert result == {"eventId": "stored-1"}
+        metadata = parent_create.call_args.kwargs["metadata"]
+        assert metadata["originEventId"]["stringValue"] == "mailbox-event-1"
+        assert metadata["logicalMessageId"]["stringValue"] == (
+            "mailbox:mailbox-event-1:0"
+        )
+        assert metadata["visibility"]["stringValue"] == "internal"
+
+        emitter = manager.memory_client.gmdp_client.meta.events
+        callback = emitter.register_first.call_args.args[1]
+        params = {}
+        callback(params)
+        assert len(params["clientToken"]) == 64
+        assert params["extractionMode"] == "SKIP"
+        emitter.unregister.assert_called_once()
+
+    @patch(
+        'agent.session.compacting_session_manager.AgentCoreMemorySessionManager.create_message'
+    )
+    def test_scope_assigns_deterministic_sequence(self, parent_create, manager):
+        from strands.types.session import SessionMessage
+
+        parent_create.return_value = {"eventId": "stored"}
+        assistant = SessionMessage.from_message(
+            {"role": "assistant", "content": [{"text": "ready"}]},
+            0,
+        )
+
+        with manager.mailbox_event_scope("mailbox-event-1"):
+            manager.create_message("session-1", "default", assistant)
+            manager.create_message("session-1", "default", assistant)
+
+        calls = parent_create.call_args_list
+        assert calls[0].kwargs["metadata"]["logicalMessageId"]["stringValue"].endswith(
+            ":0"
+        )
+        assert calls[1].kwargs["metadata"]["logicalMessageId"]["stringValue"].endswith(
+            ":1"
+        )
+        assert calls[0].kwargs["metadata"]["visibility"]["stringValue"] == "conversation"
+
 class TestCompactionState:
     """Test CompactionState dataclass"""
 
@@ -1555,5 +1630,4 @@ class TestEndToEndScenarios:
 
         assert manager.compaction_state.checkpoint == 50
         assert manager.compaction_state.summary == "Previous summary"
-
 

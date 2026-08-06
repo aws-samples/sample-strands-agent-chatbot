@@ -9,7 +9,9 @@ import { unmarshall } from '@aws-sdk/util-dynamodb'
 
 const IS_LOCAL = process.env.NEXT_PUBLIC_AGENTCORE_LOCAL === 'true'
 const AWS_REGION = process.env.AWS_REGION || process.env.NEXT_PUBLIC_AWS_REGION || 'us-west-2'
-const TABLE_NAME = process.env.DYNAMODB_USERS_TABLE || 'strands-agent-chatbot-users-v2'
+const USERS_TABLE_NAME =
+  process.env.DYNAMODB_USERS_TABLE || 'strands-agent-chatbot-users-v2'
+const ORCHESTRATION_TABLE_NAME = process.env.SESSION_ORCHESTRATION_TABLE || ''
 
 export type ResearchJobStatus =
   | 'queued'
@@ -17,6 +19,7 @@ export type ResearchJobStatus =
   | 'completed'
   | 'delivering'
   | 'delivered'
+  | 'cancelled'
   | 'error'
 
 export interface ResearchJob {
@@ -116,23 +119,50 @@ function readLocalJobs(sessionId: string, userId: string): ResearchJob[] {
 
 async function readCloudJobs(sessionId: string, userId: string): Promise<ResearchJob[]> {
   const client = new DynamoDBClient({ region: AWS_REGION })
-  const jobs: ResearchJob[] = []
-  let exclusiveStartKey: Record<string, any> | undefined
+  const jobsById = new Map<string, ResearchJob>()
+
+  if (ORCHESTRATION_TABLE_NAME) {
+    let exclusiveStartKey: Record<string, any> | undefined
+    do {
+      const response = await client.send(new QueryCommand({
+        TableName: ORCHESTRATION_TABLE_NAME,
+        KeyConditionExpression:
+          'sessionKey = :sessionKey AND begins_with(recordKey, :prefix)',
+        ExpressionAttributeValues: {
+          ':sessionKey': { S: `USER#${userId}#SESSION#${sessionId}` },
+          ':prefix': { S: 'JOB#' },
+        },
+        ConsistentRead: true,
+        ExclusiveStartKey: exclusiveStartKey,
+      }))
+      for (const item of response.Items || []) {
+        const job = unmarshall(item) as ResearchJob
+        jobsById.set(job.jobId, job)
+      }
+      exclusiveStartKey = response.LastEvaluatedKey
+    } while (exclusiveStartKey)
+  }
+
+  let legacyStartKey: Record<string, any> | undefined
   do {
     const response = await client.send(new QueryCommand({
-      TableName: TABLE_NAME,
+      TableName: USERS_TABLE_NAME,
       KeyConditionExpression: 'userId = :userId AND begins_with(sk, :prefix)',
       ExpressionAttributeValues: {
         ':userId': { S: userId },
         ':prefix': { S: `RESEARCH_JOB#${sessionId}#` },
       },
       ConsistentRead: true,
-      ExclusiveStartKey: exclusiveStartKey,
+      ExclusiveStartKey: legacyStartKey,
     }))
-    jobs.push(...(response.Items || []).map(item => unmarshall(item) as ResearchJob))
-    exclusiveStartKey = response.LastEvaluatedKey
-  } while (exclusiveStartKey)
-  return jobs
+    for (const item of response.Items || []) {
+      const job = unmarshall(item) as ResearchJob
+      if (!jobsById.has(job.jobId)) jobsById.set(job.jobId, job)
+    }
+    legacyStartKey = response.LastEvaluatedKey
+  } while (legacyStartKey)
+
+  return Array.from(jobsById.values())
 }
 
 export async function listResearchJobs(

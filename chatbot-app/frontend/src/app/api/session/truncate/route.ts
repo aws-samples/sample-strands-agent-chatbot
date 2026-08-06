@@ -41,7 +41,12 @@ export async function POST(request: NextRequest) {
     const user = await extractUserFromRequest(request)
     const userId = user.userId
 
-    const { sessionId, fromEventId, fromTimestamp } = await request.json()
+    const {
+      sessionId,
+      fromEventId,
+      fromTimestamp,
+      originEventId,
+    } = await request.json()
     if (!sessionId) {
       return NextResponse.json({ success: false, error: 'sessionId is required' }, { status: 400 })
     }
@@ -58,6 +63,14 @@ export async function POST(request: NextRequest) {
       if (typeof fromTimestamp === 'number') {
         const { truncateSessionMessages } = await import('@/lib/local-session-store')
         const deleted = truncateSessionMessages(userId, sessionId, fromTimestamp)
+        if (originEventId) {
+          const { deleteSessionEventProjection } = await import('@/lib/session-events')
+          await deleteSessionEventProjection(
+            userId,
+            sessionId,
+            `${originEventId}:assistant`,
+          )
+        }
         console.log(`[truncate] LOCAL - Deleted ${deleted} messages`)
         return NextResponse.json({ success: true, sessionId, deleted })
       }
@@ -152,6 +165,15 @@ export async function POST(request: NextRequest) {
       if (i + BATCH_SIZE < toDelete.length) {
         await sleep(500)
       }
+    }
+
+    if (originEventId) {
+      const { deleteSessionEventProjection } = await import('@/lib/session-events')
+      await deleteSessionEventProjection(
+        userId,
+        sessionId,
+        `${originEventId}:assistant`,
+      )
     }
 
     console.log(`[truncate] Deleted ${toDelete.length} events from session ${sessionId}`)

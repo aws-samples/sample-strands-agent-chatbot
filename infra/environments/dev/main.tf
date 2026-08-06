@@ -299,11 +299,13 @@ module "runtime_orchestrator" {
   gateway_url = module.gateway.gateway_url
   memory_id   = module.memory.memory_id
 
-  enable_ddb_policy      = true
-  user_data_table_arn    = module.data.users_table_arn
-  user_data_table_name   = module.data.users_table_name
-  global_data_table_arn  = ""
-  global_data_table_name = ""
+  enable_ddb_policy        = true
+  user_data_table_arn      = module.data.users_table_arn
+  user_data_table_name     = module.data.users_table_name
+  global_data_table_arn    = ""
+  global_data_table_name   = ""
+  orchestration_table_arn  = module.data.session_orchestration_table_arn
+  orchestration_table_name = module.data.session_orchestration_table_name
 
   artifact_bucket_arn  = aws_s3_bucket.artifacts.arn
   artifact_bucket_name = aws_s3_bucket.artifacts.id
@@ -312,6 +314,9 @@ module "runtime_orchestrator" {
     {
       DYNAMODB_USERS_TABLE                  = module.data.users_table_name
       DYNAMODB_SESSIONS_TABLE               = module.data.sessions_table_name
+      M2M_CLIENT_ID                         = module.auth.m2m_client_id
+      SESSION_MAILBOX_DELIVERY_ENABLED      = "true"
+      SESSION_MAILBOX_WRITE_ENABLED         = "true"
       MEMORY_ARN                            = module.memory.memory_arn
       CODE_AGENT_RUNTIME_ARN                = module.runtime_code_agent.runtime_arn
       RESEARCH_AGENT_RUNTIME_ARN            = module.runtime_research_agent.runtime_arn
@@ -342,6 +347,28 @@ module "runtime_orchestrator" {
     module.runtime_mcp_3lo,
     module.agentcore_shared,
     aws_s3_bucket.artifacts,
+  ]
+}
+
+module "session_mailbox_dispatcher" {
+  source = "../../modules/session-mailbox-dispatcher"
+
+  project_name = var.project_name
+  environment  = var.environment
+  aws_region   = var.aws_region
+  account_id   = local.account_id
+  source_dir   = "${local.root_dir}/infra/lambda/session-mailbox-dispatcher"
+
+  orchestration_stream_arn = module.data.session_orchestration_stream_arn
+  agentcore_runtime_url    = module.runtime_orchestrator.runtime_invocation_url
+  cognito_domain_url       = module.auth.domain_url
+  m2m_client_id            = module.auth.m2m_client_id
+  m2m_client_secret        = module.auth.m2m_client_secret
+
+  depends_on = [
+    module.auth,
+    module.data,
+    module.runtime_orchestrator,
   ]
 }
 
@@ -435,10 +462,12 @@ module "chat" {
   cognito_user_pool_client_id = module.auth.web_client_id
   cognito_user_pool_domain    = module.auth.domain
 
-  users_table_name    = module.data.users_table_name
-  users_table_arn     = module.data.users_table_arn
-  sessions_table_name = module.data.sessions_table_name
-  sessions_table_arn  = module.data.sessions_table_arn
+  users_table_name                 = module.data.users_table_name
+  users_table_arn                  = module.data.users_table_arn
+  sessions_table_name              = module.data.sessions_table_name
+  sessions_table_arn               = module.data.sessions_table_arn
+  session_orchestration_table_name = module.data.session_orchestration_table_name
+  session_orchestration_table_arn  = module.data.session_orchestration_table_arn
 
   memory_id            = module.memory.memory_id
   gateway_url          = module.gateway.gateway_url

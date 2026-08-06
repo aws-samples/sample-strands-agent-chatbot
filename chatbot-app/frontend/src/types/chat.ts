@@ -22,6 +22,9 @@ export interface ToolExecution {
 
 export interface Message {
   id: string
+  logicalMessageId?: string
+  eventId?: string
+  originEventId?: string
   text: string
   sender: 'user' | 'bot'
   timestamp: string

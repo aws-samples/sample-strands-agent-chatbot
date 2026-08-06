@@ -63,6 +63,14 @@ variable "sessions_table_arn" {
   type = string
 }
 
+variable "session_orchestration_table_arn" {
+  type = string
+}
+
+variable "session_orchestration_table_name" {
+  type = string
+}
+
 variable "memory_id" {
   type = string
 }

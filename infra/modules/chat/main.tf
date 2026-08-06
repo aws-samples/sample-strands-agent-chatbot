@@ -342,7 +342,12 @@ resource "aws_iam_role_policy" "ecs_task" {
           "dynamodb:DeleteItem", "dynamodb:Query", "dynamodb:Scan",
           "dynamodb:BatchGetItem", "dynamodb:BatchWriteItem",
         ]
-        Resource = [var.users_table_arn, var.sessions_table_arn, "${var.sessions_table_arn}/index/*"]
+        Resource = [
+          var.users_table_arn,
+          var.sessions_table_arn,
+          "${var.sessions_table_arn}/index/*",
+          var.session_orchestration_table_arn,
+        ]
       },
       {
         Effect   = "Allow"
@@ -388,6 +393,7 @@ resource "aws_ecs_task_definition" "frontend" {
       { name = "NEXT_PUBLIC_COGNITO_USER_POOL_CLIENT_ID", value = var.cognito_user_pool_client_id },
       { name = "DYNAMODB_USERS_TABLE", value = var.users_table_name },
       { name = "DYNAMODB_SESSIONS_TABLE", value = var.sessions_table_name },
+      { name = "SESSION_ORCHESTRATION_TABLE", value = var.session_orchestration_table_name },
       { name = "ARTIFACT_BUCKET", value = var.artifact_bucket_name },
       { name = "MEMORY_ID", value = var.memory_id },
       { name = "MCP_GATEWAY_URL", value = var.gateway_url },

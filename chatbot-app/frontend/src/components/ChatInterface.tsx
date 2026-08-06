@@ -6,6 +6,7 @@ import { useChat } from "@/hooks/useChat"
 import { useArtifacts } from "@/hooks/useArtifacts"
 import { useCanvasHandlers } from "@/hooks/useCanvasHandlers"
 import { useResearchJobs } from "@/hooks/useResearchJobs"
+import { useSessionEvents } from "@/hooks/useSessionEvents"
 import { ArtifactType } from "@/types/artifact"
 import { ChatMessage } from "@/components/chat/ChatMessage"
 import { AssistantTurn } from "@/components/chat/AssistantTurn"
@@ -237,10 +238,20 @@ export function ChatInterface() {
     }
     return invocationIds.size
   }, [groupedMessages])
-  const { jobs: researchJobs, deliveredJobIds } = useResearchJobs(
+  const { jobs: researchJobs } = useResearchJobs(
     sessionId,
     researchInvocationCount,
   )
+  const { events: sessionEvents } = useSessionEvents(sessionId)
+  const representedOriginEventIds = useMemo(() => {
+    const ids = new Set<string>()
+    for (const group of groupedMessages) {
+      for (const message of group.messages) {
+        if (message.originEventId) ids.add(message.originEventId)
+      }
+    }
+    return ids
+  }, [groupedMessages])
   const reloadedDeliveriesRef = useRef<Set<string>>(new Set())
   const researchArtifactVersionsRef = useRef<Map<string, string>>(new Map())
 
@@ -272,28 +283,55 @@ export function ChatInterface() {
     }
   }, [researchJobs, addArtifact, sessionId])
 
-  // Background continuations have their own buffered AG-UI execution. Replay
-  // each one through the normal stream handler so its assistant turn appears
-  // live, while the durable job continues to own the tool card and artifact.
+  // Durable session projections are the generic delivery signal. The AG-UI
+  // execution remains a transient optimization for live rendering; when it is
+  // gone, replayExecution falls back to canonical AgentCore history.
   useEffect(() => {
     const userTurnWaiting = queuedMessages.length > 0 && queueHoldReason === null
-    if (agentStatus !== 'idle' || userTurnWaiting || deliveredJobIds.length === 0) return
-    const unseen = deliveredJobIds.filter(id => !reloadedDeliveriesRef.current.has(id))
+    if (isLoadingMessages || agentStatus !== 'idle' || userTurnWaiting) return
+    for (const event of sessionEvents) {
+      if (representedOriginEventIds.has(event.originEventId)) {
+        reloadedDeliveriesRef.current.add(event.eventId)
+      }
+    }
+    const unseen = sessionEvents.filter(event =>
+      event.eventType === 'assistant.turn.completed' &&
+      typeof event.payload?.executionId === 'string' &&
+      !representedOriginEventIds.has(event.originEventId) &&
+      !reloadedDeliveriesRef.current.has(event.eventId)
+    )
     if (unseen.length === 0) return
-    unseen.forEach(id => reloadedDeliveriesRef.current.add(id))
+    unseen.forEach(event => reloadedDeliveriesRef.current.add(event.eventId))
     void (async () => {
-      for (const jobId of unseen) {
-        const executionId = `${sessionId}:research-delivery-${jobId}`
-        await replayExecution(executionId)
+      for (const event of unseen) {
+        try {
+          const replayed = await replayExecution(
+            event.payload.executionId,
+            {
+              logicalMessageId:
+                typeof event.payload.logicalMessageId === 'string'
+                  ? event.payload.logicalMessageId
+                  : undefined,
+            },
+          )
+          // A failed/expired buffer reloads canonical history, which already
+          // contains every committed completion in this batch.
+          if (!replayed) break
+        } catch (error) {
+          reloadedDeliveriesRef.current.delete(event.eventId)
+          console.warn('[ChatInterface] Failed to render session event:', error)
+          break
+        }
       }
     })()
   }, [
     agentStatus,
-    deliveredJobIds,
+    isLoadingMessages,
     queueHoldReason,
     queuedMessages.length,
+    representedOriginEventIds,
     replayExecution,
-    sessionId,
+    sessionEvents,
   ])
 
   // Keep reloadFromStorage ref in sync for the onSessionLoaded callback

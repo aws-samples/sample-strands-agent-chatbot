@@ -10,12 +10,15 @@ Tests cover:
 - Lifecycle actions (warmup, stop, elicitation, execution_status, resume)
 - Standalone GET endpoints (execution-status, resume)
 """
+import asyncio
+import base64
 import pytest
 from unittest.mock import MagicMock, AsyncMock, patch
 from fastapi import Request
 from fastapi.testclient import TestClient
 import json
 import uuid
+from types import SimpleNamespace
 
 
 def _agui_payload(
@@ -34,6 +37,11 @@ def _agui_payload(
         "context": [],
         "state": state,
     }
+
+
+def _unsigned_test_token(claims: dict) -> str:
+    encoded = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=")
+    return f"header.{encoded}.signature"
 
 
 # ============================================================
@@ -205,7 +213,7 @@ class TestExecutionRegistry:
     async def test_tail_stream_stops_on_disconnect(self):
         """Test that tail stream stops when client disconnects."""
         from routers.chat import _create_tail_stream
-        from streaming.execution_registry import ExecutionRegistry, ExecutionStatus
+        from streaming.execution_registry import ExecutionRegistry
         ExecutionRegistry.reset()
         registry = ExecutionRegistry()
         execution = await registry.create_execution("sess5", "user1", "run5")
@@ -222,6 +230,126 @@ class TestExecutionRegistry:
         # Should only have the metadata event before disconnect
         assert len(chunks) == 1
         assert "execution_meta" in chunks[0]
+
+
+class TestMailboxDelivery:
+    @pytest.mark.asyncio
+    async def test_generic_event_loads_research_job_and_marks_delivered(
+        self,
+        monkeypatch,
+    ):
+        from agent import research_jobs
+        from routers import chat
+
+        record = {
+            "jobId": "job-1",
+            "sessionId": "session-1",
+            "userId": "user-1",
+            "artifactId": "artifact-1",
+        }
+        delivered = AsyncMock()
+        marked = MagicMock()
+        monkeypatch.setattr(research_jobs, "_list_jobs", lambda *_: [record])
+        monkeypatch.setattr(research_jobs, "_load_report", lambda _: "# Report")
+        monkeypatch.setattr(
+            research_jobs,
+            "_build_artifact",
+            lambda item, report: {"id": item["artifactId"], "content": report},
+        )
+        monkeypatch.setattr(research_jobs, "mark_delivered", marked)
+        monkeypatch.setattr(chat, "deliver_research_job", delivered)
+        event = SimpleNamespace(
+            event_id="research-result:job-1",
+            user_id="user-1",
+            session_id="session-1",
+            source={"type": "research_job", "id": "job-1"},
+            correlation={"artifactId": "artifact-1"},
+            payload_ref={"bucket": "bucket", "key": "report.md"},
+        )
+
+        projections = await chat.deliver_mailbox_event(event)
+
+        assert record["mailboxEventId"] == "research-result:job-1"
+        delivered.assert_awaited_once()
+        marked.assert_called_once_with(record)
+        assert [item.event_type for item in projections] == [
+            "artifact.upserted",
+            "assistant.turn.completed",
+        ]
+        assert projections[1].payload["executionId"] == (
+            "session-1:research-delivery-job-1"
+        )
+        assert projections[1].payload["logicalMessageId"] == (
+            "mailbox:research-result:job-1:1"
+        )
+
+    @pytest.mark.asyncio
+    async def test_committed_event_skips_duplicate_agent_generation(
+        self,
+        monkeypatch,
+    ):
+        from routers import chat
+        from streaming.execution_registry import ExecutionStatus
+
+        class State:
+            def __init__(self):
+                self.values = {
+                    "artifacts": {},
+                    "mailbox_commits": {
+                        "research-result:job-1": {"sourceId": "job-1"}
+                    },
+                }
+
+            def get(self, key):
+                return self.values.get(key)
+
+            def set(self, key, value):
+                self.values[key] = value
+
+        execution = SimpleNamespace(
+            execution_id="session-1:research-delivery-job-1",
+            status=ExecutionStatus.RUNNING,
+            task=None,
+            completed_at=None,
+            _new_event=asyncio.Event(),
+        )
+
+        class Registry:
+            async def create_execution(self, *args, **kwargs):
+                return execution
+
+        session_manager = MagicMock()
+        agent = SimpleNamespace(state=State())
+        wrapper = SimpleNamespace(
+            agent=agent,
+            session_manager=session_manager,
+            model_id="model-1",
+            elicitation_bridge=None,
+            close=MagicMock(),
+        )
+        monkeypatch.setattr(chat, "registry", Registry())
+        monkeypatch.setattr(chat, "create_agent", MagicMock(return_value=wrapper))
+        processor = MagicMock()
+        monkeypatch.setattr(chat, "AGUIStreamEventProcessor", processor)
+
+        await chat.deliver_research_job(
+            {
+                "jobId": "job-1",
+                "sessionId": "session-1",
+                "userId": "user-1",
+                "artifactId": "artifact-1",
+                "mailboxEventId": "research-result:job-1",
+                "artifactPath": "/tmp/job-1.md",
+            },
+            {"id": "artifact-1", "content": "# Report"},
+        )
+
+        processor.assert_not_called()
+        assert agent.state.get("artifacts")["artifact-1"] == {
+            "id": "artifact-1",
+            "content_ref": {"path": "/tmp/job-1.md"},
+        }
+        assert session_manager.sync_agent.call_count == 1
 
 
 # ============================================================
@@ -374,6 +502,81 @@ class TestLifecycleActions:
 
         assert response.status_code == 200
         assert response.json() == {"status": "warm"}
+
+    def test_mailbox_drain_rejects_user_token(self, monkeypatch):
+        from routers.chat import router
+        from fastapi import FastAPI
+
+        monkeypatch.setenv("M2M_CLIENT_ID", "dispatcher-client")
+        app = FastAPI()
+        app.include_router(router)
+        client = TestClient(app)
+
+        response = client.post(
+            "/invocations",
+            headers={
+                "Authorization": (
+                    f"Bearer {_unsigned_test_token({'client_id': 'web-client'})}"
+                )
+            },
+            json={
+                "thread_id": "session-1",
+                "run_id": str(uuid.uuid4()),
+                "state": {"action": "drain_mailbox", "user_id": "user-1"},
+            },
+        )
+
+        assert response.status_code == 403
+
+    def test_mailbox_drain_accepts_dispatcher_and_reports_empty(
+        self,
+        monkeypatch,
+    ):
+        from agent import mailbox, mailbox_runtime
+        from routers.chat import router
+        from fastapi import FastAPI
+
+        monkeypatch.setenv("M2M_CLIENT_ID", "dispatcher-client")
+        drain = AsyncMock(
+            return_value=SimpleNamespace(
+                processed=1,
+                retried=0,
+                dead=0,
+                acquired=True,
+            )
+        )
+        repository = MagicMock()
+        repository.list_events.return_value = []
+        monkeypatch.setattr(mailbox_runtime, "drain_session_mailbox", drain)
+        monkeypatch.setattr(mailbox, "get_mailbox_repository", lambda: repository)
+        app = FastAPI()
+        app.include_router(router)
+        client = TestClient(app)
+
+        response = client.post(
+            "/invocations",
+            headers={
+                "Authorization": (
+                    f"Bearer {_unsigned_test_token({'client_id': 'dispatcher-client'})}"
+                )
+            },
+            json={
+                "thread_id": "session-1",
+                "run_id": str(uuid.uuid4()),
+                "state": {"action": "drain_mailbox", "user_id": "user-1"},
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "status": "drained",
+            "processed": 1,
+            "retried": 0,
+            "dead": 0,
+            "acquired": True,
+            "pending": 0,
+        }
+        drain.assert_awaited_once_with("user-1", "session-1")
 
     @patch('agent.stop_signal.get_stop_signal_provider')
     def test_stop_sets_signal(self, mock_get_provider):

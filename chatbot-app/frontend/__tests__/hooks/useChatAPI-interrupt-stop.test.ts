@@ -68,11 +68,12 @@ const INTERRUPT = {
 
 function setup(handleStreamEvent = vi.fn()) {
   const stopFetch = vi.fn().mockResolvedValue({ ok: true, text: async () => '' })
+  const setMessages = vi.fn()
   const hook = renderHook(() =>
     useChatAPI({
       backendUrl: 'http://localhost:8000',
       setUIState: vi.fn(),
-      setMessages: vi.fn(),
+      setMessages,
       handleStreamEvent,
       resetStreamingState: vi.fn(),
       sessionId: 'session-1',
@@ -81,7 +82,7 @@ function setup(handleStreamEvent = vi.fn()) {
       currentTemperature: 0.5,
     } as any),
   )
-  return { hook, stopFetch, handleStreamEvent }
+  return { hook, stopFetch, handleStreamEvent, setMessages }
 }
 
 /** Runs one turn whose stream ends with the given events. */
@@ -181,7 +182,7 @@ describe('useChatAPI — background execution replay', () => {
     const handleStreamEvent = vi.fn().mockImplementation(async event => {
       if (event.type === 'RUN_FINISHED') await cleanup
     })
-    const { hook } = setup(handleStreamEvent)
+    const { hook, setMessages } = setup(handleStreamEvent)
     await act(async () => {
       await Promise.resolve()
       await Promise.resolve()
@@ -203,7 +204,9 @@ describe('useChatAPI — background execution replay', () => {
     let replayed = false
     let replayPromise: Promise<boolean> | undefined
     await act(async () => {
-      replayPromise = hook.result.current.replayExecution(executionId)
+      replayPromise = hook.result.current.replayExecution(executionId, {
+        logicalMessageId: 'mailbox:research-result:job-1:1',
+      })
       await Promise.resolve()
     })
     expect(replayed).toBe(false)
@@ -228,5 +231,19 @@ describe('useChatAPI — background execution replay', () => {
     expect(handleStreamEvent.mock.calls.map(([event]) => event.type)).toEqual(
       events.map(event => event.type),
     )
+    const identityUpdate =
+      setMessages.mock.calls[setMessages.mock.calls.length - 1]?.[0]
+    expect(identityUpdate([
+      {
+        id: 'completion-1',
+        text: 'Research is ready.',
+        timestamp: '2026-08-06T00:00:00Z',
+      },
+    ])).toEqual([
+      expect.objectContaining({
+        id: 'mailbox:research-result:job-1:1',
+        logicalMessageId: 'mailbox:research-result:job-1:1',
+      }),
+    ])
   })
 })

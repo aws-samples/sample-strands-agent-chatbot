@@ -177,10 +177,18 @@ export interface SessionPreferences {
   customPromptText?: string
 }
 
+export interface ReplayMessageIdentity {
+  logicalMessageId?: string
+  eventId?: string
+}
+
 interface UseChatAPIReturn {
   newChat: () => Promise<boolean>
   sendMessage: (messageToSend: string, files?: File[], onSuccess?: () => void, onError?: (error: string) => void) => Promise<void>
-  replayExecution: (executionId: string) => Promise<boolean>
+  replayExecution: (
+    executionId: string,
+    messageIdentity?: ReplayMessageIdentity,
+  ) => Promise<boolean>
   cleanup: () => void
   sendStopSignal: () => Promise<boolean>
   loadSession: (sessionId: string) => Promise<{ preferences: SessionPreferences | null; messages: Message[] }>
@@ -391,7 +399,11 @@ export const useChatAPI = ({
   }, [])
 
   // Truncate session from a given event (by eventId or timestamp fallback)
-  const truncateSession = useCallback(async (params: { fromEventId?: string; fromTimestamp?: number }): Promise<boolean> => {
+  const truncateSession = useCallback(async (params: {
+    fromEventId?: string
+    fromTimestamp?: number
+    originEventId?: string
+  }): Promise<boolean> => {
     try {
       const currentSessionId = sessionIdRef.current
       if (!currentSessionId) return false
@@ -1072,6 +1084,15 @@ export const useChatAPI = ({
 
           const currentMessage: Message = {
             id: msg.id || `${newSessionId}-${index}`,
+            ...(msg.logicalMessageId && {
+              logicalMessageId: msg.logicalMessageId
+            }),
+            ...(msg.eventId && {
+              eventId: msg.eventId
+            }),
+            ...(msg.originEventId && {
+              originEventId: msg.originEventId
+            }),
             text: cleanedText,
             sender: msg.role === 'user' ? 'user' : 'bot',
             timestamp: msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString() : new Date().toLocaleTimeString(),
@@ -1218,7 +1239,10 @@ export const useChatAPI = ({
     }
   }, [setMessages, getAuthHeaders, reconnect, handleStreamEvent, setUIState])
 
-  const replayExecution = useCallback(async (executionId: string): Promise<boolean> => {
+  const replayExecution = useCallback(async (
+    executionId: string,
+    messageIdentity?: ReplayMessageIdentity,
+  ): Promise<boolean> => {
     const separator = executionId.lastIndexOf(':')
     const executionSessionId = separator >= 0
       ? executionId.substring(0, separator)
@@ -1260,6 +1284,7 @@ export const useChatAPI = ({
       let buffer = ''
       let currentEventId: number | null = null
       let terminalEventSeen = false
+      let replayedMessageId: string | null = null
 
       try {
         while (true) {
@@ -1296,6 +1321,12 @@ export const useChatAPI = ({
                 (AGUI_EVENT_TYPES as readonly string[]).includes(eventData.type)
               ) {
                 if (
+                  eventData.type === 'TEXT_MESSAGE_START' &&
+                  typeof eventData.messageId === 'string'
+                ) {
+                  replayedMessageId = eventData.messageId
+                }
+                if (
                   eventData.type === 'RUN_FINISHED' ||
                   eventData.type === 'RUN_ERROR'
                 ) {
@@ -1311,12 +1342,32 @@ export const useChatAPI = ({
       } finally {
         reader.releaseLock()
       }
+      if (
+        terminalEventSeen &&
+        replayedMessageId &&
+        messageIdentity?.logicalMessageId
+      ) {
+        setMessages(current => current.map(message =>
+          message.id === replayedMessageId
+            ? {
+                ...message,
+                id: messageIdentity.logicalMessageId!,
+                logicalMessageId: messageIdentity.logicalMessageId,
+                ...(messageIdentity.eventId && {
+                  eventId: messageIdentity.eventId,
+                }),
+                rawTimestamp:
+                  message.rawTimestamp ?? new Date(message.timestamp).getTime(),
+              }
+            : message
+        ))
+      }
       return terminalEventSeen || failReplay()
     } catch (error) {
       logger.warn(`[useChatAPI] Failed to replay ${executionId}:`, error)
       return failReplay()
     }
-  }, [getAuthHeaders, handleStreamEvent, setUIState])
+  }, [getAuthHeaders, handleStreamEvent, setMessages, setUIState])
 
   const cleanup = useCallback(() => {
     abortRef.current?.unsubscribe()

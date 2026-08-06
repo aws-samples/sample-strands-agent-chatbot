@@ -73,15 +73,21 @@ async def lifespan(app: FastAPI):
     os.makedirs(sessions_dir, exist_ok=True)
     logger.info("Sessions directory ready")
 
+    from agent.mailbox_runtime import clear_mailbox_runtime, register_mailbox_runtime
     from agent.research_jobs import register_delivery_handler, clear_delivery_handler
-    from routers.chat import deliver_research_job
+    from routers.chat import deliver_mailbox_event, deliver_research_job
 
     register_delivery_handler(asyncio.get_running_loop(), deliver_research_job)
+    register_mailbox_runtime(
+        asyncio.get_running_loop(),
+        {"async_result.ready": deliver_mailbox_event},
+    )
 
     yield  # Application is running
 
     # Shutdown
     clear_delivery_handler()
+    clear_mailbox_runtime()
     logger.info("=== Agent Core Service Shutting Down ===")
     # TODO: Cleanup agent pool, MCP clients, etc.
 
