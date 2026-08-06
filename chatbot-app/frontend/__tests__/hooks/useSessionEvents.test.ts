@@ -112,4 +112,22 @@ describe('useSessionEvents', () => {
 
     expect(hook.result.current.events).toEqual([])
   })
+
+  it('hides the previous session projections immediately when switching sessions', async () => {
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(() => response([completion]))
+      .mockImplementationOnce(() => new Promise<Response>(() => {}))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const hook = renderHook(
+      ({ sessionId }) => useSessionEvents(sessionId),
+      { initialProps: { sessionId: 'session-1' } },
+    )
+    await flushAsyncWork()
+    expect(hook.result.current.events).toEqual([completion])
+
+    hook.rerender({ sessionId: 'session-2' })
+
+    expect(hook.result.current.events).toEqual([])
+  })
 })

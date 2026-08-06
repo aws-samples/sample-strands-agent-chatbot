@@ -134,4 +134,23 @@ describe('useResearchJobs', () => {
     expect(fetchMock).toHaveBeenCalledTimes(3)
     expect(hook.result.current.jobs[0]?.status).toBe('running')
   })
+
+  it('hides the previous session snapshot immediately when switching sessions', async () => {
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(() => response([runningJob]))
+      .mockImplementationOnce(() => new Promise<Response>(() => {}))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const hook = renderHook(
+      ({ sessionId }) => useResearchJobs(sessionId),
+      { initialProps: { sessionId: 'session-1' } },
+    )
+    await flushAsyncWork()
+    expect(hook.result.current.jobs).toEqual([runningJob])
+
+    hook.rerender({ sessionId: 'session-2' })
+
+    expect(hook.result.current.jobs).toEqual([])
+    expect(hook.result.current.deliveredJobIds).toEqual([])
+  })
 })

@@ -1,6 +1,13 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { Artifact } from '@/types/artifact'
 
+interface ArtifactSessionState {
+  sessionId: string
+  artifacts: Artifact[]
+  selectedArtifactId: string | null
+  loadedFromBackend: boolean
+}
+
 /**
  * Convert backend artifact format to frontend Artifact.
  */
@@ -55,39 +62,41 @@ function readStorageArtifacts(sessionId: string): Artifact[] {
 export function useArtifacts(
   sessionId: string
 ) {
-  const [artifacts, setArtifacts] = useState<Artifact[]>([])
-  const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null)
+  const [sessionState, setSessionState] = useState<ArtifactSessionState>({
+    sessionId,
+    artifacts: [],
+    selectedArtifactId: null,
+    loadedFromBackend: false,
+  })
   const [isCanvasOpen, setIsCanvasOpen] = useState<boolean>(false)
-  const [loadedFromBackend, setLoadedFromBackend] = useState<boolean>(false)
   const [justUpdated, setJustUpdated] = useState<boolean>(false)
+  const activeSessionIdRef = useRef(sessionId)
+  activeSessionIdRef.current = sessionId
 
-  // Tracks which sessionId the current artifacts state belongs to (guards auto-sync)
-  const loadedSessionIdRef = useRef<string | null>(null)
-
-  // Reset on session switch
-  useEffect(() => {
-    loadedSessionIdRef.current = null
-    setArtifacts([])
-    setSelectedArtifactId(null)
-    setLoadedFromBackend(false)
-  }, [sessionId])
+  // Never expose a snapshot owned by the previous session, even during the
+  // render before the session initialization effect runs.
+  const isCurrentSession = sessionState.sessionId === sessionId
+  const artifacts = isCurrentSession ? sessionState.artifacts : []
+  const selectedArtifactId = isCurrentSession
+    ? sessionState.selectedArtifactId
+    : null
+  const loadedFromBackend =
+    isCurrentSession && sessionState.loadedFromBackend
 
   // Load artifacts from sessionStorage on session init (populated by history API)
   useEffect(() => {
-    if (loadedFromBackend) return
-
     const loaded = readStorageArtifacts(sessionId)
-    if (loaded.length > 0) {
-      setArtifacts(loaded)
-    }
-    loadedSessionIdRef.current = sessionId
-    setLoadedFromBackend(true)
-  }, [sessionId, loadedFromBackend])
+    setSessionState({
+      sessionId,
+      artifacts: loaded,
+      selectedArtifactId: null,
+      loadedFromBackend: true,
+    })
+  }, [sessionId])
 
-  // Auto-sync to sessionStorage; guard against stale session writes
+  // Auto-sync only the snapshot owned by the active session.
   useEffect(() => {
     if (!loadedFromBackend) return
-    if (loadedSessionIdRef.current !== sessionId) return
     sessionStorage.setItem(`artifacts-${sessionId}`, JSON.stringify(artifacts))
   }, [sessionId, loadedFromBackend, artifacts])
 
@@ -100,60 +109,90 @@ export function useArtifacts(
   }, [])
 
   const openArtifact = useCallback((id: string) => {
-    setSelectedArtifactId(id)
+    setSessionState(current => current.sessionId === sessionId
+      ? { ...current, selectedArtifactId: id }
+      : current
+    )
     setIsCanvasOpen(true)
-  }, [])
+  }, [sessionId])
 
   const closeCanvas = useCallback(() => {
     setIsCanvasOpen(false)
-    setSelectedArtifactId(null)
-  }, [])
+    setSessionState(current => current.sessionId === sessionId
+      ? { ...current, selectedArtifactId: null }
+      : current
+    )
+  }, [sessionId])
 
   const addArtifact = useCallback((artifact: Artifact) => {
-    setArtifacts(prev => {
-      const existingIndex = prev.findIndex(a => a.id === artifact.id)
+    setSessionState(current => {
+      if (current.sessionId !== sessionId) return current
+      const existingIndex = current.artifacts.findIndex(a => a.id === artifact.id)
       if (existingIndex >= 0) {
-        return prev.map((a, i) => i === existingIndex ? artifact : a)
+        return {
+          ...current,
+          artifacts: current.artifacts.map((a, i) =>
+            i === existingIndex ? artifact : a
+          ),
+        }
       }
-      return [...prev, artifact]
+      return { ...current, artifacts: [...current.artifacts, artifact] }
     })
-  }, [])
+  }, [sessionId])
 
   const removeArtifact = useCallback((artifactId: string) => {
-    setArtifacts(prev => prev.filter(a => a.id !== artifactId))
-    if (selectedArtifactId === artifactId) {
-      setSelectedArtifactId(null)
-    }
-  }, [selectedArtifactId])
+    setSessionState(current => {
+      if (current.sessionId !== sessionId) return current
+      return {
+        ...current,
+        artifacts: current.artifacts.filter(a => a.id !== artifactId),
+        selectedArtifactId:
+          current.selectedArtifactId === artifactId
+            ? null
+            : current.selectedArtifactId,
+      }
+    })
+  }, [sessionId])
 
   const updateArtifact = useCallback((artifactId: string, updates: Partial<Artifact>) => {
-    setArtifacts(prev => prev.map(a =>
-      a.id === artifactId ? { ...a, ...updates } : a
-    ))
-  }, [])
+    setSessionState(current => current.sessionId === sessionId
+      ? {
+          ...current,
+          artifacts: current.artifacts.map(a =>
+            a.id === artifactId ? { ...a, ...updates } : a
+          ),
+        }
+      : current
+    )
+  }, [sessionId])
 
   /**
    * Refresh artifacts from history API.
    * Returns the refreshed artifacts array for immediate use.
    */
   const refreshArtifacts = useCallback(async (options?: { skipFlashEffect?: boolean }): Promise<Artifact[]> => {
-
+    const requestedSessionId = sessionId
     try {
       const response = await fetch(`/api/conversation/history?session_id=${sessionId}`)
       if (response.ok) {
         const data = await response.json()
         const artifactsData = data.artifacts || []
-        if (Array.isArray(artifactsData) && artifactsData.length > 0) {
-          const converted = artifactsData.map((item: any) => toFrontendArtifact(item, sessionId))
-          loadedSessionIdRef.current = sessionId
-          setArtifacts(converted)
+        const converted = Array.isArray(artifactsData)
+          ? artifactsData.map((item: any) =>
+              toFrontendArtifact(item, requestedSessionId)
+            )
+          : []
+        if (activeSessionIdRef.current !== requestedSessionId) return []
+        setSessionState(current => current.sessionId === requestedSessionId
+          ? { ...current, artifacts: converted, loadedFromBackend: true }
+          : current
+        )
 
-          if (!options?.skipFlashEffect) {
-            setJustUpdated(true)
-            setTimeout(() => setJustUpdated(false), 1500)
-          }
-          return converted
+        if (!options?.skipFlashEffect) {
+          setJustUpdated(true)
+          setTimeout(() => setJustUpdated(false), 1500)
         }
+        return converted
       }
     } catch (error) {
       console.error('[useArtifacts] Failed to refresh artifacts:', error)
@@ -167,9 +206,20 @@ export function useArtifacts(
    */
   const reloadFromStorage = useCallback(() => {
     const loaded = readStorageArtifacts(sessionId)
-    loadedSessionIdRef.current = sessionId
-    setArtifacts(loaded)  // always sync — clears stale state when storage was removed
-    setLoadedFromBackend(true)
+    if (activeSessionIdRef.current !== sessionId) return
+    setSessionState({
+      sessionId,
+      artifacts: loaded,
+      selectedArtifactId: null,
+      loadedFromBackend: true,
+    })
+  }, [sessionId])
+
+  const setSelectedArtifactId = useCallback((id: string | null) => {
+    setSessionState(current => current.sessionId === sessionId
+      ? { ...current, selectedArtifactId: id }
+      : current
+    )
   }, [sessionId])
 
   return {

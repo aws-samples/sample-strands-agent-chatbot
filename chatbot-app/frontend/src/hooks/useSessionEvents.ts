@@ -6,6 +6,7 @@ const POLL_INTERVAL_MS = 2000
 
 export function useSessionEvents(sessionId: string) {
   const [events, setEvents] = useState<SessionEventProjection[]>([])
+  const [snapshotSessionId, setSnapshotSessionId] = useState(sessionId)
   const seenRef = useRef<Set<string> | null>(null)
   const refreshingRef = useRef(false)
   const sessionRef = useRef(sessionId)
@@ -32,6 +33,7 @@ export function useSessionEvents(sessionId: string) {
         // The history request and this first projection read are independent.
         // Let the consumer suppress events already represented by history so
         // a completion committed between the two reads cannot be lost.
+        setSnapshotSessionId(requestedSessionId)
         setEvents(next)
         return
       }
@@ -39,6 +41,7 @@ export function useSessionEvents(sessionId: string) {
       const discovered = next.filter(item => !seenRef.current!.has(item.eventId))
       discovered.forEach(item => seenRef.current!.add(item.eventId))
       const durableIds = new Set(next.map(item => item.eventId))
+      setSnapshotSessionId(requestedSessionId)
       setEvents(current => {
         const retained = current.filter(item => durableIds.has(item.eventId))
         if (
@@ -57,6 +60,7 @@ export function useSessionEvents(sessionId: string) {
   useEffect(() => {
     seenRef.current = null
     refreshingRef.current = false
+    setSnapshotSessionId(sessionId)
     setEvents([])
     void refresh()
 
@@ -66,5 +70,8 @@ export function useSessionEvents(sessionId: string) {
     return () => window.clearInterval(timer)
   }, [refresh])
 
-  return { events, refresh }
+  return {
+    events: snapshotSessionId === sessionId ? events : [],
+    refresh,
+  }
 }
