@@ -116,6 +116,24 @@ class TestExecutionRegistry:
         assert latest is execution
 
     @pytest.mark.asyncio
+    async def test_background_execution_does_not_supersede_busy_session(self):
+        from streaming.execution_registry import ExecutionRegistry, ExecutionStatus
+        ExecutionRegistry.reset()
+        registry = ExecutionRegistry()
+        foreground = await registry.create_execution("sess-busy", "user1", "run1")
+
+        background = await registry.create_execution(
+            "sess-busy",
+            "user1",
+            "background",
+            supersede_running=False,
+        )
+
+        assert background is None
+        assert foreground.status == ExecutionStatus.RUNNING
+        assert registry.get_latest_execution("sess-busy") is foreground
+
+    @pytest.mark.asyncio
     async def test_append_and_get_events(self):
         """Test appending events and cursor-based retrieval."""
         from streaming.execution_registry import ExecutionRegistry

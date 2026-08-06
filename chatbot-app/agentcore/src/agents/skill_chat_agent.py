@@ -180,11 +180,6 @@ class SkillChatAgent(ChatAgent):
 
         self.tools = [skill_dispatcher, skill_executor] + non_skill_tools
 
-        _SEQUENTIAL_SKILLS = {'web-search'}
-        if _SEQUENTIAL_SKILLS & set(registry.skill_names):
-            self._force_sequential = True
-            logger.info(f"[SkillChatAgent] SequentialToolExecutor forced — skills require it: {_SEQUENTIAL_SKILLS & set(registry.skill_names)}")
-
         super().create_agent()
 
         logger.info(

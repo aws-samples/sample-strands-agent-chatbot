@@ -158,7 +158,7 @@ interface UseChatAPIProps {
   backendUrl: string
   setUIState: React.Dispatch<React.SetStateAction<ChatUIState>>
   setMessages: React.Dispatch<React.SetStateAction<Message[]>>
-  handleStreamEvent: (event: AGUIStreamEvent) => void
+  handleStreamEvent: (event: AGUIStreamEvent) => void | Promise<void>
   resetStreamingState: () => void
   onSessionCreated?: () => void
   sessionId: string
@@ -180,6 +180,7 @@ export interface SessionPreferences {
 interface UseChatAPIReturn {
   newChat: () => Promise<boolean>
   sendMessage: (messageToSend: string, files?: File[], onSuccess?: () => void, onError?: (error: string) => void) => Promise<void>
+  replayExecution: (executionId: string) => Promise<boolean>
   cleanup: () => void
   sendStopSignal: () => Promise<boolean>
   loadSession: (sessionId: string) => Promise<{ preferences: SessionPreferences | null; messages: Message[] }>
@@ -1098,6 +1099,9 @@ export const useChatAPI = ({
             ...(msg.isVoiceMessage && {
               isVoiceMessage: true
             }),
+            ...(msg.startsNewAssistantTurn && {
+              startsNewAssistantTurn: true
+            }),
             // Preserve swarm context from parsed message
             ...(swarmContext && {
               swarmContext: swarmContext
@@ -1214,6 +1218,106 @@ export const useChatAPI = ({
     }
   }, [setMessages, getAuthHeaders, reconnect, handleStreamEvent, setUIState])
 
+  const replayExecution = useCallback(async (executionId: string): Promise<boolean> => {
+    const separator = executionId.lastIndexOf(':')
+    const executionSessionId = separator >= 0
+      ? executionId.substring(0, separator)
+      : executionId
+    if (sessionIdRef.current !== executionSessionId) return false
+
+    const failReplay = () => {
+      if (sessionIdRef.current === executionSessionId) {
+        setUIState(prev => ({
+          ...prev,
+          isTyping: false,
+          agentStatus: 'idle',
+        }))
+      }
+      return false
+    }
+
+    // Close the idle window before the resume request. Messages submitted while
+    // the delivery renders enter the normal queue and are flushed afterward.
+    setUIState(prev => prev.agentStatus === 'idle'
+      ? { ...prev, isTyping: true, agentStatus: 'thinking' }
+      : prev)
+
+    try {
+      const authHeaders = await getAuthHeaders()
+      const response = await fetch(
+        `${getApiUrl('stream/resume')}?executionId=${encodeURIComponent(executionId)}&cursor=0`,
+        {
+          headers: {
+            ...authHeaders,
+            Accept: 'text/event-stream',
+          },
+        },
+      )
+      if (!response.ok || !response.body) return failReplay()
+
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let currentEventId: number | null = null
+      let terminalEventSeen = false
+
+      try {
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          if (sessionIdRef.current !== executionSessionId) {
+            await reader.cancel()
+            return false
+          }
+
+          buffer += decoder.decode(value, { stream: true })
+          const lines = buffer.split('\n')
+          buffer = lines.pop() || ''
+
+          for (const line of lines) {
+            if (line.startsWith('id: ')) {
+              currentEventId = parseInt(line.substring(4), 10)
+              continue
+            }
+            if (!line.startsWith('data: ')) continue
+
+            try {
+              const eventData = JSON.parse(line.substring(6))
+              if (eventData.type === 'CUSTOM' && eventData.name === 'execution_meta') {
+                currentEventId = null
+                continue
+              }
+              if (currentEventId !== null && currentEventId > 0) {
+                eventData._eventId = currentEventId
+              }
+              currentEventId = null
+              if (
+                eventData.type &&
+                (AGUI_EVENT_TYPES as readonly string[]).includes(eventData.type)
+              ) {
+                if (
+                  eventData.type === 'RUN_FINISHED' ||
+                  eventData.type === 'RUN_ERROR'
+                ) {
+                  terminalEventSeen = true
+                }
+                await handleStreamEvent(eventData as AGUIStreamEvent)
+              }
+            } catch {
+              // Ignore malformed SSE payloads and continue replaying the buffer.
+            }
+          }
+        }
+      } finally {
+        reader.releaseLock()
+      }
+      return terminalEventSeen || failReplay()
+    } catch (error) {
+      logger.warn(`[useChatAPI] Failed to replay ${executionId}:`, error)
+      return failReplay()
+    }
+  }, [getAuthHeaders, handleStreamEvent, setUIState])
+
   const cleanup = useCallback(() => {
     abortRef.current?.unsubscribe()
   }, [])
@@ -1266,6 +1370,7 @@ export const useChatAPI = ({
     summarizeForCompact,
     listSessionEvents,
     sendMessage,
+    replayExecution,
     cleanup,
     sendStopSignal,
     loadSession,

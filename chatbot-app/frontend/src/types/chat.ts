@@ -37,6 +37,7 @@ export interface Message {
   }>
   isToolMessage?: boolean // Mark messages that are purely for tool execution display
   turnId?: string // Turn ID for grouping messages by conversation turn
+  startsNewAssistantTurn?: boolean // Internal boundary for synthetic/background turns
   toolUseId?: string // Tool use ID for session-based image paths
   uploadedFiles?: Array<{
     name: string
@@ -88,4 +89,3 @@ export interface Tool {
   tool_type?: "local" | "builtin" | "gateway" | "runtime-a2a"
   connection_status?: "connected" | "disconnected" | "invalid" | "unknown"
 }
-

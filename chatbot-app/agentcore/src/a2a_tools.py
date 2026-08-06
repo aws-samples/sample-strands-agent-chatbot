@@ -29,7 +29,6 @@ logger = logging.getLogger(__name__)
 _cache = {
     'agent_urls': {},
     'agent_cards': {},
-    'http_client': None
 }
 
 
@@ -96,27 +95,16 @@ def get_cached_agent_url(agent_id: str) -> Optional[str]:
 
 
 def get_http_client(region: str = "us-west-2", auth_token: Optional[str] = None):
-    """Create HTTP client with JWT Bearer authentication.
-
-    A new client is created per call when auth_token is provided,
-    since each user session has a different JWT.
-    """
+    """Create an isolated HTTP client for one A2A call."""
+    client_kwargs = {
+        "timeout": httpx.Timeout(DEFAULT_TIMEOUT, connect=30.0),
+        "limits": httpx.Limits(max_keepalive_connections=5, max_connections=10),
+    }
     if auth_token:
-        auth = BearerAuth(
+        client_kwargs["auth"] = BearerAuth(
             auth_token.replace("Bearer ", "") if auth_token.startswith("Bearer ") else auth_token
         )
-        return httpx.AsyncClient(
-            timeout=httpx.Timeout(DEFAULT_TIMEOUT, connect=30.0),
-            limits=httpx.Limits(max_keepalive_connections=5, max_connections=10),
-            auth=auth,
-        )
-
-    if not _cache['http_client']:
-        _cache['http_client'] = httpx.AsyncClient(
-            timeout=httpx.Timeout(DEFAULT_TIMEOUT, connect=30.0),
-            limits=httpx.Limits(max_keepalive_connections=5, max_connections=10),
-        )
-    return _cache['http_client']
+    return httpx.AsyncClient(**client_kwargs)
 
 
 async def send_a2a_message(
@@ -182,7 +170,7 @@ async def send_a2a_message(
         logger.debug(f"Invoking A2A agent {agent_id}")
 
         httpx_client = get_http_client(region, auth_token=auth_token)
-        owns_httpx_client = bool(auth_token)
+        owns_httpx_client = True
 
         # Add session ID header (must be >= 33 characters)
         if not session_id:
@@ -509,9 +497,9 @@ def create_a2a_tool(agent_id: str):
         agent_tool._skill_name = skill_name
 
     else:
-        # Research Agent (default) - plan parameter
-        # Uses async generator to stream research_step events for real-time status updates
-        async def tool_impl(plan: str, tool_context: ToolContext = None) -> AsyncGenerator[Dict[str, Any], None]:
+        # Research Agent (default) - return immediately while a durable job owns
+        # the A2A stream, persistence, and eventual delivery to the supervisor.
+        async def tool_impl(plan: str, tool_context: ToolContext = None) -> str:
             session_id, user_id, model_id, _auth_token = extract_context(tool_context)
 
             # Scope the research agent's session to this call rather than reusing
@@ -536,74 +524,29 @@ def create_a2a_tool(agent_id: str):
             }
 
 
-            # Track final result for artifact saving
-            final_result_text = None
+            artifact_id = f"research-{tool_use_id}" if tool_use_id else f"research-{uuid4().hex}"
 
-            # Stream events from A2A agent (including research_step events for real-time UI updates)
-            async for event in send_a2a_message(agent_id, plan, research_session_id, region, metadata=metadata, auth_token=_auth_token):
-                # Yield event FIRST to maintain proper stream order
-                yield event
+            from agent.research_jobs import start_research_job
 
-                # After yielding, check if this was the final success event and save artifact
-                # This happens after the event is sent to agent, so won't interfere with interrupt
-                if isinstance(event, dict) and event.get("status") == "success":
-                    content = event.get("content", [])
-                    if content and len(content) > 0:
-                        final_result_text = content[0].get("text", "")
+            def event_factory():
+                return send_a2a_message(
+                    agent_id,
+                    plan,
+                    research_session_id,
+                    region,
+                    metadata=metadata,
+                    auth_token=_auth_token,
+                )
 
-                        # Save research result to agent.state (after yielding final event)
-                        if final_result_text and tool_context and tool_context.agent:
-                            try:
-                                from datetime import datetime, timezone
-
-                                # Extract title from research content (first H1 heading)
-                                import re
-                                title_match = re.search(r'^#\s+(.+)$', final_result_text, re.MULTILINE)
-                                title = title_match.group(1).strip() if title_match else "Research Results"
-
-                                # Generate artifact ID using toolUseId for frontend mapping
-                                tool_use_id = tool_context.tool_use.get('toolUseId', '')
-                                artifact_id = f"research-{tool_use_id}" if tool_use_id else f"research-{session_id}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
-
-                                # Get current artifacts from agent.state
-                                artifacts = tool_context.agent.state.get("artifacts") or {}
-
-                                # Calculate word count
-                                word_count = len(final_result_text.split())
-
-                                # Add new artifact
-                                artifacts[artifact_id] = {
-                                    "id": artifact_id,
-                                    "type": "research",
-                                    "title": title,
-                                    "content": final_result_text,
-                                    "tool_name": "research_agent",
-                                    "metadata": {
-                                        "word_count": word_count,
-                                        "description": f"Research report: {title}"
-                                    },
-                                    "created_at": datetime.now(timezone.utc).isoformat(),
-                                    "updated_at": datetime.now(timezone.utc).isoformat()
-                                }
-
-                                # Save to agent.state
-                                tool_context.agent.state.set("artifacts", artifacts)
-
-                                # Sync agent state to file system / AgentCore Memory
-                                # Try session_manager from invocation_state first (set by ChatAgent)
-                                session_manager = tool_context.invocation_state.get("session_manager")
-
-                                if not session_manager and hasattr(tool_context.agent, 'session_manager'):
-                                    session_manager = tool_context.agent.session_manager
-
-                                if session_manager:
-                                    session_manager.sync_agent(tool_context.agent)
-                                    logger.debug(f"Saved research artifact: {artifact_id}")
-                                else:
-                                    logger.warning("No session_manager found, artifact not persisted")
-
-                            except Exception as e:
-                                logger.error(f"Failed to save research artifact: {e}")
+            receipt = start_research_job(
+                session_id=session_id or research_session_id,
+                user_id=user_id or "anonymous",
+                plan=plan,
+                artifact_id=artifact_id,
+                event_factory=event_factory,
+                model_id=model_id,
+            )
+            return __import__("json").dumps(receipt)
 
         # Set correct function name and docstring BEFORE decorating
         tool_impl.__name__ = correct_name
@@ -619,5 +562,4 @@ def create_a2a_tool(agent_id: str):
 
 # Cleanup on shutdown
 async def cleanup():
-    if _cache['http_client']:
-        await _cache['http_client'].aclose()
+    return None

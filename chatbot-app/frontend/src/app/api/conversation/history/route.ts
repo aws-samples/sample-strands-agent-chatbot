@@ -3,6 +3,7 @@
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { extractUserFromRequest } from '@/lib/auth-utils'
+import { hideBackgroundResearchInputs } from '@/lib/research-start-receipt'
 
 // Check if running in local development mode
 const IS_LOCAL = process.env.NEXT_PUBLIC_AGENTCORE_LOCAL === 'true'
@@ -318,6 +319,24 @@ export async function GET(request: NextRequest) {
       })
       console.log(`[API] Merged metadata for ${Object.keys(sessionMetadata.messages).length} message(s)`)
     }
+
+    // Synthetic background-research inputs wake the supervisor but are an
+    // internal mailbox protocol, not user-authored chat messages. Preserve
+    // their turn boundary on the generated assistant response.
+    messages = hideBackgroundResearchInputs(messages)
+
+    // Completed reports are independently durable from AgentCore Memory state.
+    // Merge them so a delivery/sync retry never makes a finished report vanish
+    // from history or Canvas.
+    const { listResearchJobs, completedResearchArtifacts } = await import('@/lib/research-jobs')
+    const researchArtifacts = completedResearchArtifacts(
+      await listResearchJobs(userId, sessionId, { includeContent: true }),
+    )
+    const artifactsById = new Map(artifacts.map(item => [item.id, item]))
+    for (const artifact of researchArtifacts) {
+      artifactsById.set(artifact.id, artifact)
+    }
+    artifacts = Array.from(artifactsById.values())
 
     // Return messages with merged toolResults from blobs and metadata
     // Also include session preferences (model, tools) for restoration

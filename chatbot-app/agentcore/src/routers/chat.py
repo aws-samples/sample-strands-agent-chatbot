@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 
 registry = ExecutionRegistry()
 
+_BACKGROUND_RESEARCH_TAG = "background-research-result"
 
 router = APIRouter(tags=["chat"])
 
@@ -388,6 +389,32 @@ async def _handle_agui_invocation(body: dict, http_request: Request) -> Streamin
         f"disabled_skills={disabled_skills}"
     )
 
+    # Recover reports that were durably completed but whose idle continuation
+    # failed (for example because the process restarted). The next foreground
+    # turn becomes the retry boundary.
+    from agent.research_jobs import load_pending_results
+    pending_research = load_pending_results(user_id, session_id)
+    if pending_research:
+        reports = "\n\n".join(
+            (
+                f"<completed-background-research artifact_id=\"{item['artifact']['id']}\">\n"
+                f"{item['artifact']['content']}\n"
+                "</completed-background-research>"
+            )
+            for item in pending_research
+        )
+        recovery_prompt = (
+            "Background research completed before this turn but was not yet "
+            "delivered. Use the reports below when answering the user. Do not "
+            "start duplicate research jobs.\n\n"
+            f"{reports}"
+        )
+        system_prompt = (
+            f"{system_prompt}\n\n{recovery_prompt}"
+            if system_prompt
+            else recovery_prompt
+        )
+
     try:
         agent = create_agent(
             request_type=request_type,
@@ -403,6 +430,14 @@ async def _handle_agui_invocation(body: dict, http_request: Request) -> Streamin
             allow_user_federation=allow_user_federation,
             concise_mode=concise_mode,
         )
+
+        if pending_research:
+            recovered_artifacts = dict(agent.agent.state.get("artifacts") or {})
+            for item in pending_research:
+                artifact = item["artifact"]
+                recovered_artifacts[artifact["id"]] = artifact
+            agent.agent.state.set("artifacts", recovered_artifacts)
+            agent.session_manager.sync_agent(agent.agent)
 
         agui_processor = AGUIStreamEventProcessor(thread_id=thread_id, run_id=run_id)
 
@@ -474,6 +509,17 @@ async def _handle_agui_invocation(body: dict, http_request: Request) -> Streamin
                 async for sse_chunk in stream:
                     event_type = _extract_event_type(sse_chunk)
                     execution.append_event(sse_chunk, event_type)
+
+                if pending_research:
+                    from agent.research_jobs import mark_delivered
+                    for item in pending_research:
+                        try:
+                            mark_delivered(item["record"])
+                        except Exception:
+                            logger.exception(
+                                "[ResearchDelivery] Failed to mark recovered job %s delivered",
+                                item["record"]["jobId"],
+                            )
             except Exception as e:
                 logger.error(f"[Execution] AG-UI agent error for {execution.execution_id}: {e}", exc_info=True)
                 error_event = f'data: {json.dumps({"type": "error", "message": str(e)})}\n\n'
@@ -512,6 +558,108 @@ async def _handle_agui_invocation(body: dict, http_request: Request) -> Streamin
             status_code=500,
             detail="Agent processing failed. Please check logs for details."
         )
+
+
+async def deliver_research_job(record: dict, artifact: dict) -> None:
+    """Persist a completed report and wake the supervisor at a safe boundary."""
+    session_id = record["sessionId"]
+    user_id = record["userId"]
+    run_id = f"research-delivery-{record['jobId']}"
+
+    while True:
+        execution = await registry.create_execution(
+            session_id,
+            user_id,
+            run_id,
+            supersede_running=False,
+        )
+        if execution is None:
+            await asyncio.sleep(0.25)
+            continue
+
+        async def run_continuation():
+            agent = None
+            task_id = async_tasks.begin(
+                "research_delivery",
+                {"execution_id": execution.execution_id, "job_id": record["jobId"]},
+            )
+            try:
+                agent = create_agent(
+                    request_type=record.get("requestType") or "skill",
+                    session_id=session_id,
+                    user_id=user_id,
+                    model_id=record.get("modelId") or None,
+                )
+
+                artifacts = dict(agent.agent.state.get("artifacts") or {})
+                artifacts[artifact["id"]] = artifact
+                agent.agent.state.set("artifacts", artifacts)
+                # Delivery is not successful unless the canonical agent state is
+                # durable. Let sync failures propagate so the job remains ready
+                # for retry instead of being falsely marked delivered.
+                agent.session_manager.sync_agent(agent.agent)
+
+                report = artifact.get("content", "")
+                hidden_message = (
+                    f"<{_BACKGROUND_RESEARCH_TAG} "
+                    f"job_id=\"{record['jobId']}\" artifact_id=\"{artifact['id']}\">\n"
+                    "Background research requested earlier has completed. "
+                    "The full report is now stored as an artifact. Incorporate "
+                    "the result into the ongoing conversation and tell the user "
+                    "the report is ready. Do not start another research job.\n\n"
+                    f"{report}\n"
+                    f"</{_BACKGROUND_RESEARCH_TAG}>"
+                )
+                processor = AGUIStreamEventProcessor(
+                    thread_id=session_id,
+                    run_id=run_id,
+                )
+                invocation_state = {
+                    "session_id": session_id,
+                    "user_id": user_id,
+                    "run_id": run_id,
+                    "model_id": agent.model_id,
+                    "session_manager": agent.session_manager,
+                    "background_research_job_id": record["jobId"],
+                }
+                stream = processor.process_stream(
+                    agent.agent,
+                    hidden_message,
+                    session_id=session_id,
+                    invocation_state=invocation_state,
+                    elicitation_bridge=getattr(agent, "elicitation_bridge", None),
+                )
+                async for sse_chunk in stream:
+                    execution.append_event(
+                        sse_chunk,
+                        _extract_event_type(sse_chunk),
+                    )
+                execution.status = ExecutionStatus.COMPLETED
+            except asyncio.CancelledError:
+                execution.status = ExecutionStatus.STOPPED
+                raise
+            except Exception:
+                execution.status = ExecutionStatus.ERROR
+                raise
+            finally:
+                async_tasks.end(task_id)
+                if agent:
+                    agent.close()
+                execution.completed_at = time.time()
+                execution._new_event.set()
+
+        execution.task = asyncio.create_task(run_continuation())
+        try:
+            await execution.task
+            return
+        except asyncio.CancelledError:
+            # A real user turn superseded this background continuation. Wait for
+            # the next safe boundary and retry the idempotent artifact delivery.
+            logger.info(
+                "[ResearchDelivery] User turn superseded job %s; retrying",
+                record["jobId"],
+            )
+            await asyncio.sleep(0)
 
 
 _cleanup_task: Optional[asyncio.Task] = None

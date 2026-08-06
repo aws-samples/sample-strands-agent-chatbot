@@ -15,6 +15,7 @@ import { getApiUrl } from '@/config/environment'
 import { isCodeAgentExecution, CodeAgentDetails, CodeAgentResult, CodeAgentDownloadButton } from './CodeAgentUI'
 
 import type { ImageData } from '@/utils/imageExtractor'
+import type { ResearchJob } from '@/lib/research-jobs'
 
 // Word document tool names
 const WORD_DOCUMENT_TOOLS = ['create_word_document', 'modify_word_document']
@@ -37,6 +38,7 @@ interface ToolExecutionContainerProps {
   onOpenPptArtifact?: (filename: string) => void  // Open PowerPoint presentation in Canvas
   onOpenExtractedDataArtifact?: (artifactId: string) => void  // Open extracted data in Canvas
   onOpenExcalidrawArtifact?: (artifactId: string) => void  // Open Excalidraw diagram in Canvas
+  researchJobs?: ResearchJob[]
 }
 
 // Collapsible Markdown component for tool results
@@ -94,7 +96,7 @@ const CollapsibleMarkdown = React.memo<{
          prevProps.sessionId === nextProps.sessionId
 })
 
-export const ToolExecutionContainer = React.memo<ToolExecutionContainerProps>(({ toolExecutions, compact = false, sessionId, onOpenResearchArtifact, onOpenWordArtifact, onOpenExcelArtifact, onOpenPptArtifact, onOpenExtractedDataArtifact, onOpenExcalidrawArtifact }) => {
+export const ToolExecutionContainer = React.memo<ToolExecutionContainerProps>(({ toolExecutions, compact = false, sessionId, onOpenResearchArtifact, onOpenWordArtifact, onOpenExcelArtifact, onOpenPptArtifact, onOpenExtractedDataArtifact, onOpenExcalidrawArtifact, researchJobs = [] }) => {
   const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set())
   const [selectedImage, setSelectedImage] = useState<{ src: string; alt: string } | null>(null)
   const [downloadingFiles, setDownloadingFiles] = useState<Set<string>>(new Set())
@@ -180,15 +182,39 @@ export const ToolExecutionContainer = React.memo<ToolExecutionContainerProps>(({
     return expandedTools.has(toolId)
   }
 
+  const resolvedToolExecutions = useMemo(() => toolExecutions.map(execution => {
+    if (execution.toolName !== 'research_agent' || !execution.toolResult) return execution
+    try {
+      const receipt = JSON.parse(execution.toolResult)
+      if (receipt?.status !== 'started' || !receipt.job_id) return execution
+      const job = researchJobs.find(item => item.jobId === receipt.job_id)
+      const complete = !!job && ['completed', 'delivering', 'delivered'].includes(job.status)
+      const failed = job?.status === 'error'
+      return {
+        ...execution,
+        isComplete: complete || failed,
+        isCancelled: failed,
+        streamingResponse: job?.progress?.content || execution.streamingResponse,
+        toolResult: complete && job?.artifact?.content
+          ? job.artifact.content
+          : failed
+            ? `Error: ${job.error || 'Research failed'}`
+            : execution.toolResult,
+      }
+    } catch {
+      return execution
+    }
+  }), [toolExecutions, researchJobs])
+
   // Memoize parsed chart data (hooks must be called unconditionally)
   const toolExecutionsDeps = useMemo(() => {
-    return toolExecutions.map(t => ({
+    return resolvedToolExecutions.map(t => ({
       id: t.id,
       isComplete: t.isComplete,
       toolResult: t.toolResult,
       toolName: t.toolName
     }))
-  }, [toolExecutions])
+  }, [resolvedToolExecutions])
 
   const chartDataCache = useMemo(() => {
     const cache = new Map<string, { parsed: ChartToolResult, resultString: string }>();
@@ -753,7 +779,7 @@ export const ToolExecutionContainer = React.memo<ToolExecutionContainerProps>(({
   const renderItems: RenderItem[] = []
   const groupMap = new Map<string, ToolGroup>()
 
-  for (const exec of toolExecutions) {
+  for (const exec of resolvedToolExecutions) {
     // Skip skill_dispatcher — the executor calls show the actual work
     if (exec.toolName === 'skill_dispatcher') continue
 
@@ -805,6 +831,9 @@ export const ToolExecutionContainer = React.memo<ToolExecutionContainerProps>(({
           const allDone = completedCount === executions.length
           const count = executions.length
           const isExpanded = isToolExpanded(key)
+          const liveProgress = count === 1 && !allDone
+            ? executions[0].streamingResponse
+            : undefined
 
           // Find the last completed execution for action buttons (Canvas, Download)
           const lastCompleteExec = [...executions].reverse().find(e => e.isComplete)
@@ -828,6 +857,11 @@ export const ToolExecutionContainer = React.memo<ToolExecutionContainerProps>(({
                   <span className="text-label text-foreground">
                     {allDone ? displayName.complete : displayName.running}
                   </span>
+                  {liveProgress && (
+                    <span className="text-caption text-muted-foreground truncate">
+                      {liveProgress}
+                    </span>
+                  )}
 
                   {/* Count badge — only when count > 1 */}
                   {count > 1 && (
@@ -897,6 +931,10 @@ export const ToolExecutionContainer = React.memo<ToolExecutionContainerProps>(({
   }
 
   if (prevProps.compact !== nextProps.compact || prevProps.sessionId !== nextProps.sessionId) {
+    return false
+  }
+
+  if (prevProps.researchJobs !== nextProps.researchJobs) {
     return false
   }
 

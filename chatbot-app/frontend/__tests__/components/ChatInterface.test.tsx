@@ -25,6 +25,7 @@ const mockUseChat: {
   showProgressPanel: boolean
   toggleProgressPanel: ReturnType<typeof vi.fn>
   sendMessage: ReturnType<typeof vi.fn>
+  replayExecution: ReturnType<typeof vi.fn>
   stopGeneration: ReturnType<typeof vi.fn>
   queuedMessages: any[]
   queueHoldReason: string | null
@@ -54,6 +55,7 @@ const mockUseChat: {
   showProgressPanel: false,
   toggleProgressPanel: vi.fn(),
   sendMessage: vi.fn(),
+  replayExecution: vi.fn().mockResolvedValue(true),
   stopGeneration: vi.fn(),
   queuedMessages: [],
   queueHoldReason: null,
@@ -321,14 +323,14 @@ describe('ChatInterface', () => {
       expect(screen.queryByTestId('interrupt-modal')).not.toBeInTheDocument()
     })
 
-    it('should not show interrupt modal for research-approval interrupts', () => {
+    it('should allow a legacy research approval interrupt to be resolved', () => {
       mockUseChat.currentInterrupt = {
         interrupts: [{ id: 'int1', name: 'chatbot-research-approval', reason: {} }]
       }
 
       render(<ChatInterface />)
 
-      expect(screen.queryByTestId('interrupt-modal')).not.toBeInTheDocument()
+      expect(screen.getByTestId('interrupt-modal')).toBeInTheDocument()
     })
   })
 

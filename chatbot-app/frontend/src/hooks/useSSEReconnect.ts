@@ -138,12 +138,16 @@ export function useSSEReconnect() {
 
       try {
         // 1. Check execution status via BFF buffer
+        const headers = await getAuthHeaders()
         const statusController = new AbortController()
         const statusTimeout = setTimeout(() => statusController.abort(), FETCH_TIMEOUT_MS)
         let statusData: { status: string }
         try {
           const statusUrl = `${getApiUrl('stream/execution-status')}?executionId=${encodeURIComponent(executionId)}`
-          const statusRes = await fetch(statusUrl, { signal: statusController.signal })
+          const statusRes = await fetch(statusUrl, {
+            headers,
+            signal: statusController.signal,
+          })
           statusData = await statusRes.json()
         } finally {
           clearTimeout(statusTimeout)
@@ -158,7 +162,6 @@ export function useSSEReconnect() {
         const resumeController = new AbortController()
         const resumeTimeout = setTimeout(() => resumeController.abort(), FETCH_TIMEOUT_MS)
         const resumeUrl = `${getApiUrl('stream/resume')}?executionId=${encodeURIComponent(executionId)}&cursor=0`
-        const headers = await getAuthHeaders()
         let response: Response
         try {
           response = await fetch(resumeUrl, {

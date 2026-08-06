@@ -20,6 +20,7 @@ vi.mock('@/hooks/useChatAPI', () => ({
   useChatAPI: vi.fn(() => ({
     newChat: vi.fn().mockResolvedValue(true),
     sendMessage: vi.fn().mockResolvedValue(undefined),
+    replayExecution: vi.fn().mockResolvedValue(true),
     cleanup: vi.fn(),
     sendStopSignal: vi.fn(),
     loadSession: vi.fn().mockResolvedValue(null)

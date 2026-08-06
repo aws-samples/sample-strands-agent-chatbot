@@ -51,6 +51,7 @@ const apiSendMessage = vi.fn(async (...args: SendArgs) => {
 })
 
 const sendStopSignal = vi.fn().mockResolvedValue(true)
+const apiReplayExecution = vi.fn().mockResolvedValue(true)
 
 vi.mock('@/hooks/useChatAPI', () => ({
   useChatAPI: vi.fn(() => ({
@@ -60,6 +61,7 @@ vi.mock('@/hooks/useChatAPI', () => ({
     summarizeForCompact: vi.fn(),
     listSessionEvents: vi.fn(),
     sendMessage: apiSendMessage,
+    replayExecution: apiReplayExecution,
     cleanup: vi.fn(),
     sendStopSignal,
     loadSession: vi.fn().mockResolvedValue({ preferences: null, messages: [] }),
@@ -122,6 +124,21 @@ describe('useChat message queue wiring', () => {
     await act(async () => { await result.current.sendMessage('first') })
 
     await waitFor(() => expect(sentTexts()).toEqual(['first', 'follow-up']))
+    expect(result.current.queuedMessages).toEqual([])
+  })
+
+  it('flushes a user turn queued while a research delivery renders', async () => {
+    const { result } = await mount()
+
+    act(() => { result.current.enqueueMessage('question during delivery') })
+    await act(async () => {
+      await result.current.replayExecution('session-1:research-delivery-job-1')
+    })
+
+    expect(apiReplayExecution).toHaveBeenCalledWith(
+      'session-1:research-delivery-job-1',
+    )
+    expect(sentTexts()).toEqual(['question during delivery'])
     expect(result.current.queuedMessages).toEqual([])
   })
 

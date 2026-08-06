@@ -21,6 +21,7 @@ from fastapi import FastAPI  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from contextlib import asynccontextmanager  # noqa: E402
 import logging  # noqa: E402
+import asyncio  # noqa: E402
 
 # Set up logging
 logging.basicConfig(
@@ -72,9 +73,15 @@ async def lifespan(app: FastAPI):
     os.makedirs(sessions_dir, exist_ok=True)
     logger.info("Sessions directory ready")
 
+    from agent.research_jobs import register_delivery_handler, clear_delivery_handler
+    from routers.chat import deliver_research_job
+
+    register_delivery_handler(asyncio.get_running_loop(), deliver_research_job)
+
     yield  # Application is running
 
     # Shutdown
+    clear_delivery_handler()
     logger.info("=== Agent Core Service Shutting Down ===")
     # TODO: Cleanup agent pool, MCP clients, etc.
 

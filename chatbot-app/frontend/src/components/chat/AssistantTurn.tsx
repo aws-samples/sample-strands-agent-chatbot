@@ -10,9 +10,9 @@ import { Markdown } from '@/components/ui/Markdown'
 import { StreamingText } from './StreamingText'
 import { ToolExecutionContainer } from './ToolExecutionContainer'
 import { CodeAgentTerminal, isCodeAgentExecution } from './CodeAgentUI'
-import { ResearchContainer } from '@/components/ResearchContainer'
 import { LazyImage } from '@/components/ui/LazyImage'
 import { fetchAuthSession } from 'aws-amplify/auth'
+import type { ResearchJob } from '@/lib/research-jobs'
 
 // Parse artifact creation message pattern
 const parseArtifactMessage = (text: string): { title: string; wordCount: number } | null => {
@@ -61,6 +61,7 @@ interface AssistantTurnProps {
     stepNumber: number
     content: string
   }
+  researchJobs?: ResearchJob[]
   codeProgress?: Array<{
     stepNumber: number
     content: string
@@ -68,7 +69,7 @@ interface AssistantTurnProps {
   hideAvatar?: boolean
 }
 
-export const AssistantTurn = React.memo<AssistantTurnProps>(({ messages, currentReasoning, sessionId, onOpenResearchArtifact, onOpenWordArtifact, onOpenExcelArtifact, onOpenPptArtifact, onOpenExtractedDataArtifact, onOpenExcalidrawArtifact, researchProgress, codeProgress, hideAvatar = false }) => {
+export const AssistantTurn = React.memo<AssistantTurnProps>(({ messages, currentReasoning, sessionId, onOpenResearchArtifact, onOpenWordArtifact, onOpenExcelArtifact, onOpenPptArtifact, onOpenExtractedDataArtifact, onOpenExcalidrawArtifact, researchProgress, researchJobs, codeProgress, hideAvatar = false }) => {
   // Get initial feedback state from first message
   const initialFeedback = messages[0]?.feedback || null
 
@@ -299,6 +300,7 @@ if (!messages || messages.length === 0) {
                       onOpenPptArtifact={onOpenPptArtifact}
                       onOpenExtractedDataArtifact={onOpenExtractedDataArtifact}
                       onOpenExcalidrawArtifact={onOpenExcalidrawArtifact}
+                      researchJobs={researchJobs}
                     />
                   )}
                 </div>

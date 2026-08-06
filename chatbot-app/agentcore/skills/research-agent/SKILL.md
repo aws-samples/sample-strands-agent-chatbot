@@ -59,7 +59,10 @@ Structure:
 """)
 ```
 
-The agent streams `research_step` progress events as it works. The final result is a markdown report saved as a research artifact in the canvas.
+The tool returns immediately with a `started` receipt containing `job_id` and
+`artifact_id`. Research continues in the background and emits
+`research_step` progress events. When it finishes, the report is saved as a
+research artifact and delivered back into the conversation automatically.
 
 ## Output
 
@@ -70,6 +73,16 @@ The agent streams `research_step` progress events as it works. The final result 
 ## Guidelines for the orchestrator
 
 - Don't fabricate the plan — use the user's own words and just structure them into objectives/topics/structure. If the user only gave a one-line request, expand it into 2-3 objectives but stay true to intent.
-- One research_agent call per user request. Don't fan out multiple parallel calls.
+- Split a broad request into parallel jobs only when the objectives are
+  independent and each report is useful on its own (for example, separate
+  market, technical, and regulatory analyses). Prefer 2-3 well-scoped jobs over
+  many narrow searches.
+- Keep one job when the sections must share evidence, build on each other, or
+  form one coherent report. Use one call per distinct objective and do not
+  create duplicate jobs for the same objective.
 - If the user asks a follow-up ("add a section on X", "dig deeper into Y"), call `research_agent` again with an updated plan — the agent itself does not have persistent memory across calls.
-- After the tool returns, do NOT restate the whole report in chat. The report is already rendered as an artifact; a 1-2 sentence summary pointing the user to the canvas is enough.
+- Treat a `started` receipt as accepted background work, not a completed report.
+  Tell the user it has started and continue with any other useful work.
+- When the completion is delivered, do NOT restate the whole report in chat.
+  The report is already rendered as an artifact; a 1-2 sentence summary
+  pointing the user to the canvas is enough.

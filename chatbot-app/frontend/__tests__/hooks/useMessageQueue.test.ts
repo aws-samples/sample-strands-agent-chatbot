@@ -169,16 +169,16 @@ describe('useMessageQueue', () => {
     expect(send).toHaveBeenCalledTimes(1)
   })
 
-  it('does not replay a message whose send failed', async () => {
+  it('retains and holds a message whose send failed', async () => {
     const send = vi.fn().mockRejectedValue(new Error('network'))
     const { hook } = setup(send)
     enqueue(hook, 'doomed')
 
-    await act(async () => {
-      await expect(hook.result.current.flushNext(SESSION, CLEAR)).rejects.toThrow('network')
-    })
+    const sent = await act(async () => hook.result.current.flushNext(SESSION, CLEAR))
 
-    expect(hook.result.current.queue).toHaveLength(0)
+    expect(sent).toBe(false)
+    expect(hook.result.current.queue.map(m => m.text)).toEqual(['doomed'])
+    expect(hook.result.current.holdReason).toBe('error')
   })
 
   it('never sends a message into a different session', async () => {
