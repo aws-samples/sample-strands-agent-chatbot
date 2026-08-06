@@ -68,6 +68,7 @@ export const useStreamEvents = ({
   const streamingIdRef = useRef<string | null>(null)
   const completeProcessedRef = useRef(false)
   const tokenUsageRef = useRef<TokenUsage | null>(null)
+  const pendingAssistantTurnBoundaryRef = useRef(false)
 
   // Accumulates TOOL_CALL_ARGS deltas keyed by toolCallId
   const toolInputAccumulatorRef = useRef<Record<string, string>>({})
@@ -89,6 +90,12 @@ export const useStreamEvents = ({
   // Note: onFlush callback is passed to startFlushing() when streaming starts,
   // not at initialization, to avoid stale closure issues with streamingIdRef
   const textBuffer = useTextBuffer({ flushInterval: 50 })
+
+  const consumeAssistantTurnBoundary = useCallback(() => {
+    if (!pendingAssistantTurnBoundaryRef.current) return {}
+    pendingAssistantTurnBoundaryRef.current = false
+    return { startsNewAssistantTurn: true as const }
+  }, [])
 
   const handleReasoningEvent = useCallback((data: CustomEvent) => {
     const ev = (data as any).value
@@ -140,6 +147,7 @@ export const useStreamEvents = ({
     // Create new streaming message
     streamingStartedRef.current = true
     streamingIdRef.current = event.messageId
+    const turnBoundary = consumeAssistantTurnBoundary()
 
     // Create message with empty text - buffer will populate it
     setMessages(prevMsgs => [...prevMsgs, {
@@ -148,7 +156,8 @@ export const useStreamEvents = ({
       sender: 'bot',
       timestamp: new Date().toISOString(),
       isStreaming: true,
-      images: []
+      images: [],
+      ...turnBoundary,
     }])
 
     setSessionState(prev => ({
@@ -190,7 +199,7 @@ export const useStreamEvents = ({
         latencyMetrics: { ...prevUI.latencyMetrics, timeToFirstToken: ttft ?? prevUI.latencyMetrics.timeToFirstToken ?? null }
       }
     })
-  }, [sessionState, setSessionState, setMessages, setUIState, streamingStartedRef, streamingIdRef, metadataTracking, textBuffer])
+  }, [sessionState, setSessionState, setMessages, setUIState, streamingStartedRef, streamingIdRef, metadataTracking, textBuffer, consumeAssistantTurnBoundary])
 
   const handleTextMessageContentEvent = useCallback((event: TextMessageContentEvent) => {
     // Swarm mode: non-responder captures in agentSteps
@@ -379,6 +388,7 @@ export const useStreamEvents = ({
       // Create new tool message immediately (not in startTransition)
       // Tool container should appear right away with "Loading parameters..." state
       const toolMessageId = String(Date.now())
+      const turnBoundary = consumeAssistantTurnBoundary()
       setMessages(prevMessages => [...prevMessages, {
         id: toolMessageId,
         text: '',
@@ -386,10 +396,11 @@ export const useStreamEvents = ({
         timestamp: new Date().toISOString(),
         toolExecutions: [newToolExecution],
         isToolMessage: true,
-        turnId: currentTurnIdRef.current || undefined
+        turnId: currentTurnIdRef.current || undefined,
+        ...turnBoundary,
       }])
     }
-  }, [currentToolExecutionsRef, currentTurnIdRef, setSessionState, setMessages, setUIState, uiState, textBuffer])
+  }, [currentToolExecutionsRef, currentTurnIdRef, setSessionState, setMessages, setUIState, uiState, textBuffer, consumeAssistantTurnBoundary])
 
   const handleToolCallArgsEvent = useCallback((event: ToolCallArgsEvent) => {
     const current = toolInputAccumulatorRef.current[event.toolCallId] || ''
@@ -858,6 +869,7 @@ export const useStreamEvents = ({
     streamingIdRef.current = null
     completeProcessedRef.current = false
     tokenUsageRef.current = null
+    pendingAssistantTurnBoundaryRef.current = false
     metadataTracking.reset()
   }, [setSessionState, setMessages, setUIState, streamingStartedRef, streamingIdRef, completeProcessedRef, metadataTracking, currentToolExecutionsRef, textBuffer, stopPollingRef])
 
@@ -865,6 +877,7 @@ export const useStreamEvents = ({
     // Clear dedup set at the start of each new run so that events from the new
     // execution (which restart eventId from 1) are not mistakenly dropped.
     processedEventIdsRef.current.clear()
+    pendingAssistantTurnBoundaryRef.current = true
 
     setUIState(prev => {
       if (prev.latencyMetrics.requestStartTime) {
@@ -887,12 +900,14 @@ export const useStreamEvents = ({
 
     // Reset buffer on error
     textBuffer.reset()
+    const turnBoundary = consumeAssistantTurnBoundary()
 
     setMessages(prev => [...prev, {
       id: String(Date.now()),
       text: event.message,
       sender: 'bot',
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
+      ...turnBoundary,
     }])
 
     setUIState(prev => {
@@ -934,7 +949,7 @@ export const useStreamEvents = ({
       console.log('[Swarm] Reset due to error')
       swarmModeRef.current = { isActive: false, nodeHistory: [], agentSteps: [] }
     }
-  }, [uiState, setMessages, setUIState, setSessionState, streamingStartedRef, streamingIdRef, completeProcessedRef, metadataTracking, textBuffer, stopPollingRef])
+  }, [uiState, setMessages, setUIState, setSessionState, streamingStartedRef, streamingIdRef, completeProcessedRef, metadataTracking, textBuffer, stopPollingRef, consumeAssistantTurnBoundary])
 
   const handleInterruptEvent = useCallback((data: CustomEvent) => {
     const ev = (data as any).value
@@ -1482,11 +1497,11 @@ export const useStreamEvents = ({
           handleToolCallResultEvent(event)
           break
         case EventType.RUN_FINISHED:
-          // handleCompleteEvent is async - catch rejections to prevent app crash
-          handleCompleteEvent(event).catch(err => {
+          // Return the cleanup promise so buffered background executions can
+          // serialize complete runs. Live stream callers may ignore it.
+          return handleCompleteEvent(event).catch(err => {
             console.error('[useStreamEvents] Error in complete event handler:', err)
           })
-          break
         case EventType.RUN_ERROR:
           handleErrorEvent(event)
           break
@@ -1499,15 +1514,18 @@ export const useStreamEvents = ({
             case 'interrupt':
               handleInterruptEvent(customEvent)
               break
-            case 'warning':
+            case 'warning': {
               // Show warning as a bot message without stopping the stream
+              const turnBoundary = consumeAssistantTurnBoundary()
               setMessages(prev => [...prev, {
                 id: `warning_${Date.now()}`,
                 text: `⚠️ ${(customEvent as any).value?.message}`,
                 sender: 'bot',
-                timestamp: new Date().toISOString()
+                timestamp: new Date().toISOString(),
+                ...turnBoundary,
               }])
               break
+            }
             case 'browser_progress':
               handleBrowserProgressEvent(customEvent)
               break
@@ -1608,6 +1626,7 @@ export const useStreamEvents = ({
     handleSwarmHandoffEvent,
     handleSwarmCompleteEvent,
     handleStreamStoppedEvent,
+    consumeAssistantTurnBoundary,
     setSessionState,
     setMessages,
     onBrowserSessionDetected
@@ -1622,6 +1641,7 @@ export const useStreamEvents = ({
     streamingIdRef.current = null
     completeProcessedRef.current = false
     tokenUsageRef.current = null
+    pendingAssistantTurnBoundaryRef.current = false
     processedEventIdsRef.current.clear()
     metadataTracking.reset()
 

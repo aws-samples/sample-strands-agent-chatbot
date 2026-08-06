@@ -1,4 +1,6 @@
 import { useState, useMemo, useEffect } from 'react'
+import type { ResearchJob } from '@/lib/research-jobs'
+import { parseResearchStartReceipt } from '@/lib/research-start-receipt'
 
 export interface ResearchExecutionData {
   query: string
@@ -22,7 +24,10 @@ interface MessageGroup {
   }>
 }
 
-export function useAgentExecutions(groupedMessages: MessageGroup[]) {
+export function useAgentExecutions(
+  groupedMessages: MessageGroup[],
+  researchJobs: ResearchJob[] = [],
+) {
   const [researchData, setResearchData] = useState<Map<string, ResearchExecutionData>>(new Map())
 
   const computedResearchData = useMemo(() => {
@@ -38,12 +43,21 @@ export function useAgentExecutions(groupedMessages: MessageGroup[]) {
             if (execution.toolName === 'research_agent') {
               const executionId = execution.id
               const query = execution.toolInput?.plan || "Research Task"
+              const started = parseResearchStartReceipt(execution.toolResult)
+              const job = started
+                ? researchJobs.find(item => item.jobId === started.job_id)
+                : researchJobs.find(item => item.artifactId === `research-${executionId}`)
 
-              if (!execution.isComplete) {
+              if (!execution.isComplete || started) {
+                const isError = job?.status === 'error'
+                const isComplete = job && ['completed', 'delivering', 'delivered'].includes(job.status)
+                const result = typeof job?.artifact?.content === 'string'
+                  ? job.artifact.content
+                  : execution.streamingResponse || ''
                 newResearchData.set(executionId, {
                   query,
-                  result: execution.streamingResponse || '',
-                  status: execution.streamingResponse ? 'generating' : 'searching',
+                  result,
+                  status: isError ? 'error' : isComplete ? 'complete' : result ? 'generating' : 'searching',
                   agentName: 'Research Agent'
                 })
               } else if (execution.toolResult) {
@@ -70,7 +84,7 @@ export function useAgentExecutions(groupedMessages: MessageGroup[]) {
     }
 
     return newResearchData
-  }, [groupedMessages])
+  }, [groupedMessages, researchJobs])
 
   useEffect(() => {
     setResearchData(prev => {

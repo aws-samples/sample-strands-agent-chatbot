@@ -7,6 +7,7 @@ research_report.md. See the research agent's tests/test_concurrent_research.py
 for the other half of this.
 """
 import sys
+import asyncio
 from unittest.mock import MagicMock
 
 import pytest
@@ -42,6 +43,25 @@ def research_tool(monkeypatch):
 
     monkeypatch.setattr(a2a_tools, "send_a2a_message", fake_send)
 
+    def fake_start_research_job(**kwargs):
+        async def consume():
+            async for _ in kwargs["event_factory"]():
+                pass
+
+        asyncio.get_running_loop().create_task(consume())
+        return {
+            "status": "started",
+            "job_id": "job-id",
+            "artifact_id": kwargs["artifact_id"],
+        }
+
+    import agent.research_jobs
+    monkeypatch.setattr(
+        agent.research_jobs,
+        "start_research_job",
+        fake_start_research_job,
+    )
+
     tool = a2a_tools.create_a2a_tool("agentcore_research-agent")
     assert tool is not None
     return tool._tool_func, sent
@@ -62,7 +82,11 @@ def make_tool_context(tool_use_id, session_id="chat-session-1"):
 
 
 async def drain(agen):
-    return [event async for event in agen]
+    if hasattr(agen, "__aiter__"):
+        return [event async for event in agen]
+    result = await agen
+    await asyncio.sleep(0)
+    return [result]
 
 
 class TestResearchSessionScoping:

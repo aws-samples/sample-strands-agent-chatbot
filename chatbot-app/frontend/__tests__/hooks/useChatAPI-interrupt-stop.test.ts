@@ -48,6 +48,7 @@ function sseResponse(events: Array<Record<string, unknown>>) {
             return { done: false, value: new TextEncoder().encode(payload) }
           },
           cancel: async () => {},
+          releaseLock: () => {},
         }
       },
     },
@@ -65,14 +66,14 @@ const INTERRUPT = {
   },
 }
 
-function setup() {
+function setup(handleStreamEvent = vi.fn()) {
   const stopFetch = vi.fn().mockResolvedValue({ ok: true, text: async () => '' })
   const hook = renderHook(() =>
     useChatAPI({
       backendUrl: 'http://localhost:8000',
       setUIState: vi.fn(),
       setMessages: vi.fn(),
-      handleStreamEvent: vi.fn(),
+      handleStreamEvent,
       resetStreamingState: vi.fn(),
       sessionId: 'session-1',
       setSessionId: vi.fn(),
@@ -80,7 +81,7 @@ function setup() {
       currentTemperature: 0.5,
     } as any),
   )
-  return { hook, stopFetch }
+  return { hook, stopFetch, handleStreamEvent }
 }
 
 /** Runs one turn whose stream ends with the given events. */
@@ -160,5 +161,72 @@ describe('useChatAPI — stopping a turn that parked at an interrupt', () => {
     const { requested } = await tryStop(hook)
 
     expect(requested).toBe(false)
+  })
+})
+
+describe('useChatAPI — background execution replay', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    sessionStorage.clear()
+    vi.mocked(sessionStorage.getItem).mockImplementation(key =>
+      key === 'chat-session-id' ? 'session-1' : null,
+    )
+  })
+
+  it('replays a buffered completion with auth through the normal event handler', async () => {
+    let finishCleanup: (() => void) | undefined
+    const cleanup = new Promise<void>(resolve => {
+      finishCleanup = resolve
+    })
+    const handleStreamEvent = vi.fn().mockImplementation(async event => {
+      if (event.type === 'RUN_FINISHED') await cleanup
+    })
+    const { hook } = setup(handleStreamEvent)
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    const activeSessionId = sessionStorage.getItem('chat-session-id')
+    expect(activeSessionId).toBeTruthy()
+
+    const events = [
+      { type: 'RUN_STARTED', threadId: activeSessionId, runId: 'delivery-1' },
+      { type: 'TEXT_MESSAGE_START', messageId: 'completion-1', role: 'assistant' },
+      { type: 'TEXT_MESSAGE_CONTENT', messageId: 'completion-1', delta: 'Research is ready.' },
+      { type: 'TEXT_MESSAGE_END', messageId: 'completion-1' },
+      { type: 'RUN_FINISHED', threadId: activeSessionId, runId: 'delivery-1' },
+    ]
+    const fetchMock = vi.fn().mockResolvedValue(sseResponse(events))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const executionId = `${activeSessionId}:research-delivery-job-1`
+    let replayed = false
+    let replayPromise: Promise<boolean> | undefined
+    await act(async () => {
+      replayPromise = hook.result.current.replayExecution(executionId)
+      await Promise.resolve()
+    })
+    expect(replayed).toBe(false)
+
+    await act(async () => {
+      finishCleanup?.()
+      replayed = await replayPromise!
+    })
+
+    expect(replayed).toBe(true)
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining(
+        `executionId=${encodeURIComponent(executionId)}`,
+      ),
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: 'Bearer test-token',
+          Accept: 'text/event-stream',
+        }),
+      }),
+    )
+    expect(handleStreamEvent.mock.calls.map(([event]) => event.type)).toEqual(
+      events.map(event => event.type),
+    )
   })
 })

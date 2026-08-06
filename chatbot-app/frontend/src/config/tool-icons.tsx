@@ -12,6 +12,7 @@ import {
   TbPresentation,
   TbChartLine,
   TbCode,
+  TbTelescope,
 } from 'react-icons/tb';
 import {
   SiDuckduckgo,
@@ -74,7 +75,8 @@ export const toolIconMap: Record<string, IconType> = {
   mcp_github: SiGithub,
 
   // Research Agent
-  'agentcore_research-agent': TbSearch,
+  'agentcore_research-agent': TbTelescope,
+  research_agent: TbTelescope,
 };
 
 /**

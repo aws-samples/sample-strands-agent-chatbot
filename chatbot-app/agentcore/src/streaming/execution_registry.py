@@ -107,12 +107,21 @@ class ExecutionRegistry:
         """Reset singleton (for testing)."""
         cls._instance = None
 
-    async def create_execution(self, session_id: str, user_id: str, run_id: str) -> Execution:
+    async def create_execution(
+        self,
+        session_id: str,
+        user_id: str,
+        run_id: str,
+        *,
+        supersede_running: bool = True,
+    ) -> Optional[Execution]:
         async with self._lock:
             latest_id = self._session_latest.get(session_id)
             if latest_id:
                 latest = self._executions.get(latest_id)
                 if latest and latest.status == ExecutionStatus.RUNNING:
+                    if not supersede_running:
+                        return None
                     # Force-complete the stale execution (stop was already requested)
                     logger.warning(
                         f"[ExecutionRegistry] Superseding stale execution {latest_id} "

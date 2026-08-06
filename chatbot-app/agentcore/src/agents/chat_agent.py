@@ -11,7 +11,7 @@ from strands import Agent
 from strands.tools.executors import SequentialToolExecutor
 from agents.base import BaseAgent
 from agents.model_factory import build_model
-from agent.hooks import ResearchApprovalHook, EmailApprovalHook, GitHubApprovalHook
+from agent.hooks import EmailApprovalHook, GitHubApprovalHook
 from agent.config.prompt_builder import (
     build_text_system_prompt,
     system_prompt_to_string,
@@ -127,11 +127,6 @@ class ChatAgent(BaseAgent):
 
             # Create hooks
             hooks = []
-
-            # Add research approval hook (always enabled)
-            research_approval_hook = ResearchApprovalHook(app_name="chatbot")
-            hooks.append(research_approval_hook)
-            logger.debug("Research approval hook enabled (BeforeToolCallEvent)")
 
             # Add email approval hook for bulk email operations
             email_approval_hook = EmailApprovalHook(app_name="chatbot")

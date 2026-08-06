@@ -1,181 +1,76 @@
 /**
- * A past research must not be "completed" again after a page reload.
- *
- * researchData is derived from message history, so every research a session has
- * ever run reappears as status 'complete' on each mount. The completion handler
- * dedupes with a useRef Set, which starts empty on every mount — so after a
- * reload the first render replays old completions. Each replay resets the
- * research state and opens that research's artifact, which tears down the
- * approval card for the research the user is starting right now.
- *
- * That is why the bug only showed up with artifacts already present, and only
- * after a reload: without a reload the Set still holds the earlier ids.
- *
- * Canvas's own priority rule is covered in CanvasResearchApproval.test.tsx.
- * This covers the guard that stops the state from being torn down before Canvas
- * ever gets the chance to apply it.
+ * Research completion is now driven by durable jobs rather than replaying tool
+ * results from message history. These source-level contract tests guard the
+ * dedupe that prevents a polling tick or page reload from reopening an artifact.
  */
-import { describe, it, expect, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 
-interface ResearchExecution {
-  status: string
-  result: string
-}
-
-/**
- * The completion loop from ChatInterface, with the surrounding component state
- * passed in. Kept as a function of its inputs so the ordering that produced the
- * bug (interrupt arrives, then history replays) can be driven directly.
- */
-function runCompletionPass(
-  researchData: Map<string, ResearchExecution>,
-  artifacts: Array<{ id: string }>,
-  processed: Set<string>,
-  researchArtifactId: string | null,
-  handlers: {
-    onComplete: (executionId: string) => void
-    onReset: () => void
-    onOpenArtifact: (id: string) => void
-  },
-) {
-  if (!researchArtifactId) return
-
-  for (const [executionId, data] of researchData) {
-    if (processed.has(executionId)) continue
-
-    // The guard: an artifact for this research already exists, so it finished
-    // before this mount and must not be completed again.
-    if (artifacts.some(a => a.id === `research-${executionId}`)) {
-      processed.add(executionId)
-      continue
-    }
-
-    if (data.status === 'complete' && data.result) {
-      processed.add(executionId)
-      handlers.onComplete(executionId)
-      handlers.onReset()
-      handlers.onOpenArtifact(`research-${executionId}`)
-    }
-  }
-}
-
-/** Reads the shipped component source; vitest runs with the frontend as cwd. */
 async function readChatInterfaceSource(): Promise<string> {
   const { readFileSync } = await import('node:fs')
   const { resolve } = await import('node:path')
   return readFileSync(resolve(process.cwd(), 'src/components/ChatInterface.tsx'), 'utf8')
 }
 
-function setup() {
-  return {
-    onComplete: vi.fn(),
-    onReset: vi.fn(),
-    onOpenArtifact: vi.fn(),
-  }
-}
-
-describe('research completion replay after reload', () => {
-  it('does not re-complete a research that already has an artifact', () => {
-    const handlers = setup()
-    const researchData = new Map([
-      ['exec-old', { status: 'complete', result: '<research># Old</research>' }],
-    ])
-    const artifacts = [{ id: 'research-exec-old' }]
-
-    // Fresh mount: the dedupe set is empty, as it is after every reload.
-    runCompletionPass(researchData, artifacts, new Set(), 'in-progress', handlers)
-
-    expect(handlers.onReset).not.toHaveBeenCalled()
-    expect(handlers.onOpenArtifact).not.toHaveBeenCalled()
-  })
-
-  // The user-visible failure: the approval card is replaced by the old report.
-  it('leaves a pending approval intact when an old research replays', () => {
-    const handlers = setup()
-    const researchData = new Map([
-      ['exec-old', { status: 'complete', result: '<research># Old</research>' }],
-    ])
-    const artifacts = [{ id: 'research-exec-old' }]
-
-    // 'in-progress' is what the interrupt handler sets while awaiting approval.
-    runCompletionPass(researchData, artifacts, new Set(), 'in-progress', handlers)
-
-    expect(handlers.onReset).not.toHaveBeenCalled()
-  })
-
-  it('still completes a research that finished during this mount', () => {
-    const handlers = setup()
-    const researchData = new Map([
-      ['exec-new', { status: 'complete', result: '<research># New</research>' }],
-    ])
-
-    // No artifact yet — the backend saves it, but this pass is what adds it locally.
-    runCompletionPass(researchData, [], new Set(), 'in-progress', handlers)
-
-    expect(handlers.onComplete).toHaveBeenCalledWith('exec-new')
-    expect(handlers.onOpenArtifact).toHaveBeenCalledWith('research-exec-new')
-  })
-
-  it('completes only the new research when an old one is also present', () => {
-    const handlers = setup()
-    const researchData = new Map([
-      ['exec-old', { status: 'complete', result: '<research># Old</research>' }],
-      ['exec-new', { status: 'complete', result: '<research># New</research>' }],
-    ])
-    const artifacts = [{ id: 'research-exec-old' }]
-
-    runCompletionPass(researchData, artifacts, new Set(), 'in-progress', handlers)
-
-    expect(handlers.onComplete).toHaveBeenCalledTimes(1)
-    expect(handlers.onComplete).toHaveBeenCalledWith('exec-new')
-    expect(handlers.onOpenArtifact).toHaveBeenCalledWith('research-exec-new')
-  })
-
-  it('marks the replayed research processed so later passes skip it', () => {
-    const handlers = setup()
-    const researchData = new Map([
-      ['exec-old', { status: 'complete', result: '<research># Old</research>' }],
-    ])
-    const artifacts = [{ id: 'research-exec-old' }]
-    const processed = new Set<string>()
-
-    runCompletionPass(researchData, artifacts, processed, 'in-progress', handlers)
-
-    expect(processed.has('exec-old')).toBe(true)
-  })
-
-  // runCompletionPass above mirrors ChatInterface rather than importing it (the
-  // logic lives inside a useEffect in a component with ~40 hooks). That mirror
-  // can drift, so assert the guard is actually present in the shipped source.
-  it('the shipped completion effect guards on an existing artifact', async () => {
+describe('durable research completion replay', () => {
+  it('uses the durable research job hook as the completion source', async () => {
     const source = await readChatInterfaceSource()
 
-    const effect = source.slice(source.indexOf('Clean up when research completes'))
-    const body = effect.slice(0, effect.indexOf('}, ['))
-
-    expect(body).toMatch(/artifacts\.some\(\s*a\s*=>\s*a\.id === `research-\$\{executionId\}`\s*\)/)
-    expect(body).toContain('processedResearchIdsRef.current.add(executionId)')
+    expect(source).toContain('useResearchJobs(')
+    expect(source).toContain("tool.toolName === 'research_agent'")
+    expect(source).toContain('invocationIds.add(tool.id)')
+    expect(source).not.toContain('Clean up when research completes')
   })
 
-  it('the shipped effect re-runs when artifacts change', async () => {
+  it('deduplicates unchanged artifact versions before updating Canvas', async () => {
     const source = await readChatInterfaceSource()
+    const effect = source.slice(
+      source.indexOf('A completed report is readable'),
+      source.indexOf('Background continuations have their own buffered'),
+    )
 
-    const effect = source.slice(source.indexOf('Clean up when research completes'))
-    const deps = effect.slice(effect.indexOf('}, ['), effect.indexOf('])', effect.indexOf('}, [')))
-
-    // Without artifacts in the dependency list the guard reads a stale list and
-    // the replay slips through on the render where it matters.
-    expect(deps).toContain('artifacts')
+    expect(effect).toContain('researchArtifactVersionsRef')
+    expect(effect).toContain(
+      'researchArtifactVersionsRef.current.get(artifact.id) === version',
+    )
+    expect(effect.indexOf('researchArtifactVersionsRef.current.get(artifact.id) === version'))
+      .toBeLessThan(effect.indexOf('addArtifact({'))
   })
 
-  it('does nothing when no research is active', () => {
-    const handlers = setup()
-    const researchData = new Map([
-      ['exec-new', { status: 'complete', result: '<research># New</research>' }],
-    ])
+  it('clears artifact replay state when the session changes', async () => {
+    const source = await readChatInterfaceSource()
+    const reset = source.slice(
+      source.indexOf('reloadedDeliveriesRef.current.clear()'),
+      source.indexOf('}, [sessionId])'),
+    )
 
-    runCompletionPass(researchData, [], new Set(), null, handlers)
+    expect(reset).toContain('researchArtifactVersionsRef.current.clear()')
+  })
 
-    expect(handlers.onComplete).not.toHaveBeenCalled()
+  it('replays the background delivery execution instead of replacing history', async () => {
+    const source = await readChatInterfaceSource()
+    const effect = source.slice(
+      source.indexOf('Background continuations have their own buffered'),
+      source.indexOf('// Keep reloadFromStorage ref'),
+    )
+
+    expect(effect).toContain('research-delivery-${jobId}')
+    expect(effect).toContain('await replayExecution(executionId)')
+    expect(effect).toContain('for (const jobId of unseen)')
+    expect(effect).toContain('queuedMessages.length > 0')
+    expect(effect).toContain("agentStatus !== 'idle'")
+    expect(effect).not.toContain('await loadSession(sessionId)')
+  })
+
+  it('marks the first visible event of each run as a new assistant turn', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { resolve } = await import('node:path')
+    const source = readFileSync(
+      resolve(process.cwd(), 'src/hooks/useStreamEvents.ts'),
+      'utf8',
+    )
+
+    expect(source).toContain('pendingAssistantTurnBoundaryRef.current = true')
+    expect(source).toContain('consumeAssistantTurnBoundary()')
+    expect(source).toContain('startsNewAssistantTurn: true')
   })
 })

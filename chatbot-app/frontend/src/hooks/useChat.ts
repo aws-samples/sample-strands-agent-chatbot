@@ -9,6 +9,7 @@ import { useMessageQueue, QueuedMessage, QueueHoldReason } from './useMessageQue
 import { getApiUrl } from '@/config/environment'
 import { generateSessionId } from '@/config/session'
 import { apiGet, apiPost } from '@/lib/api-client'
+import { groupChatMessages, type GroupedChatMessage } from '@/lib/chat-message-groups'
 
 import { WorkspaceDocument } from './useStreamEvents'
 import { ExtractedDataInfo } from './useCanvasHandlers'
@@ -29,11 +30,7 @@ interface UseChatProps {
 
 interface UseChatReturn {
   messages: Message[]
-  groupedMessages: Array<{
-    type: 'user' | 'assistant_turn'
-    messages: Message[]
-    id: string
-  }>
+  groupedMessages: GroupedChatMessage[]
   isConnected: boolean
   isTyping: boolean
   agentStatus: AgentStatus
@@ -42,6 +39,7 @@ interface UseChatReturn {
   showProgressPanel: boolean
   toggleProgressPanel: () => void
   sendMessage: (text: string, files?: File[], systemPrompt?: string, selectedArtifactId?: string | null) => Promise<void>
+  replayExecution: (executionId: string) => Promise<boolean>
   stopGeneration: () => Promise<void>
   // Queue for turns composed while the agent is busy
   queuedMessages: QueuedMessage[]
@@ -247,6 +245,7 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
     summarizeForCompact: apiSummarizeForCompact,
     listSessionEvents: apiListSessionEvents,
     sendMessage: apiSendMessage,
+    replayExecution: apiReplayExecution,
     cleanup,
     sendStopSignal,
     loadSession: apiLoadSession,
@@ -629,6 +628,30 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
     })
   }, [enqueue, sessionId])
 
+  const replayExecution = useCallback(async (executionId: string) => {
+    const replayed = await apiReplayExecution(executionId)
+    if (!replayed) {
+      // Runtime buffers expire; history contains the same durable assistant
+      // response and preserves its synthetic turn boundary.
+      await loadSessionWithPreferences(sessionId)
+    }
+
+    // A message composed while the delivery was rendering is a normal queued
+    // user turn. Dispatch it only after replay or history fallback completes.
+    await flushNext(sessionId, {
+      hasInterrupt: sessionState.interrupt !== null,
+      hasPendingOAuth: !!sessionState.pendingOAuth,
+    })
+    return replayed
+  }, [
+    apiReplayExecution,
+    flushNext,
+    loadSessionWithPreferences,
+    sessionId,
+    sessionState.interrupt,
+    sessionState.pendingOAuth,
+  ])
+
   useEffect(() => {
     if (!turnSettled) return
     setTurnSettled(null)
@@ -828,45 +851,7 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
   }, [stopGeneration])
 
   // ==================== DERIVED STATE ====================
-  const groupedMessages = useMemo(() => {
-    const grouped: Array<{
-      type: 'user' | 'assistant_turn'
-      messages: Message[]
-      id: string
-    }> = []
-
-    let currentAssistantTurn: Message[] = []
-
-    for (const message of messages) {
-      if (message.sender === 'user') {
-        if (currentAssistantTurn.length > 0) {
-          grouped.push({
-            type: 'assistant_turn',
-            messages: currentAssistantTurn,
-            id: `turn_${currentAssistantTurn[0].id}`
-          })
-          currentAssistantTurn = []
-        }
-        grouped.push({
-          type: 'user',
-          messages: [message],
-          id: `user_${message.id}`
-        })
-      } else {
-        currentAssistantTurn.push(message)
-      }
-    }
-
-    if (currentAssistantTurn.length > 0) {
-      grouped.push({
-        type: 'assistant_turn',
-        messages: currentAssistantTurn,
-        id: `turn_${currentAssistantTurn[0].id}`
-      })
-    }
-
-    return grouped
-  }, [messages])
+  const groupedMessages = useMemo(() => groupChatMessages(messages), [messages])
 
   // Update per-session model config (React state + global default via API)
   const updateModelConfig = useCallback((modelId: string, temperature?: number) => {
@@ -1095,6 +1080,7 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
     showProgressPanel: uiState.showProgressPanel,
     toggleProgressPanel,
     sendMessage,
+    replayExecution,
     stopGeneration,
     queuedMessages,
     queueHoldReason,

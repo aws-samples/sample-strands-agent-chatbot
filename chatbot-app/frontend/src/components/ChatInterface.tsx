@@ -5,7 +5,7 @@ import { useState, useRef, useEffect, useCallback, useMemo } from "react"
 import { useChat } from "@/hooks/useChat"
 import { useArtifacts } from "@/hooks/useArtifacts"
 import { useCanvasHandlers } from "@/hooks/useCanvasHandlers"
-import { useAgentExecutions } from "@/hooks/useAgentExecutions"
+import { useResearchJobs } from "@/hooks/useResearchJobs"
 import { ArtifactType } from "@/types/artifact"
 import { ChatMessage } from "@/components/chat/ChatMessage"
 import { AssistantTurn } from "@/components/chat/AssistantTurn"
@@ -17,7 +17,6 @@ import { SwarmProgress } from "@/components/SwarmProgress"
 import { Canvas } from "@/components/canvas"
 import { ChatInputArea } from "@/components/chat/ChatInputArea"
 import { QueuedMessages } from "@/components/chat/QueuedMessages"
-import { useResearch } from "@/hooks/useResearch"
 import { Button } from "@/components/ui/button"
 import { SidebarTrigger, SidebarInset, useSidebar } from "@/components/ui/sidebar"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
@@ -154,6 +153,7 @@ export function ChatInterface() {
     agentStatus,
     currentReasoning,
     sendMessage,
+    replayExecution,
     stopGeneration,
     queuedMessages,
     queueHoldReason,
@@ -206,9 +206,6 @@ export function ChatInterface() {
   const [selectedFiles, setSelectedFiles] = useState<File[]>([])
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
-  // Agent executions (research)
-  const { researchData } = useAgentExecutions(groupedMessages)
-
   // Greeting prompt prefill
   const [prefillMessage, setPrefillMessage] = useState<string | undefined>(undefined)
 
@@ -221,7 +218,6 @@ export function ChatInterface() {
     openCanvas: openCanvasBase,
     openArtifact: openArtifactBase,
     closeCanvas: closeCanvasBase,
-    setSelectedArtifactId,
     addArtifact,
     removeArtifact,
     updateArtifact,
@@ -229,6 +225,76 @@ export function ChatInterface() {
     reloadFromStorage,
     justUpdated: artifactJustUpdated,
   } = useArtifacts(sessionId)
+
+  const researchInvocationCount = useMemo(() => {
+    const invocationIds = new Set<string>()
+    for (const group of groupedMessages) {
+      for (const message of group.messages) {
+        for (const tool of message.toolExecutions || []) {
+          if (tool.toolName === 'research_agent') invocationIds.add(tool.id)
+        }
+      }
+    }
+    return invocationIds.size
+  }, [groupedMessages])
+  const { jobs: researchJobs, deliveredJobIds } = useResearchJobs(
+    sessionId,
+    researchInvocationCount,
+  )
+  const reloadedDeliveriesRef = useRef<Set<string>>(new Set())
+  const researchArtifactVersionsRef = useRef<Map<string, string>>(new Map())
+
+  useEffect(() => {
+    reloadedDeliveriesRef.current.clear()
+    researchArtifactVersionsRef.current.clear()
+  }, [sessionId])
+
+  // A completed report is readable from the durable job store even before the
+  // supervisor continuation finishes. Add it to Canvas as soon as it appears.
+  useEffect(() => {
+    for (const job of researchJobs) {
+      const artifact = job.artifact
+      if (!artifact?.content) continue
+      const version = `${job.updatedAt}:${artifact.content.length}`
+      if (researchArtifactVersionsRef.current.get(artifact.id) === version) continue
+      researchArtifactVersionsRef.current.set(artifact.id, version)
+      addArtifact({
+        id: artifact.id,
+        type: artifact.type,
+        title: artifact.title,
+        content: artifact.content,
+        description: artifact.metadata?.description || '',
+        toolName: artifact.tool_name,
+        timestamp: artifact.created_at || job.completedAt || job.updatedAt,
+        sessionId,
+        metadata: artifact.metadata,
+      })
+    }
+  }, [researchJobs, addArtifact, sessionId])
+
+  // Background continuations have their own buffered AG-UI execution. Replay
+  // each one through the normal stream handler so its assistant turn appears
+  // live, while the durable job continues to own the tool card and artifact.
+  useEffect(() => {
+    const userTurnWaiting = queuedMessages.length > 0 && queueHoldReason === null
+    if (agentStatus !== 'idle' || userTurnWaiting || deliveredJobIds.length === 0) return
+    const unseen = deliveredJobIds.filter(id => !reloadedDeliveriesRef.current.has(id))
+    if (unseen.length === 0) return
+    unseen.forEach(id => reloadedDeliveriesRef.current.add(id))
+    void (async () => {
+      for (const jobId of unseen) {
+        const executionId = `${sessionId}:research-delivery-${jobId}`
+        await replayExecution(executionId)
+      }
+    })()
+  }, [
+    agentStatus,
+    deliveredJobIds,
+    queueHoldReason,
+    queuedMessages.length,
+    replayExecution,
+    sessionId,
+  ])
 
   // Keep reloadFromStorage ref in sync for the onSessionLoaded callback
   useEffect(() => {
@@ -254,9 +320,6 @@ export function ChatInterface() {
     })
   }, [artifacts, refreshArtifacts, addArtifact, updateArtifact, openArtifact, setArtifactMethods])
 
-  // Research artifact ID tracking
-  const [researchArtifactId, setResearchArtifactId] = useState<string | null>(null)
-
   // Browser artifact ID tracking (for Live View in Canvas)
   const [browserArtifactId, setBrowserArtifactId] = useState<string | null>(null)
 
@@ -272,12 +335,6 @@ export function ChatInterface() {
   useEffect(() => {
     setBrowserArtifactIdRef.current = setBrowserArtifactId
   }, [setBrowserArtifactId])
-
-  // Research management
-  const research = useResearch({
-    sessionId,
-    respondToInterrupt,
-  })
 
   // Wrapper functions to ensure mutual exclusivity between left sidebar and canvas
   const toggleCanvas = useCallback(() => {
@@ -299,30 +356,6 @@ export function ChatInterface() {
     setOpenMobile(false)
     openCanvasBase()
   }, [openCanvasBase, setOpen, setOpenMobile])
-
-  // Research Canvas callbacks - use refs for stable references
-  const researchRef = useRef(research)
-  researchRef.current = research
-
-  const handleResearchConfirmPlan = useCallback((approved: boolean) => {
-    researchRef.current.confirmPlanResponse(approved)
-    if (!approved) {
-      researchRef.current.reset()
-      setResearchArtifactId(null)
-      processedInterruptRef.current = null
-      closeCanvas()
-    }
-  }, [closeCanvas])
-
-  const handleResearchCancel = useCallback(() => {
-    if (researchRef.current.showPlanConfirm) {
-      researchRef.current.confirmPlanResponse(false)
-    }
-    researchRef.current.reset()
-    setResearchArtifactId(null)
-    processedInterruptRef.current = null
-    closeCanvas()
-  }, [closeCanvas])
 
   // Remove a browser artifact from both state and sessionStorage
   const removeBrowserArtifact = useCallback((artifactId: string) => {
@@ -460,190 +493,6 @@ export function ChatInterface() {
   })
 
 
-  // Reset research state when a new research starts
-  // This allows the second research in the same session to show the HITL modal
-  const prevAgentStatusRef = useRef<string | null>(null)
-  useEffect(() => {
-    // When transitioning to 'researching' from another status, reset the research artifact
-    if (agentStatus === 'researching' && prevAgentStatusRef.current !== 'researching') {
-      if (researchArtifactId && researchArtifactId !== 'in-progress') {
-        // Previous research was completed, reset for new research
-        setResearchArtifactId(null)
-        researchRef.current.reset()
-      }
-    }
-    prevAgentStatusRef.current = agentStatus
-  }, [agentStatus, researchArtifactId])
-
-  // Connect research_progress events to useResearch hook
-  useEffect(() => {
-    if (researchProgress && researchArtifactId) {
-      researchRef.current.handleProgressEvent(researchProgress)
-    }
-  }, [researchProgress, researchArtifactId])
-
-  // Track processed interrupt IDs to prevent duplicate handling
-  const processedInterruptRef = useRef<string | null>(null)
-
-  // Auto-open Canvas when research interrupt is received
-  useEffect(() => {
-    if (currentInterrupt && currentInterrupt.interrupts.length > 0) {
-      const interrupt = currentInterrupt.interrupts[0]
-
-      if (interrupt.name === "chatbot-research-approval" &&
-          processedInterruptRef.current !== interrupt.id) {
-
-        // Mark as processed
-        processedInterruptRef.current = interrupt.id
-
-        // Reset research state for new interrupt (clears any previous run)
-        setResearchArtifactId('in-progress')
-
-        // Deselect any currently viewed artifact so ResearchArtifact renders
-        setSelectedArtifactId(null)
-
-        // Open canvas and pass interrupt to research hook
-        openCanvas()
-        researchRef.current.handleInterrupt(interrupt)
-      }
-    } else {
-      // Clear processed ref when no interrupt
-      processedInterruptRef.current = null
-    }
-  }, [currentInterrupt, researchArtifactId, openCanvas])
-
-  // Track which research executions we've already processed
-  const processedResearchIdsRef = useRef<Set<string>>(new Set())
-
-  // Extract clean research content using <research> XML tags (same as ResearchModal)
-  const extractResearchContent = useCallback((result: string): { title: string; content: string } => {
-    if (!result) return { title: 'Research Results', content: '' }
-
-    // Helper function to unescape JSON-escaped strings
-    const unescapeJsonString = (str: string): string => {
-      if (str.includes('\\n') || str.includes('\\u') || str.includes('\\t')) {
-        try {
-          const escaped = str.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
-          return JSON.parse(`"${escaped}"`)
-        } catch (e) {
-          return str
-            .replace(/\\n/g, '\n')
-            .replace(/\\t/g, '\t')
-            .replace(/\\r/g, '\r')
-            .replace(/\\u([0-9a-fA-F]{4})/g, (_, code) => String.fromCharCode(parseInt(code, 16)))
-        }
-      }
-      return str
-    }
-
-    // Helper to extract title from content
-    const extractTitle = (content: string): string => {
-      const h1Match = content.match(/^#\s+(.+)$/m)
-      if (h1Match) return h1Match[1].trim()
-      const h2Match = content.match(/^##\s+(.+)$/m)
-      if (h2Match) return h2Match[1].trim()
-      return 'Research Results'
-    }
-
-    // 1. Check for <research> XML tag (primary method)
-    const researchMatch = result.match(/<research>([\s\S]*?)<\/research>/)
-    if (researchMatch && researchMatch[1]) {
-      const content = unescapeJsonString(researchMatch[1].trim())
-      return { title: extractTitle(content), content }
-    }
-
-    // 2. Try to parse as JSON (legacy format)
-    try {
-      const parsed = JSON.parse(result)
-      if (parsed.content && typeof parsed.content === 'string') {
-        const content = unescapeJsonString(parsed.content)
-        return { title: extractTitle(content), content }
-      }
-      if (parsed.text && typeof parsed.text === 'string') {
-        const innerMatch = parsed.text.match(/<research>([\s\S]*?)<\/research>/)
-        if (innerMatch && innerMatch[1]) {
-          const content = unescapeJsonString(innerMatch[1].trim())
-          return { title: extractTitle(content), content }
-        }
-        const content = unescapeJsonString(parsed.text)
-        return { title: extractTitle(content), content }
-      }
-    } catch (e) {
-      // Not JSON, continue with other methods
-    }
-
-    // 3. Fallback: Look for first H1 heading (skip progress lines before it)
-    const h1Match = result.match(/^#\s+.+$/m)
-    if (h1Match && h1Match.index !== undefined) {
-      const content = unescapeJsonString(result.substring(h1Match.index))
-      return { title: extractTitle(content), content }
-    }
-
-    // 4. Last resort: return as is
-    return { title: 'Research Results', content: unescapeJsonString(result) }
-  }, [])
-
-
-  // Clean up when research completes - detect via researchData status changes
-  useEffect(() => {
-    // Only process if we have an active research in progress
-    if (!researchArtifactId) return
-
-    // Check if any research execution has completed
-    for (const [executionId, data] of researchData) {
-      // Skip already processed
-      if (processedResearchIdsRef.current.has(executionId)) continue
-
-      // A research whose artifact already exists finished before this mount:
-      // researchData is derived from message history, so a page reload replays
-      // every past research as freshly "complete" against an empty processed
-      // set. Completing it again would reset the research state and open its
-      // artifact, replacing the approval card for the research starting now.
-      if (artifacts.some(a => a.id === `research-${executionId}`)) {
-        processedResearchIdsRef.current.add(executionId)
-        continue
-      }
-
-      if (data.status === 'complete' && data.result) {
-        processedResearchIdsRef.current.add(executionId)
-
-        // Extract clean content from research result
-        const { title, content } = extractResearchContent(data.result)
-
-        // Call research.handleComplete to update ResearchArtifact UI
-        researchRef.current.handleComplete({ title, content })
-
-        // Artifact ID is research-{toolUseId} where toolUseId = executionId
-        const targetArtifactId = `research-${executionId}`
-
-        // Add artifact directly to state (backend also saves it)
-        // No need to call refreshArtifacts which triggers unnecessary API calls
-        addArtifact({
-          id: targetArtifactId,
-          type: 'research',
-          title: title,
-          content: content,
-          description: '',
-          timestamp: new Date().toISOString(),
-          sessionId: sessionId || undefined,
-        })
-
-        // Open the artifact in Canvas and clean up research state
-        setResearchArtifactId(null)
-        researchRef.current.reset()
-        openArtifact(targetArtifactId)
-      } else if (data.status === 'error' || data.status === 'declined') {
-        processedResearchIdsRef.current.add(executionId)
-        // Only cleanup if this is the active research (not 'in-progress' waiting for new one)
-        if (researchArtifactId && researchArtifactId !== 'in-progress') {
-          setResearchArtifactId(null)
-          researchRef.current.reset()
-          closeCanvas()
-        }
-      }
-    }
-  }, [researchData, researchArtifactId, artifacts, closeCanvas, addArtifact, sessionId, extractResearchContent, openArtifact])
-
   // Export conversation to text file
   const exportConversation = useCallback(() => {
     if (groupedMessages.length === 0) return
@@ -755,7 +604,7 @@ export function ChatInterface() {
     enqueueMessage(text, files, buildCurrentArtifactContext(), selectedArtifactId)
   }, [enqueueMessage, buildCurrentArtifactContext, selectedArtifactId])
 
-  // Interrupt approval handlers (for browser interrupts - research is handled via useEffect/Canvas)
+  // Interrupt approval handlers for destructive/write operations.
   const handleApproveInterrupt = useCallback(() => {
     if (currentInterrupt && currentInterrupt.interrupts.length > 0) {
       const interrupt = currentInterrupt.interrupts[0]
@@ -1031,6 +880,7 @@ export function ChatInterface() {
                         onOpenExtractedDataArtifact={handleOpenExtractedDataArtifact}
                         onOpenExcalidrawArtifact={handleOpenExcalidrawArtifact}
                         researchProgress={researchProgress}
+                        researchJobs={researchJobs}
                         codeProgress={codeProgress}
                         hideAvatar={isSwarmFinalResponse || hasHistorySwarm}
                       />
@@ -1156,9 +1006,8 @@ export function ChatInterface() {
         </DialogContent>
       </Dialog>
 
-      {/* Interrupt Approval Modal - for destructive/write operations (research handled via Canvas) */}
+      {/* Interrupt Approval Modal - for destructive/write operations */}
       {currentInterrupt && currentInterrupt.interrupts.length > 0 &&
-       !currentInterrupt.interrupts[0].name.includes("research-approval") &&
        (
         <InterruptApprovalModal
           isOpen={true}
@@ -1184,17 +1033,6 @@ export function ChatInterface() {
         onSelectArtifact={openArtifact}
         onUpdateArtifact={updateArtifact}
         justUpdated={artifactJustUpdated}
-        researchState={researchArtifactId ? {
-          isResearching: research.isResearching,
-          progress: research.progress,
-          plan: research.plan,
-          showPlanConfirm: research.showPlanConfirm,
-          resultParts: research.resultParts,
-          completedResult: research.completedResult,
-          onConfirmPlan: handleResearchConfirmPlan,
-          onCancel: handleResearchCancel,
-          sessionId: sessionId || undefined,
-        } : undefined}
         browserState={(() => {
           const bArtifact = browserArtifactId ? artifacts.find(a => a.id === browserArtifactId) : null
           const bSessionId = bArtifact?.metadata?.browserSessionId

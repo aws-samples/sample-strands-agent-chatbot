@@ -166,12 +166,16 @@ export function useMessageQueue({ send }: UseMessageQueueProps): UseMessageQueue
     const next = queueRef.current.find(m => m.sessionId === sessionId)!
 
     isFlushingRef.current = true
-    // Dequeue before sending: the send path echoes the text into the transcript
-    // immediately, so leaving it queued on failure would offer a duplicate.
-    updateQueue(prev => prev.filter(m => m.id !== next.id))
     try {
       await send(next.text, next.files, next.systemPrompt, next.selectedArtifactId)
+      // A transport failure is not proof that the backend accepted the turn.
+      // Keep the item until success so a transient error cannot silently lose
+      // user input. The error hold requires an explicit retry/discard decision.
+      updateQueue(prev => prev.filter(m => m.id !== next.id))
       return true
+    } catch {
+      hold('error')
+      return false
     } finally {
       isFlushingRef.current = false
     }
