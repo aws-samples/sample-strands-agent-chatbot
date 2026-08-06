@@ -354,6 +354,7 @@ resource "aws_iam_role_policy" "execution_ddb" {
         Action = [
           "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem",
           "dynamodb:DeleteItem", "dynamodb:TransactWriteItems",
+          "dynamodb:ConditionCheckItem",
           "dynamodb:Query",
         ]
         Resource = [var.orchestration_table_arn]
