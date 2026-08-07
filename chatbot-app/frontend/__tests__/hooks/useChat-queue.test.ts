@@ -117,6 +117,30 @@ describe('useChat message queue wiring', () => {
     expect(sentTexts()).toEqual([])
   })
 
+  it('keeps the foreground run active while a text stream is open', async () => {
+    let finishStream: () => void = () => {}
+    apiSendMessage.mockImplementationOnce(async (...args: SendArgs) => {
+      sendCalls.push(args)
+      await new Promise<void>(resolve => { finishStream = resolve })
+      args[2]?.()
+    })
+    const { result } = await mount()
+
+    let sendPromise: Promise<void>
+    act(() => {
+      sendPromise = result.current.sendMessage('stream a response')
+    })
+
+    await waitFor(() => expect(result.current.isForegroundRunActive).toBe(true))
+
+    await act(async () => {
+      finishStream()
+      await sendPromise!
+    })
+
+    expect(result.current.isForegroundRunActive).toBe(false)
+  })
+
   it('flushes the queue after a turn finishes normally', async () => {
     const { result } = await mount()
 

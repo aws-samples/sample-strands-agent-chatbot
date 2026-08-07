@@ -50,6 +50,17 @@ const deliveredJob = {
   },
 }
 
+const completedJob = {
+  ...runningJob,
+  status: 'completed',
+  updatedAt: '2026-08-06T00:00:02Z',
+  artifact: {
+    id: 'research-tool-1',
+    type: 'research',
+    title: 'Report',
+  },
+}
+
 describe('useResearchJobs', () => {
   beforeEach(() => {
     vi.useFakeTimers()
@@ -186,6 +197,32 @@ describe('useResearchJobs', () => {
     })
 
     expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('hydrates a completed job without keeping fast polling active', async () => {
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(() => response([completedJob]))
+      .mockImplementationOnce(() => response([{
+        ...completedJob,
+        artifact: {
+          ...completedJob.artifact,
+          content: '# Finished report',
+        },
+      }]))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const hook = renderHook(() => useResearchJobs('session-1', 1))
+    await flushAsyncWork()
+
+    expect(hook.result.current.jobs[0]?.artifact?.content).toBe('# Finished report')
+    expect(hook.result.current.isActive).toBe(false)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+
+    await act(async () => {
+      vi.advanceTimersByTime(10000)
+      await Promise.resolve()
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
   it('hides the previous session snapshot immediately when switching sessions', async () => {

@@ -73,7 +73,7 @@ export function useResearchJobs(sessionId: string, refreshToken = 0) {
       }
       statusesRef.current = new Map(nextJobs.map(job => [job.jobId, job.status]))
       const hasActiveJobs = nextJobs.some(job =>
-        ['queued', 'running', 'completed', 'delivering'].includes(job.status),
+        ['queued', 'running', 'delivering'].includes(job.status),
       )
       const expectedJobs = invocationCountRef.current
       if (nextJobs.length >= expectedJobs) {

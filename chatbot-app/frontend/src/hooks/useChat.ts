@@ -38,6 +38,8 @@ interface UseChatReturn {
   isConnected: boolean
   isTyping: boolean
   agentStatus: AgentStatus
+  /** A foreground chat request is still running and can receive a stop signal. */
+  isForegroundRunActive: boolean
   currentToolExecutions: ToolExecution[]
   currentReasoning: ReasoningState | null
   showProgressPanel: boolean
@@ -175,6 +177,7 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
       endToEndLatency: null
     }
   })
+  const [isForegroundRunActive, setIsForegroundRunActive] = useState(false)
 
   // ==================== REFS ====================
   const currentToolExecutionsRef = useRef<ToolExecution[]>([])
@@ -348,6 +351,7 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
 
     // Stop any existing polling
     stopPolling()
+    setIsForegroundRunActive(false)
 
     // Set loading state for UI feedback
     setIsLoadingMessages(true)
@@ -450,6 +454,7 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
 
     const success = await apiNewChat()
     if (success) {
+      setIsForegroundRunActive(false)
       setSessionState({
         reasoning: null,
         streaming: null,
@@ -482,6 +487,7 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
 
     const agentStatus: 'thinking' | 'researching' = isResearchInterrupt ? 'researching' : 'thinking'
     setUIState(prev => ({ ...prev, isTyping: true, agentStatus }))
+    setIsForegroundRunActive(true)
 
     try {
       await apiSendMessage(
@@ -500,6 +506,8 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
       console.error('[Interrupt] Failed to respond to interrupt:', error)
       setTurnSettled({ outcome: 'error' })
       setUIState(prev => ({ ...prev, isTyping: false, agentStatus: 'idle' }))
+    } finally {
+      setIsForegroundRunActive(false)
     }
   }, [sessionState.interrupt, apiSendMessage])
 
@@ -568,27 +576,32 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
     // where flushing the next queued message can be safe. Whether it actually
     // is safe also depends on interrupt/OAuth state, which is checked in the
     // effect below once React has committed this turn's events.
-    await apiSendMessage(
-      messageToSend,
-      files,
-      () => { setTurnSettled({ outcome: 'finished' }) },
-      () => {
-        setTurnSettled({ outcome: 'error' })
-        setSessionState(prev => ({
-          reasoning: null,
-          streaming: null,
-          toolExecutions: [],
-          browserSession: prev.browserSession,
-          browserProgress: undefined,
-          researchProgress: undefined,
-          interrupt: null,
-          pendingOAuth: null
-        }))
-        setUIState(prev => ({ ...prev, agentStatus: 'idle', isTyping: false }))
-      },
-      systemPrompt,
-      selectedArtifactId
-    )
+    setIsForegroundRunActive(true)
+    try {
+      await apiSendMessage(
+        messageToSend,
+        files,
+        () => { setTurnSettled({ outcome: 'finished' }) },
+        () => {
+          setTurnSettled({ outcome: 'error' })
+          setSessionState(prev => ({
+            reasoning: null,
+            streaming: null,
+            toolExecutions: [],
+            browserSession: prev.browserSession,
+            browserProgress: undefined,
+            researchProgress: undefined,
+            interrupt: null,
+            pendingOAuth: null
+          }))
+          setUIState(prev => ({ ...prev, agentStatus: 'idle', isTyping: false }))
+        },
+        systemPrompt,
+        selectedArtifactId
+      )
+    } finally {
+      setIsForegroundRunActive(false)
+    }
   }, [apiSendMessage, setUIState])
 
   // ==================== MESSAGE QUEUE ====================
@@ -892,6 +905,7 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
 
       // The durable stop request has been accepted; the local stream can now close.
       resetStreamingState()
+      setIsForegroundRunActive(false)
       // Stopping is a deliberate interruption, so don't immediately send whatever
       // was queued — that would look like the stop was ignored.
       holdQueue('stopped')
@@ -1165,6 +1179,7 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
     isConnected: uiState.isConnected,
     isTyping: uiState.isTyping,
     agentStatus: uiState.agentStatus,
+    isForegroundRunActive,
     currentToolExecutions: sessionState.toolExecutions,
     currentReasoning: sessionState.reasoning,
     showProgressPanel: uiState.showProgressPanel,

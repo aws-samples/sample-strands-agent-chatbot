@@ -20,6 +20,7 @@ const mockUseChat: {
   isConnected: boolean
   isTyping: boolean
   agentStatus: AgentStatus
+  isForegroundRunActive: boolean
   currentToolExecutions: any[]
   currentReasoning: any
   showProgressPanel: boolean
@@ -53,6 +54,7 @@ const mockUseChat: {
   isConnected: true,
   isTyping: false,
   agentStatus: 'idle',
+  isForegroundRunActive: false,
   currentToolExecutions: [],
   currentReasoning: null,
   showProgressPanel: false,
@@ -181,6 +183,7 @@ describe('ChatInterface', () => {
     mockUseChat.inputMessage = ''
     mockUseChat.isTyping = false
     mockUseChat.agentStatus = 'idle'
+    mockUseChat.isForegroundRunActive = false
     mockUseChat.currentInterrupt = null
     mockUseChat.pendingOAuth = null
     mockUseChat.queuedMessages = []
@@ -303,7 +306,7 @@ describe('ChatInterface', () => {
     })
 
     it('offers a queued message as an interrupt while the agent is running', () => {
-      mockUseChat.agentStatus = 'thinking'
+      mockUseChat.isForegroundRunActive = true
       mockUseChat.queuedMessages = [{
         id: 'queued-2',
         text: 'handle this now',
@@ -337,7 +340,7 @@ describe('ChatInterface', () => {
     })
 
     it('hides queued message actions while awaiting approval', () => {
-      mockUseChat.agentStatus = 'thinking'
+      mockUseChat.isForegroundRunActive = true
       mockUseChat.queuedMessages = [{
         id: 'queued-1',
         text: 'wait',

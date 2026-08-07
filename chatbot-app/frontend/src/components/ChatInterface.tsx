@@ -152,6 +152,7 @@ export function ChatInterface() {
     isConnected,
     isTyping,
     agentStatus,
+    isForegroundRunActive,
     currentReasoning,
     sendMessage,
     replayExecution,
@@ -1001,16 +1002,12 @@ export function ChatInterface() {
             !isCompacting &&
             !currentInterrupt &&
             !pendingOAuth &&
-            (
-              agentStatus === 'thinking' ||
-              agentStatus === 'responding' ||
-              agentStatus === 'researching' ||
-              agentStatus === 'swarm'
-            )
+            isForegroundRunActive
               ? 'interrupt'
               : !isCompacting &&
                   !currentInterrupt &&
                   !pendingOAuth &&
+                  !isForegroundRunActive &&
                   agentStatus === 'idle'
                 ? 'send'
                 : null
