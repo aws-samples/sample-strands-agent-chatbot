@@ -93,11 +93,12 @@ export function useMessageQueue({ send }: UseMessageQueueProps): UseMessageQueue
   const holdReasonRef = useRef<QueueHoldReason | null>(null)
 
   const updateQueue = useCallback((next: (prev: QueuedMessage[]) => QueuedMessage[]) => {
-    setQueue(prev => {
-      const value = next(prev)
-      queueRef.current = value
-      return value
-    })
+    // queueRef is the authority for imperative flush operations. Commit it
+    // synchronously so a send rejection cannot observe the pre-dispatch queue
+    // while React is still scheduling the render.
+    const value = next(queueRef.current)
+    queueRef.current = value
+    setQueue(value)
   }, [])
 
   const updateHold = useCallback((reason: QueueHoldReason | null) => {
@@ -188,14 +189,17 @@ export function useMessageQueue({ send }: UseMessageQueueProps): UseMessageQueue
     const next = queueRef.current.find(m => m.sessionId === sessionId)!
 
     isFlushingRef.current = true
+    // The queue represents turns that have not entered the conversation yet.
+    // Remove this item before dispatch so it disappears as soon as send()
+    // accepts it into the normal user-turn path, not after the response ends.
+    updateQueue(prev => prev.filter(m => m.id !== next.id))
     try {
       await send(next.text, next.files, next.systemPrompt, next.selectedArtifactId)
-      // A transport failure is not proof that the backend accepted the turn.
-      // Keep the item until success so a transient error cannot silently lose
-      // user input. The error hold requires an explicit retry/discard decision.
-      updateQueue(prev => prev.filter(m => m.id !== next.id))
       return true
     } catch {
+      // send() adds the user turn before awaiting the transport. Re-inserting it
+      // here could dispatch the same accepted turn twice. Hold only messages
+      // that are still waiting behind the failed turn.
       hold('error')
       return false
     } finally {

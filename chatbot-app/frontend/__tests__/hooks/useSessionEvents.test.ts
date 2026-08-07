@@ -142,6 +142,20 @@ describe('useSessionEvents', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
+  it('does not refresh an idle session on window focus', async () => {
+    const fetchMock = vi.fn(() => response([]))
+    vi.stubGlobal('fetch', fetchMock)
+
+    renderHook(() => useSessionEvents('session-1'))
+    await flushAsyncWork()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    window.dispatchEvent(new Event('focus'))
+    await flushAsyncWork()
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
   it('polls immediately when pending delivery becomes active', async () => {
     const fetchMock = vi.fn(() => response([]))
     vi.stubGlobal('fetch', fetchMock)

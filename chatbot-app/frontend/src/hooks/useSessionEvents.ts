@@ -129,13 +129,11 @@ export function useSessionEvents(
     // explicitly reported that a durable delivery is pending.
     void poll()
     document.addEventListener('visibilitychange', wake)
-    window.addEventListener('focus', wake)
 
     return () => {
       cancelled = true
       clearTimer()
       document.removeEventListener('visibilitychange', wake)
-      window.removeEventListener('focus', wake)
     }
   }, [deliveryVersion, hasPendingDelivery, refresh, sessionId])
 

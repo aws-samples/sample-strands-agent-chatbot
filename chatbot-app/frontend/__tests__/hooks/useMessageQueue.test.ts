@@ -206,7 +206,30 @@ describe('useMessageQueue', () => {
     expect(send).toHaveBeenCalledTimes(1)
   })
 
-  it('retains and holds a message whose send failed', async () => {
+  it('removes a dispatched message before its response completes', async () => {
+    let finish: () => void = () => {}
+    const send = vi.fn(
+      () => new Promise<void>(resolve => { finish = resolve }),
+    )
+    const { hook } = setup(send)
+    enqueue(hook, 'dispatched')
+    enqueue(hook, 'still waiting')
+
+    let flushPromise: Promise<boolean>
+    act(() => {
+      flushPromise = hook.result.current.flushNext(SESSION, CLEAR)
+    })
+
+    expect(send).toHaveBeenCalledWith('dispatched', [], undefined, undefined)
+    expect(hook.result.current.queue.map(m => m.text)).toEqual(['still waiting'])
+
+    await act(async () => {
+      finish()
+      await flushPromise!
+    })
+  })
+
+  it('does not requeue an accepted message when its response fails', async () => {
     const send = vi.fn().mockRejectedValue(new Error('network'))
     const { hook } = setup(send)
     enqueue(hook, 'doomed')
@@ -214,7 +237,19 @@ describe('useMessageQueue', () => {
     const sent = await act(async () => hook.result.current.flushNext(SESSION, CLEAR))
 
     expect(sent).toBe(false)
-    expect(hook.result.current.queue.map(m => m.text)).toEqual(['doomed'])
+    expect(hook.result.current.queue).toEqual([])
+    expect(hook.result.current.holdReason).toBeNull()
+  })
+
+  it('holds messages still waiting behind a failed dispatched turn', async () => {
+    const send = vi.fn().mockRejectedValue(new Error('network'))
+    const { hook } = setup(send)
+    enqueue(hook, 'doomed')
+    enqueue(hook, 'still queued')
+
+    await act(async () => hook.result.current.flushNext(SESSION, CLEAR))
+
+    expect(hook.result.current.queue.map(m => m.text)).toEqual(['still queued'])
     expect(hook.result.current.holdReason).toBe('error')
   })
 
