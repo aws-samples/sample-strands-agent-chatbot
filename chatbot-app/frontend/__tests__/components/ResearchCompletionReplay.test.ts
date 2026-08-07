@@ -54,7 +54,8 @@ describe('durable research completion replay', () => {
     )
 
     expect(source).toContain('useSessionEvents(')
-    expect(source).toContain('hasPendingSessionDelivery')
+    expect(source).toContain('hasPendingDelivery')
+    expect(source).toContain('deliveryVersion')
     expect(effect).toContain("event.eventType === 'assistant.turn.completed'")
     expect(effect).toContain('event.payload.executionId,')
     expect(effect).toContain('event.payload.logicalMessageId')

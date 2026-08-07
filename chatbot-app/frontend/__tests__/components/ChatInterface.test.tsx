@@ -322,6 +322,27 @@ describe('ChatInterface', () => {
       expect(mockUseChat.interruptWithQueuedMessage).toHaveBeenCalledWith('queued-2')
     })
 
+    it('keeps the interrupt action on the queued row while text is responding', () => {
+      mockUseChat.agentStatus = 'responding'
+      mockUseChat.isForegroundRunActive = false
+      mockUseChat.queuedMessages = [{
+        id: 'queued-stream',
+        text: 'interrupt streamed response',
+        files: [],
+        sessionId: 'session-1',
+      }]
+
+      render(<ChatInterface />)
+
+      const action = screen.getByRole('button', {
+        name: /interrupt with this message/i,
+      })
+      expect(action).toHaveTextContent('Interrupt')
+      fireEvent.click(action)
+      expect(mockUseChat.interruptWithQueuedMessage)
+        .toHaveBeenCalledWith('queued-stream')
+    })
+
     it('offers immediate send for a queued message while idle', () => {
       mockUseChat.agentStatus = 'idle'
       mockUseChat.queuedMessages = [{

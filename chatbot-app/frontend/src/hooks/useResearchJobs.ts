@@ -9,6 +9,8 @@ export function useResearchJobs(sessionId: string, refreshToken = 0) {
   const [jobs, setJobs] = useState<ResearchJob[]>([])
   const [deliveredJobIds, setDeliveredJobIds] = useState<string[]>([])
   const [isActive, setIsActive] = useState(false)
+  const [hasPendingDelivery, setHasPendingDelivery] = useState(false)
+  const [deliveryVersion, setDeliveryVersion] = useState(0)
   const [snapshotSessionId, setSnapshotSessionId] = useState(sessionId)
   const statusesRef = useRef<Map<string, string> | null>(null)
   const jobsRef = useRef<ResearchJob[]>([])
@@ -69,9 +71,15 @@ export function useResearchJobs(sessionId: string, refreshToken = 0) {
         const transitions = nextJobs
           .filter(job => job.status === 'delivered' && previous.get(job.jobId) !== 'delivered')
           .map(job => job.jobId)
-        if (transitions.length > 0) setDeliveredJobIds(transitions)
+        setDeliveredJobIds(transitions)
+        const deliveryTransitions = nextJobs.some(job =>
+          ['delivering', 'delivered'].includes(job.status) &&
+          previous.get(job.jobId) !== job.status,
+        )
+        if (deliveryTransitions) setDeliveryVersion(version => version + 1)
       }
       statusesRef.current = new Map(nextJobs.map(job => [job.jobId, job.status]))
+      setHasPendingDelivery(nextJobs.some(job => job.status === 'delivering'))
       const hasActiveJobs = nextJobs.some(job =>
         ['queued', 'running', 'delivering'].includes(job.status),
       )
@@ -121,6 +129,8 @@ export function useResearchJobs(sessionId: string, refreshToken = 0) {
     setJobs([])
     setDeliveredJobIds([])
     setIsActive(false)
+    setHasPendingDelivery(false)
+    setDeliveryVersion(0)
     void refresh()
     const timer = window.setInterval(() => {
       if (activeRef.current) void refresh()
@@ -142,6 +152,10 @@ export function useResearchJobs(sessionId: string, refreshToken = 0) {
     deliveredJobIds:
       snapshotSessionId === sessionId ? deliveredJobIds : [],
     isActive: snapshotSessionId === sessionId && isActive,
+    hasPendingDelivery:
+      snapshotSessionId === sessionId && hasPendingDelivery,
+    deliveryVersion:
+      snapshotSessionId === sessionId ? deliveryVersion : 0,
     refresh,
   }
 }

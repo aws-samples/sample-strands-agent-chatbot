@@ -3,9 +3,12 @@ import { apiFetch } from '@/lib/api-client'
 import type { SessionEventProjection } from '@/lib/session-events'
 
 const ACTIVE_POLL_INTERVAL_MS = 2000
-const IDLE_POLL_INTERVALS_MS = [5000, 10000, 30000] as const
 
-export function useSessionEvents(sessionId: string, hasPendingDelivery = false) {
+export function useSessionEvents(
+  sessionId: string,
+  hasPendingDelivery = false,
+  deliveryVersion = 0,
+) {
   const [events, setEvents] = useState<SessionEventProjection[]>([])
   const [snapshotSessionId, setSnapshotSessionId] = useState(sessionId)
   const seenRef = useRef<Set<string> | null>(null)
@@ -77,7 +80,6 @@ export function useSessionEvents(sessionId: string, hasPendingDelivery = false) 
 
     let cancelled = false
     let polling = false
-    let quietPolls = 0
     let timer: number | null = null
 
     const clearTimer = () => {
@@ -87,26 +89,19 @@ export function useSessionEvents(sessionId: string, hasPendingDelivery = false) 
       }
     }
 
-    const nextIdleDelay = () => {
-      const index = Math.min(
-        Math.max(quietPolls - 1, 0),
-        IDLE_POLL_INTERVALS_MS.length - 1,
-      )
-      return IDLE_POLL_INTERVALS_MS[index]
-    }
-
     const schedule = () => {
       clearTimer()
       if (
         cancelled ||
         !sessionId ||
+        !hasPendingDelivery ||
         document.visibilityState !== 'visible'
       ) {
         return
       }
       timer = window.setTimeout(
         () => { void poll() },
-        hasPendingDelivery ? ACTIVE_POLL_INTERVAL_MS : nextIdleDelay(),
+        ACTIVE_POLL_INTERVAL_MS,
       )
     }
 
@@ -115,12 +110,7 @@ export function useSessionEvents(sessionId: string, hasPendingDelivery = false) 
       polling = true
       clearTimer()
       try {
-        const changed = await refresh()
-        if (hasPendingDelivery || changed) {
-          quietPolls = 0
-        } else {
-          quietPolls += 1
-        }
+        await refresh()
       } finally {
         polling = false
         schedule()
@@ -132,11 +122,11 @@ export function useSessionEvents(sessionId: string, hasPendingDelivery = false) 
         clearTimer()
         return
       }
-      quietPolls = 0
       void poll()
     }
 
-    // Baseline the session immediately. Subsequent reads are adaptive.
+    // Baseline immediately. After that, poll only while a producer has
+    // explicitly reported that a durable delivery is pending.
     void poll()
     document.addEventListener('visibilitychange', wake)
     window.addEventListener('focus', wake)
@@ -147,7 +137,7 @@ export function useSessionEvents(sessionId: string, hasPendingDelivery = false) 
       document.removeEventListener('visibilitychange', wake)
       window.removeEventListener('focus', wake)
     }
-  }, [hasPendingDelivery, refresh, sessionId])
+  }, [deliveryVersion, hasPendingDelivery, refresh, sessionId])
 
   return {
     events: snapshotSessionId === sessionId ? events : [],

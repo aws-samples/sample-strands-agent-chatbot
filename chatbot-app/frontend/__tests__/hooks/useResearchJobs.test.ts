@@ -99,6 +99,7 @@ describe('useResearchJobs', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2)
     expect(hook.result.current.jobs[0]?.status).toBe('running')
     expect(hook.result.current.isActive).toBe(true)
+    expect(hook.result.current.hasPendingDelivery).toBe(false)
 
     await act(async () => {
       vi.advanceTimersByTime(2000)
@@ -119,6 +120,8 @@ describe('useResearchJobs', () => {
     expect(hook.result.current.jobs[0]?.artifact?.content).toBe('# Finished report')
     expect(hook.result.current.deliveredJobIds).toEqual(['job-1'])
     expect(hook.result.current.isActive).toBe(false)
+    expect(hook.result.current.hasPendingDelivery).toBe(false)
+    expect(hook.result.current.deliveryVersion).toBe(1)
   })
 
   it('keeps polling during invocation discovery when the first lookup is empty', async () => {
@@ -173,6 +176,7 @@ describe('useResearchJobs', () => {
     }
 
     expect(hook.result.current.isActive).toBe(false)
+    expect(hook.result.current.hasPendingDelivery).toBe(false)
     const callsAfterDiscovery = fetchMock.mock.calls.length
     await act(async () => {
       vi.advanceTimersByTime(10000)

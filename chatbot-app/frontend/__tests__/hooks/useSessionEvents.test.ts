@@ -130,7 +130,7 @@ describe('useSessionEvents', () => {
     expect(hook.result.current.events).toEqual([])
   })
 
-  it('backs idle polling off from 5 seconds to 10 and then 30', async () => {
+  it('does not poll periodically without a pending delivery', async () => {
     const fetchMock = vi.fn(() => response([]))
     vi.stubGlobal('fetch', fetchMock)
 
@@ -138,20 +138,8 @@ describe('useSessionEvents', () => {
     await flushAsyncWork()
     expect(fetchMock).toHaveBeenCalledTimes(1)
 
-    await advance(4999)
+    await advance(60000)
     expect(fetchMock).toHaveBeenCalledTimes(1)
-    await advance(1)
-    expect(fetchMock).toHaveBeenCalledTimes(2)
-
-    await advance(9999)
-    expect(fetchMock).toHaveBeenCalledTimes(2)
-    await advance(1)
-    expect(fetchMock).toHaveBeenCalledTimes(3)
-
-    await advance(29999)
-    expect(fetchMock).toHaveBeenCalledTimes(3)
-    await advance(1)
-    expect(fetchMock).toHaveBeenCalledTimes(4)
   })
 
   it('polls immediately when pending delivery becomes active', async () => {
@@ -171,6 +159,25 @@ describe('useSessionEvents', () => {
 
     await advance(2000)
     expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+
+  it('refreshes once when a delivery completes between job polls', async () => {
+    const fetchMock = vi.fn(() => response([]))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const hook = renderHook(
+      ({ version }) => useSessionEvents('session-1', false, version),
+      { initialProps: { version: 0 } },
+    )
+    await flushAsyncWork()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    hook.rerender({ version: 1 })
+    await flushAsyncWork()
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+
+    await advance(60000)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
   it('pauses while hidden and refreshes immediately when visible again', async () => {

@@ -243,14 +243,16 @@ export function ChatInterface() {
   }, [groupedMessages])
   const {
     jobs: researchJobs,
-    isActive: hasPendingSessionDelivery,
+    hasPendingDelivery,
+    deliveryVersion,
   } = useResearchJobs(
     sessionId,
     researchInvocationCount,
   )
   const { events: sessionEvents } = useSessionEvents(
     sessionId,
-    hasPendingSessionDelivery,
+    hasPendingDelivery,
+    deliveryVersion,
   )
   const representedOriginEventIds = useMemo(() => {
     const ids = new Set<string>()
@@ -1002,12 +1004,17 @@ export function ChatInterface() {
             !isCompacting &&
             !currentInterrupt &&
             !pendingOAuth &&
-            isForegroundRunActive
+            (
+              isForegroundRunActive ||
+              agentStatus === 'thinking' ||
+              agentStatus === 'responding' ||
+              agentStatus === 'researching' ||
+              agentStatus === 'swarm'
+            )
               ? 'interrupt'
               : !isCompacting &&
                   !currentInterrupt &&
                   !pendingOAuth &&
-                  !isForegroundRunActive &&
                   agentStatus === 'idle'
                 ? 'send'
                 : null
