@@ -152,7 +152,7 @@ export function ChatInterface() {
     isConnected,
     isTyping,
     agentStatus,
-    isForegroundRunActive,
+    turnControl,
     currentReasoning,
     sendMessage,
     replayExecution,
@@ -1001,21 +1001,9 @@ export function ChatInterface() {
           onSendNow={releaseQueue}
           onDiscardAll={clearQueuedMessages}
           actionMode={
-            !isCompacting &&
-            !currentInterrupt &&
-            !pendingOAuth &&
-            (
-              isForegroundRunActive ||
-              agentStatus === 'thinking' ||
-              agentStatus === 'responding' ||
-              agentStatus === 'researching' ||
-              agentStatus === 'swarm'
-            )
+            turnControl.canInterrupt
               ? 'interrupt'
-              : !isCompacting &&
-                  !currentInterrupt &&
-                  !pendingOAuth &&
-                  agentStatus === 'idle'
+              : !turnControl.isBusy
                 ? 'send'
                 : null
           }
@@ -1028,6 +1016,7 @@ export function ChatInterface() {
           selectedFiles={selectedFiles}
           setSelectedFiles={setSelectedFiles}
           agentStatus={isCompacting ? 'compacting' : agentStatus}
+          isBusy={turnControl.isBusy}
           isVoiceActive={isVoiceActive}
           isVoiceSupported={isVoiceSupported}
           isCanvasOpen={isCanvasOpen}

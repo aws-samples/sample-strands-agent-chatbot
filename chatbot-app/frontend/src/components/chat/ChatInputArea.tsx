@@ -18,6 +18,7 @@ interface ChatInputAreaProps {
   selectedFiles: File[]
   setSelectedFiles: React.Dispatch<React.SetStateAction<File[]>>
   agentStatus: AgentStatus
+  isBusy: boolean
   isVoiceActive: boolean
   isVoiceSupported: boolean
   isCanvasOpen: boolean
@@ -55,6 +56,7 @@ export function ChatInputArea({
   selectedFiles,
   setSelectedFiles,
   agentStatus,
+  isBusy,
   isVoiceActive,
   isVoiceSupported,
   isCanvasOpen,
@@ -118,7 +120,6 @@ export function ChatInputArea({
   // Single submit path shared by Enter, the form, and the send button.
   // While the agent is busy the composer stays open and the turn is queued
   // instead of sent; the parent decides when it is safe to dispatch it.
-  const isBusy = agentStatus !== 'idle'
   const hasContent = inputMessage.trim().length > 0 || selectedFiles.length > 0
 
   const submit = useCallback(() => {

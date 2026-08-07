@@ -14,6 +14,7 @@ import { getApiUrl } from '@/config/environment'
 import { generateSessionId } from '@/config/session'
 import { apiGet, apiPost } from '@/lib/api-client'
 import { groupChatMessages, type GroupedChatMessage } from '@/lib/chat-message-groups'
+import { deriveTurnControl, type TurnControlState } from '@/lib/turn-control'
 
 import { WorkspaceDocument } from './useStreamEvents'
 import { ExtractedDataInfo } from './useCanvasHandlers'
@@ -40,6 +41,8 @@ interface UseChatReturn {
   agentStatus: AgentStatus
   /** A foreground chat request is still running and can receive a stop signal. */
   isForegroundRunActive: boolean
+  /** Canonical user-action state shared by the composer and queued turns. */
+  turnControl: TurnControlState
   currentToolExecutions: ToolExecution[]
   currentReasoning: ReasoningState | null
   showProgressPanel: boolean
@@ -956,6 +959,15 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
 
   // ==================== DERIVED STATE ====================
   const groupedMessages = useMemo(() => groupChatMessages(messages), [messages])
+  const isCurrentSessionCompacting =
+    compactingSessionId !== null && compactingSessionId === sessionId
+  const turnControl = deriveTurnControl({
+    agentStatus: uiState.agentStatus,
+    isForegroundRunActive,
+    isCompacting: isCurrentSessionCompacting,
+    interruptCount: sessionState.interrupt?.interrupts.length ?? 0,
+    hasPendingOAuth: Boolean(sessionState.pendingOAuth),
+  })
 
   // Update per-session model config (React state + global default via API)
   const updateModelConfig = useCallback((modelId: string, temperature?: number) => {
@@ -1180,6 +1192,7 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
     isTyping: uiState.isTyping,
     agentStatus: uiState.agentStatus,
     isForegroundRunActive,
+    turnControl,
     currentToolExecutions: sessionState.toolExecutions,
     currentReasoning: sessionState.reasoning,
     showProgressPanel: uiState.showProgressPanel,
@@ -1200,7 +1213,7 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
     truncateFromMessage,
     sessionId,
     isLoadingMessages,
-    isCompacting: compactingSessionId !== null && compactingSessionId === sessionId,
+    isCompacting: isCurrentSessionCompacting,
     loadSession: loadSessionWithPreferences,
     browserSession: sessionState.browserSession,
     browserProgress: sessionState.browserProgress,

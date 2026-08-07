@@ -21,6 +21,11 @@ const mockUseChat: {
   isTyping: boolean
   agentStatus: AgentStatus
   isForegroundRunActive: boolean
+  turnControl: {
+    isBusy: boolean
+    isBlocked: boolean
+    canInterrupt: boolean
+  }
   currentToolExecutions: any[]
   currentReasoning: any
   showProgressPanel: boolean
@@ -55,6 +60,11 @@ const mockUseChat: {
   isTyping: false,
   agentStatus: 'idle',
   isForegroundRunActive: false,
+  turnControl: {
+    isBusy: false,
+    isBlocked: false,
+    canInterrupt: false,
+  },
   currentToolExecutions: [],
   currentReasoning: null,
   showProgressPanel: false,
@@ -184,6 +194,11 @@ describe('ChatInterface', () => {
     mockUseChat.isTyping = false
     mockUseChat.agentStatus = 'idle'
     mockUseChat.isForegroundRunActive = false
+    mockUseChat.turnControl = {
+      isBusy: false,
+      isBlocked: false,
+      canInterrupt: false,
+    }
     mockUseChat.currentInterrupt = null
     mockUseChat.pendingOAuth = null
     mockUseChat.queuedMessages = []
@@ -307,6 +322,11 @@ describe('ChatInterface', () => {
 
     it('offers a queued message as an interrupt while the agent is running', () => {
       mockUseChat.isForegroundRunActive = true
+      mockUseChat.turnControl = {
+        isBusy: true,
+        isBlocked: false,
+        canInterrupt: true,
+      }
       mockUseChat.queuedMessages = [{
         id: 'queued-2',
         text: 'handle this now',
@@ -325,6 +345,11 @@ describe('ChatInterface', () => {
     it('keeps the interrupt action on the queued row while text is responding', () => {
       mockUseChat.agentStatus = 'responding'
       mockUseChat.isForegroundRunActive = false
+      mockUseChat.turnControl = {
+        isBusy: true,
+        isBlocked: false,
+        canInterrupt: true,
+      }
       mockUseChat.queuedMessages = [{
         id: 'queued-stream',
         text: 'interrupt streamed response',
@@ -341,6 +366,28 @@ describe('ChatInterface', () => {
       fireEvent.click(action)
       expect(mockUseChat.interruptWithQueuedMessage)
         .toHaveBeenCalledWith('queued-stream')
+    })
+
+    it('does not let an empty interrupt envelope hide the queued action', () => {
+      mockUseChat.agentStatus = 'responding'
+      mockUseChat.currentInterrupt = { interrupts: [] }
+      mockUseChat.turnControl = {
+        isBusy: true,
+        isBlocked: false,
+        canInterrupt: true,
+      }
+      mockUseChat.queuedMessages = [{
+        id: 'queued-after-tool',
+        text: 'queued while the tool is running',
+        files: [],
+        sessionId: 'session-1',
+      }]
+
+      render(<ChatInterface />)
+
+      expect(screen.getByRole('button', {
+        name: /interrupt with this message/i,
+      })).toHaveTextContent('Interrupt')
     })
 
     it('offers immediate send for a queued message while idle', () => {
@@ -371,6 +418,11 @@ describe('ChatInterface', () => {
 
       mockUseChat.currentInterrupt = {
         interrupts: [{ id: 'i1', name: 'approval', reason: {} }],
+      }
+      mockUseChat.turnControl = {
+        isBusy: true,
+        isBlocked: true,
+        canInterrupt: false,
       }
       render(<ChatInterface />)
       expect(screen.queryByRole('button', {
