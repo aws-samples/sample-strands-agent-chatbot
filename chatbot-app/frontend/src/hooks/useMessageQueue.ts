@@ -55,6 +55,8 @@ export interface UseMessageQueueReturn {
   enqueue: (message: Omit<QueuedMessage, 'id'>) => void
   remove: (id: string) => void
   clear: () => void
+  /** Move a message to the front so it is the next turn dispatched. */
+  prioritize: (id: string, sessionId: string) => boolean
   /**
    * Send the next queued message for `sessionId` if it is safe to do so.
    * Must be called after React has committed the finishing turn's events, so
@@ -128,6 +130,26 @@ export function useMessageQueue({ send }: UseMessageQueueProps): UseMessageQueue
     updateHold(null)
   }, [updateQueue, updateHold])
 
+  const prioritize = useCallback((id: string, sessionId: string): boolean => {
+    const current = queueRef.current
+    const index = current.findIndex(
+      message => message.id === id && message.sessionId === sessionId,
+    )
+    if (index < 0) return false
+    if (index === 0) return true
+
+    const next = [
+      current[index],
+      ...current.slice(0, index),
+      ...current.slice(index + 1),
+    ]
+    // Keep the ref current synchronously: an interrupt can proceed to flush as
+    // soon as the durable stop request resolves, before React renders again.
+    queueRef.current = next
+    setQueue(next)
+    return true
+  }, [])
+
   const hold = useCallback((reason: QueueHoldReason) => {
     if (queueRef.current.length === 0) return
     updateHold(reason)
@@ -187,6 +209,7 @@ export function useMessageQueue({ send }: UseMessageQueueProps): UseMessageQueue
     enqueue,
     remove,
     clear,
+    prioritize,
     flushNext,
     hold,
     release,

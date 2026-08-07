@@ -7,13 +7,25 @@ function msg(text: string, files: File[] = []): QueuedMessage {
   return { id: `id-${text}`, text, files, sessionId: 's1' }
 }
 
-function setup(queue: QueuedMessage[], holdReason: any = null) {
+function setup(
+  queue: QueuedMessage[],
+  holdReason: any = null,
+  canInterrupt = false,
+) {
   const handlers = {
     onRemove: vi.fn(),
     onSendNow: vi.fn(),
     onDiscardAll: vi.fn(),
+    onInterrupt: vi.fn().mockResolvedValue(true),
   }
-  render(<QueuedMessages queue={queue} holdReason={holdReason} {...handlers} />)
+  render(
+    <QueuedMessages
+      queue={queue}
+      holdReason={holdReason}
+      canInterrupt={canInterrupt}
+      {...handlers}
+    />,
+  )
   return handlers
 }
 
@@ -29,6 +41,8 @@ describe('QueuedMessages', () => {
         onRemove={vi.fn()}
         onSendNow={vi.fn()}
         onDiscardAll={vi.fn()}
+        canInterrupt={false}
+        onInterrupt={vi.fn()}
       />,
     )
     expect(container).toBeEmptyDOMElement()
@@ -60,6 +74,26 @@ describe('QueuedMessages', () => {
 
     expect(onRemove).toHaveBeenCalledTimes(1)
     expect(onRemove).toHaveBeenCalledWith('id-second')
+  })
+
+  it('interrupts with the queued message that was clicked', () => {
+    const { onInterrupt } = setup([msg('first'), msg('second')], null, true)
+    const buttons = screen.getAllByRole('button', {
+      name: /interrupt with this message/i,
+    })
+
+    fireEvent.click(buttons[1])
+
+    expect(onInterrupt).toHaveBeenCalledTimes(1)
+    expect(onInterrupt).toHaveBeenCalledWith('id-second')
+  })
+
+  it('hides interrupt controls when the current state cannot be stopped', () => {
+    setup([msg('queued')], null, false)
+
+    expect(screen.queryByRole('button', {
+      name: /interrupt with this message/i,
+    })).not.toBeInTheDocument()
   })
 
   it('labels each remove button with its message so they are distinguishable', () => {

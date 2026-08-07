@@ -47,7 +47,7 @@ interface UseChatReturn {
     executionId: string,
     messageIdentity?: ReplayMessageIdentity,
   ) => Promise<boolean>
-  stopGeneration: () => Promise<void>
+  stopGeneration: () => Promise<boolean>
   // Queue for turns composed while the agent is busy
   queuedMessages: QueuedMessage[]
   queueHoldReason: QueueHoldReason | null
@@ -56,6 +56,8 @@ interface UseChatReturn {
   clearQueuedMessages: () => void
   /** User confirmed a held queue: resume and send the next message now. */
   releaseQueue: () => void
+  /** Stop the current turn and immediately dispatch the selected queued turn. */
+  interruptWithQueuedMessage: (id: string) => Promise<boolean>
   newChat: () => Promise<void>
   compactSession: () => Promise<void>
   truncateFromMessage: (message: Message) => Promise<void>
@@ -177,6 +179,8 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
   const currentTurnIdRef = useRef<string | null>(null)
   const currentSessionIdRef = useRef<string | null>(null)
   const messagesRef = useRef<Message[]>([])
+  const sessionStateRef = useRef(sessionState)
+  sessionStateRef.current = sessionState
   // Set once the queue hook is initialized below; newChat and respondToInterrupt
   // are declared before it.
   const clearQueuedMessagesRef = useRef<() => void>(() => {})
@@ -605,6 +609,7 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
     enqueue,
     remove: removeQueuedMessage,
     clear: clearQueuedMessages,
+    prioritize: prioritizeQueuedMessage,
     flushNext,
     hold: holdQueue,
     release: releaseHold,
@@ -845,28 +850,61 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId])
 
-  const stopGeneration = useCallback(async () => {
-    let previousStatus: AgentStatus = 'thinking'
-    setUIState(prev => {
-      previousStatus = prev.agentStatus
-      return { ...prev, agentStatus: 'stopping' }
-    })
+  const stopGeneration = useCallback(async (): Promise<boolean> => {
+    const stoppingSessionId = currentSessionIdRef.current
+    const previousStatus = uiState.agentStatus
+    setUIState(prev => ({ ...prev, agentStatus: 'stopping' }))
 
     const stopped = await sendStopSignal()
     if (stopped) {
+      // A session switch owns the UI now. The stop still succeeded for the old
+      // run, but must not reset or hold the newly selected session.
+      if (currentSessionIdRef.current !== stoppingSessionId) return true
+
       // The durable stop request has been accepted; the local stream can now close.
       resetStreamingState()
       // Stopping is a deliberate interruption, so don't immediately send whatever
       // was queued — that would look like the stop was ignored.
       holdQueue('stopped')
-      return
+      return true
     }
 
-    setUIState(prev => ({
-      ...prev,
-      agentStatus: previousStatus === 'stopping' ? 'thinking' : previousStatus,
-    }))
-  }, [sendStopSignal, resetStreamingState, holdQueue])
+    if (currentSessionIdRef.current === stoppingSessionId) {
+      setUIState(prev => ({
+        ...prev,
+        agentStatus: previousStatus === 'stopping' ? 'thinking' : previousStatus,
+      }))
+    }
+    return false
+  }, [sendStopSignal, resetStreamingState, holdQueue, uiState.agentStatus])
+
+  const interruptWithQueuedMessage = useCallback(async (id: string): Promise<boolean> => {
+    const interruptSessionId = sessionId
+    const initialState = sessionStateRef.current
+    if (initialState.interrupt || initialState.pendingOAuth) return false
+    if (!prioritizeQueuedMessage(id, interruptSessionId)) return false
+
+    const stopped = await stopGeneration()
+    if (!stopped || currentSessionIdRef.current !== interruptSessionId) return false
+
+    const latestState = sessionStateRef.current
+    if (latestState.interrupt || latestState.pendingOAuth) return false
+
+    // stopGeneration deliberately holds normal queued turns. This action is an
+    // explicit request to continue with the selected one, so release that hold
+    // and use the same guarded send path as every other queued turn.
+    releaseHold()
+    return flushNext(interruptSessionId, {
+      hasInterrupt: latestState.interrupt !== null,
+      hasPendingOAuth: !!latestState.pendingOAuth,
+    })
+  }, [
+    flushNext,
+    prioritizeQueuedMessage,
+    releaseHold,
+    sessionId,
+    stopGeneration,
+  ])
 
   const cancelOAuth = useCallback(() => {
     setSessionState(prev => ({ ...prev, pendingOAuth: null }))
@@ -1111,6 +1149,7 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
     removeQueuedMessage,
     clearQueuedMessages,
     releaseQueue,
+    interruptWithQueuedMessage,
     newChat,
     compactSession,
     truncateFromMessage,

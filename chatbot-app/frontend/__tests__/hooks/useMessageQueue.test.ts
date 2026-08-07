@@ -41,6 +41,43 @@ describe('useMessageQueue', () => {
     expect(hook.result.current.queue).toHaveLength(0)
   })
 
+  it('moves a selected message to the front for the next flush', async () => {
+    const { hook, send } = setup()
+    enqueue(hook, 'first')
+    enqueue(hook, 'selected')
+    enqueue(hook, 'third')
+    const selectedId = hook.result.current.queue[1].id
+
+    let prioritized = false
+    act(() => {
+      prioritized = hook.result.current.prioritize(selectedId, SESSION)
+    })
+
+    expect(prioritized).toBe(true)
+    expect(hook.result.current.queue.map(m => m.text)).toEqual([
+      'selected',
+      'first',
+      'third',
+    ])
+
+    await act(async () => { await hook.result.current.flushNext(SESSION, CLEAR) })
+    expect(send).toHaveBeenCalledWith('selected', [], undefined, undefined)
+  })
+
+  it('does not prioritize a message from another session', () => {
+    const { hook } = setup()
+    enqueue(hook, 'foreign', OTHER_SESSION)
+    const id = hook.result.current.queue[0].id
+
+    let prioritized = true
+    act(() => {
+      prioritized = hook.result.current.prioritize(id, SESSION)
+    })
+
+    expect(prioritized).toBe(false)
+    expect(hook.result.current.queue.map(m => m.text)).toEqual(['foreign'])
+  })
+
   it('ignores empty submissions but keeps attachment-only ones', () => {
     const { hook } = setup()
     enqueue(hook, '   ')

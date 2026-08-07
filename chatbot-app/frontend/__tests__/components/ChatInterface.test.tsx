@@ -33,6 +33,7 @@ const mockUseChat: {
   removeQueuedMessage: ReturnType<typeof vi.fn>
   clearQueuedMessages: ReturnType<typeof vi.fn>
   releaseQueue: ReturnType<typeof vi.fn>
+  interruptWithQueuedMessage: ReturnType<typeof vi.fn>
   conciseMode: boolean
   toggleConciseMode: ReturnType<typeof vi.fn>
   newChat: ReturnType<typeof vi.fn>
@@ -42,6 +43,7 @@ const mockUseChat: {
   browserProgress: any
   respondToInterrupt: ReturnType<typeof vi.fn>
   currentInterrupt: any
+  pendingOAuth: any
 } = {
   messages: [],
   groupedMessages: [],
@@ -63,6 +65,7 @@ const mockUseChat: {
   removeQueuedMessage: vi.fn(),
   clearQueuedMessages: vi.fn(),
   releaseQueue: vi.fn(),
+  interruptWithQueuedMessage: vi.fn().mockResolvedValue(true),
   conciseMode: false,
   toggleConciseMode: vi.fn(),
   newChat: vi.fn().mockResolvedValue(undefined),
@@ -71,7 +74,8 @@ const mockUseChat: {
   browserSession: null,
   browserProgress: undefined,
   respondToInterrupt: vi.fn().mockResolvedValue(undefined),
-  currentInterrupt: null
+  currentInterrupt: null,
+  pendingOAuth: null,
 }
 
 vi.mock('@/hooks/useChat', () => ({
@@ -176,6 +180,9 @@ describe('ChatInterface', () => {
     mockUseChat.isTyping = false
     mockUseChat.agentStatus = 'idle'
     mockUseChat.currentInterrupt = null
+    mockUseChat.pendingOAuth = null
+    mockUseChat.queuedMessages = []
+    mockUseChat.queueHoldReason = null
   })
 
   afterEach(() => {
@@ -291,6 +298,47 @@ describe('ChatInterface', () => {
 
       // Component should render without errors when agent is thinking
       expect(document.body).toBeInTheDocument()
+    })
+
+    it('offers a queued message as an interrupt while the agent is running', () => {
+      mockUseChat.agentStatus = 'thinking'
+      mockUseChat.queuedMessages = [{
+        id: 'queued-2',
+        text: 'handle this now',
+        files: [],
+        sessionId: 'session-1',
+      }]
+
+      render(<ChatInterface />)
+      fireEvent.click(screen.getByRole('button', {
+        name: /interrupt with this message/i,
+      }))
+
+      expect(mockUseChat.interruptWithQueuedMessage).toHaveBeenCalledWith('queued-2')
+    })
+
+    it('does not offer queue interruption while idle or awaiting approval', () => {
+      mockUseChat.agentStatus = 'idle'
+      mockUseChat.queuedMessages = [{
+        id: 'queued-1',
+        text: 'wait',
+        files: [],
+        sessionId: 'session-1',
+      }]
+
+      const { rerender } = render(<ChatInterface />)
+      expect(screen.queryByRole('button', {
+        name: /interrupt with this message/i,
+      })).not.toBeInTheDocument()
+
+      mockUseChat.agentStatus = 'thinking'
+      mockUseChat.currentInterrupt = {
+        interrupts: [{ id: 'i1', name: 'approval', reason: {} }],
+      }
+      rerender(<ChatInterface />)
+      expect(screen.queryByRole('button', {
+        name: /interrupt with this message/i,
+      })).not.toBeInTheDocument()
     })
   })
 

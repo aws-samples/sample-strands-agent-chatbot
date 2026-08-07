@@ -189,6 +189,74 @@ describe('useChat message queue wiring', () => {
     expect(sentTexts()).toEqual([])
   })
 
+  it('stops before sending the selected queued message', async () => {
+    const { result } = await mount()
+
+    act(() => { result.current.enqueueMessage('first queued') })
+    act(() => { result.current.enqueueMessage('send this now') })
+    const selectedId = result.current.queuedMessages[1].id
+
+    let interrupted = false
+    await act(async () => {
+      interrupted = await result.current.interruptWithQueuedMessage(selectedId)
+    })
+
+    expect(interrupted).toBe(true)
+    expect(sendStopSignal).toHaveBeenCalledTimes(1)
+    expect(sendStopSignal.mock.invocationCallOrder[0])
+      .toBeLessThan(apiSendMessage.mock.invocationCallOrder[0])
+    expect(sentTexts()[0]).toBe('send this now')
+    await waitFor(() => {
+      expect(sentTexts()).toEqual(['send this now', 'first queued'])
+    })
+    expect(result.current.queuedMessages).toEqual([])
+  })
+
+  it('keeps the selected message queued when the stop request fails', async () => {
+    sendStopSignal.mockResolvedValueOnce(false)
+    const { result } = await mount()
+
+    act(() => { result.current.enqueueMessage('first queued') })
+    act(() => { result.current.enqueueMessage('selected') })
+    const selectedId = result.current.queuedMessages[1].id
+
+    let interrupted = true
+    await act(async () => {
+      interrupted = await result.current.interruptWithQueuedMessage(selectedId)
+    })
+
+    expect(interrupted).toBe(false)
+    expect(sentTexts()).toEqual([])
+    expect(result.current.queuedMessages.map(m => m.text)).toEqual([
+      'selected',
+      'first queued',
+    ])
+    expect(result.current.queueHoldReason).toBeNull()
+  })
+
+  it('does not send the selected message after a session switch', async () => {
+    let acceptStop: (accepted: boolean) => void = () => {}
+    sendStopSignal.mockReturnValueOnce(
+      new Promise<boolean>(resolve => { acceptStop = resolve }),
+    )
+    const { result } = await mount()
+
+    act(() => { result.current.enqueueMessage('selected') })
+    const selectedId = result.current.queuedMessages[0].id
+
+    let interruptPromise: Promise<boolean>
+    act(() => {
+      interruptPromise = result.current.interruptWithQueuedMessage(selectedId)
+    })
+    await act(async () => {
+      await result.current.loadSession('different-session')
+      acceptStop(true)
+    })
+
+    await expect(interruptPromise!).resolves.toBe(false)
+    expect(sentTexts()).toEqual([])
+  })
+
   it('sends the held message once the user confirms', async () => {
     const { result } = await mount()
 

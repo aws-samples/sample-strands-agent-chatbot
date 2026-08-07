@@ -11,8 +11,9 @@
 
 import React from "react"
 import { motion } from "framer-motion"
-import { Clock3, X } from "lucide-react"
+import { Clock3, SendHorizontal, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import type { QueuedMessage, QueueHoldReason } from "@/hooks/useMessageQueue"
 
 const HOLD_MESSAGE: Record<QueueHoldReason, string> = {
@@ -28,6 +29,8 @@ interface QueuedMessagesProps {
   onRemove: (id: string) => void
   onSendNow: () => void
   onDiscardAll: () => void
+  canInterrupt: boolean
+  onInterrupt: (id: string) => Promise<boolean>
 }
 
 export function QueuedMessages({
@@ -36,6 +39,8 @@ export function QueuedMessages({
   onRemove,
   onSendNow,
   onDiscardAll,
+  canInterrupt,
+  onInterrupt,
 }: QueuedMessagesProps) {
   if (queue.length === 0) return null
 
@@ -66,40 +71,60 @@ export function QueuedMessages({
         </div>
       )}
 
-      <div className="flex flex-col gap-1.5">
-        {queue.map(message => (
-          <motion.div
-            key={message.id}
-            layout
-            initial={{ opacity: 0, y: 4 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 4 }}
-            className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-border/60 bg-muted/50 text-sm"
-          >
-            <Clock3 className="h-4 w-4 shrink-0 text-muted-foreground" />
-            <span className="flex-1 truncate text-foreground/80">
-              {message.text || `${message.files.length} attachment(s)`}
-            </span>
-            {message.files.length > 0 && message.text && (
-              <span className="shrink-0 text-xs text-muted-foreground">
-                +{message.files.length}
-              </span>
-            )}
-            {/* Always visible: a hover-only control is unreachable on touch and
-                reads as "no way to cancel this" everywhere else. Matches the
-                attachment chips, which also keep their remove button on show. */}
-            <button
-              type="button"
-              onClick={() => onRemove(message.id)}
-              aria-label={`Remove queued message: ${message.text || 'attachments'}`}
-              title="Remove from queue"
-              className="shrink-0 flex h-6 w-6 items-center justify-center rounded-full border border-border/60 bg-background text-muted-foreground hover:bg-destructive hover:text-destructive-foreground hover:border-destructive transition-colors"
-            >
-              <X className="h-3.5 w-3.5" />
-            </button>
-          </motion.div>
-        ))}
-      </div>
+      <TooltipProvider delayDuration={300}>
+        <div className="flex flex-col gap-1.5">
+          {queue.map(message => {
+            const label = message.text || "attachments"
+            return (
+              <motion.div
+                key={message.id}
+                layout
+                initial={{ opacity: 0, y: 4 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 4 }}
+                className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-border/60 bg-muted/50 text-sm"
+              >
+                <Clock3 className="h-4 w-4 shrink-0 text-muted-foreground" />
+                <span className="flex-1 truncate text-foreground/80">
+                  {message.text || `${message.files.length} attachment(s)`}
+                </span>
+                {message.files.length > 0 && message.text && (
+                  <span className="shrink-0 text-xs text-muted-foreground">
+                    +{message.files.length}
+                  </span>
+                )}
+                {canInterrupt && (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        onClick={() => void onInterrupt(message.id)}
+                        aria-label={`Interrupt with this message: ${label}`}
+                        className="shrink-0 flex h-6 w-6 items-center justify-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+                      >
+                        <SendHorizontal className="h-3.5 w-3.5" />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="top">Interrupt with this message</TooltipContent>
+                  </Tooltip>
+                )}
+                {/* Always visible: a hover-only control is unreachable on touch and
+                    reads as "no way to cancel this" everywhere else. Matches the
+                    attachment chips, which also keep their remove button on show. */}
+                <button
+                  type="button"
+                  onClick={() => onRemove(message.id)}
+                  aria-label={`Remove queued message: ${label}`}
+                  title="Remove from queue"
+                  className="shrink-0 flex h-6 w-6 items-center justify-center rounded-full border border-border/60 bg-background text-muted-foreground hover:bg-destructive hover:text-destructive-foreground hover:border-destructive transition-colors"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </motion.div>
+            )
+          })}
+        </div>
+      </TooltipProvider>
     </div>
   )
 }

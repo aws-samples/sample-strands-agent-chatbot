@@ -162,6 +162,7 @@ export function ChatInterface() {
     removeQueuedMessage,
     clearQueuedMessages,
     releaseQueue,
+    interruptWithQueuedMessage,
     newChat,
     compactSession,
     truncateFromMessage,
@@ -989,6 +990,18 @@ export function ChatInterface() {
           onRemove={removeQueuedMessage}
           onSendNow={releaseQueue}
           onDiscardAll={clearQueuedMessages}
+          canInterrupt={
+            !isCompacting &&
+            !currentInterrupt &&
+            !pendingOAuth &&
+            (
+              agentStatus === 'thinking' ||
+              agentStatus === 'responding' ||
+              agentStatus === 'researching' ||
+              agentStatus === 'swarm'
+            )
+          }
+          onInterrupt={interruptWithQueuedMessage}
         />
 
         {/* Chat Input Area */}
