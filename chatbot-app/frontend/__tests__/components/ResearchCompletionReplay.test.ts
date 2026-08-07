@@ -53,7 +53,8 @@ describe('durable research completion replay', () => {
       source.indexOf('// Keep reloadFromStorage ref'),
     )
 
-    expect(source).toContain('useSessionEvents(sessionId)')
+    expect(source).toContain('useSessionEvents(')
+    expect(source).toContain('hasPendingSessionDelivery')
     expect(effect).toContain("event.eventType === 'assistant.turn.completed'")
     expect(effect).toContain('event.payload.executionId,')
     expect(effect).toContain('event.payload.logicalMessageId')

@@ -28,6 +28,15 @@ async function flushAsyncWork() {
   })
 }
 
+async function advance(ms: number) {
+  await act(async () => {
+    vi.advanceTimersByTime(ms)
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+  })
+}
+
 const completion = {
   schemaVersion: 1,
   eventId: 'research-result:job-1:assistant',
@@ -62,16 +71,11 @@ describe('useSessionEvents', () => {
       .mockImplementationOnce(() => response([completion]))
     vi.stubGlobal('fetch', fetchMock)
 
-    const hook = renderHook(() => useSessionEvents('session-1'))
+    const hook = renderHook(() => useSessionEvents('session-1', true))
     await flushAsyncWork()
     expect(hook.result.current.events).toEqual([])
 
-    await act(async () => {
-      vi.advanceTimersByTime(2000)
-      await Promise.resolve()
-      await Promise.resolve()
-      await Promise.resolve()
-    })
+    await advance(2000)
 
     expect(hook.result.current.events).toEqual([completion])
     expect(fetchMock).toHaveBeenLastCalledWith(
@@ -87,7 +91,7 @@ describe('useSessionEvents', () => {
   it('surfaces initial projections so the consumer can close the history race', async () => {
     vi.stubGlobal('fetch', vi.fn(() => response([completion])))
 
-    const hook = renderHook(() => useSessionEvents('session-1'))
+    const hook = renderHook(() => useSessionEvents('session-1', true))
     await flushAsyncWork()
 
     expect(hook.result.current.events).toEqual([completion])
@@ -99,16 +103,11 @@ describe('useSessionEvents', () => {
       .mockImplementationOnce(() => response([]))
     vi.stubGlobal('fetch', fetchMock)
 
-    const hook = renderHook(() => useSessionEvents('session-1'))
+    const hook = renderHook(() => useSessionEvents('session-1', true))
     await flushAsyncWork()
     expect(hook.result.current.events).toEqual([completion])
 
-    await act(async () => {
-      vi.advanceTimersByTime(2000)
-      await Promise.resolve()
-      await Promise.resolve()
-      await Promise.resolve()
-    })
+    await advance(2000)
 
     expect(hook.result.current.events).toEqual([])
   })
@@ -129,5 +128,73 @@ describe('useSessionEvents', () => {
     hook.rerender({ sessionId: 'session-2' })
 
     expect(hook.result.current.events).toEqual([])
+  })
+
+  it('backs idle polling off from 5 seconds to 10 and then 30', async () => {
+    const fetchMock = vi.fn(() => response([]))
+    vi.stubGlobal('fetch', fetchMock)
+
+    renderHook(() => useSessionEvents('session-1'))
+    await flushAsyncWork()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    await advance(4999)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    await advance(1)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+
+    await advance(9999)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    await advance(1)
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+
+    await advance(29999)
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    await advance(1)
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+  })
+
+  it('polls immediately when pending delivery becomes active', async () => {
+    const fetchMock = vi.fn(() => response([]))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const hook = renderHook(
+      ({ active }) => useSessionEvents('session-1', active),
+      { initialProps: { active: false } },
+    )
+    await flushAsyncWork()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    hook.rerender({ active: true })
+    await flushAsyncWork()
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+
+    await advance(2000)
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+
+  it('pauses while hidden and refreshes immediately when visible again', async () => {
+    const fetchMock = vi.fn(() => response([]))
+    vi.stubGlobal('fetch', fetchMock)
+
+    renderHook(() => useSessionEvents('session-1'))
+    await flushAsyncWork()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      value: 'hidden',
+    })
+    document.dispatchEvent(new Event('visibilitychange'))
+    await advance(60000)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      value: 'visible',
+    })
+    document.dispatchEvent(new Event('visibilitychange'))
+    await flushAsyncWork()
+    expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 })

@@ -243,7 +243,15 @@ export function ChatInterface() {
     sessionId,
     researchInvocationCount,
   )
-  const { events: sessionEvents } = useSessionEvents(sessionId)
+  const hasPendingSessionDelivery =
+    researchInvocationCount > researchJobs.length ||
+    researchJobs.some(job =>
+      ['queued', 'running', 'completed', 'delivering'].includes(job.status)
+    )
+  const { events: sessionEvents } = useSessionEvents(
+    sessionId,
+    hasPendingSessionDelivery,
+  )
   const representedOriginEventIds = useMemo(() => {
     const ids = new Set<string>()
     for (const group of groupedMessages) {
