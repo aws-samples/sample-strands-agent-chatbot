@@ -10,19 +10,20 @@ function msg(text: string, files: File[] = []): QueuedMessage {
 function setup(
   queue: QueuedMessage[],
   holdReason: any = null,
-  canInterrupt = false,
+  actionMode: "interrupt" | "send" | null = null,
 ) {
   const handlers = {
     onRemove: vi.fn(),
     onSendNow: vi.fn(),
     onDiscardAll: vi.fn(),
     onInterrupt: vi.fn().mockResolvedValue(true),
+    onSendMessageNow: vi.fn().mockResolvedValue(true),
   }
   render(
     <QueuedMessages
       queue={queue}
       holdReason={holdReason}
-      canInterrupt={canInterrupt}
+      actionMode={actionMode}
       {...handlers}
     />,
   )
@@ -41,8 +42,9 @@ describe('QueuedMessages', () => {
         onRemove={vi.fn()}
         onSendNow={vi.fn()}
         onDiscardAll={vi.fn()}
-        canInterrupt={false}
+        actionMode={null}
         onInterrupt={vi.fn()}
+        onSendMessageNow={vi.fn()}
       />,
     )
     expect(container).toBeEmptyDOMElement()
@@ -77,7 +79,7 @@ describe('QueuedMessages', () => {
   })
 
   it('interrupts with the queued message that was clicked', () => {
-    const { onInterrupt } = setup([msg('first'), msg('second')], null, true)
+    const { onInterrupt } = setup([msg('first'), msg('second')], null, 'interrupt')
     const buttons = screen.getAllByRole('button', {
       name: /interrupt with this message/i,
     })
@@ -89,11 +91,27 @@ describe('QueuedMessages', () => {
   })
 
   it('hides interrupt controls when the current state cannot be stopped', () => {
-    setup([msg('queued')], null, false)
+    setup([msg('queued')])
 
     expect(screen.queryByRole('button', {
       name: /interrupt with this message/i,
     })).not.toBeInTheDocument()
+  })
+
+  it('sends the selected queued message immediately in send mode', () => {
+    const { onSendMessageNow } = setup(
+      [msg('first'), msg('second')],
+      null,
+      'send',
+    )
+    const buttons = screen.getAllByRole('button', {
+      name: /send this message now/i,
+    })
+
+    fireEvent.click(buttons[1])
+
+    expect(onSendMessageNow).toHaveBeenCalledTimes(1)
+    expect(onSendMessageNow).toHaveBeenCalledWith('id-second')
   })
 
   it('labels each remove button with its message so they are distinguishable', () => {

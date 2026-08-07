@@ -234,6 +234,27 @@ describe('useChat message queue wiring', () => {
     expect(result.current.queueHoldReason).toBeNull()
   })
 
+  it('sends a selected queued message immediately while idle', async () => {
+    const { result } = await mount()
+
+    act(() => { result.current.enqueueMessage('first queued') })
+    act(() => { result.current.enqueueMessage('send this now') })
+    const selectedId = result.current.queuedMessages[1].id
+
+    let sent = false
+    await act(async () => {
+      sent = await result.current.sendQueuedMessageNow(selectedId)
+    })
+
+    expect(sent).toBe(true)
+    expect(sendStopSignal).not.toHaveBeenCalled()
+    expect(sentTexts()[0]).toBe('send this now')
+    await waitFor(() => {
+      expect(sentTexts()).toEqual(['send this now', 'first queued'])
+    })
+    expect(result.current.queuedMessages).toEqual([])
+  })
+
   it('does not send the selected message after a session switch', async () => {
     let acceptStop: (accepted: boolean) => void = () => {}
     sendStopSignal.mockReturnValueOnce(

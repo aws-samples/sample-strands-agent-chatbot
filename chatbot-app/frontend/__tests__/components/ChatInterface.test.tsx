@@ -34,6 +34,7 @@ const mockUseChat: {
   clearQueuedMessages: ReturnType<typeof vi.fn>
   releaseQueue: ReturnType<typeof vi.fn>
   interruptWithQueuedMessage: ReturnType<typeof vi.fn>
+  sendQueuedMessageNow: ReturnType<typeof vi.fn>
   conciseMode: boolean
   toggleConciseMode: ReturnType<typeof vi.fn>
   newChat: ReturnType<typeof vi.fn>
@@ -66,6 +67,7 @@ const mockUseChat: {
   clearQueuedMessages: vi.fn(),
   releaseQueue: vi.fn(),
   interruptWithQueuedMessage: vi.fn().mockResolvedValue(true),
+  sendQueuedMessageNow: vi.fn().mockResolvedValue(true),
   conciseMode: false,
   toggleConciseMode: vi.fn(),
   newChat: vi.fn().mockResolvedValue(undefined),
@@ -317,7 +319,7 @@ describe('ChatInterface', () => {
       expect(mockUseChat.interruptWithQueuedMessage).toHaveBeenCalledWith('queued-2')
     })
 
-    it('does not offer queue interruption while idle or awaiting approval', () => {
+    it('offers immediate send for a queued message while idle', () => {
       mockUseChat.agentStatus = 'idle'
       mockUseChat.queuedMessages = [{
         id: 'queued-1',
@@ -326,18 +328,29 @@ describe('ChatInterface', () => {
         sessionId: 'session-1',
       }]
 
-      const { rerender } = render(<ChatInterface />)
-      expect(screen.queryByRole('button', {
-        name: /interrupt with this message/i,
-      })).not.toBeInTheDocument()
+      render(<ChatInterface />)
+      fireEvent.click(screen.getByRole('button', {
+        name: /send this message now/i,
+      }))
 
+      expect(mockUseChat.sendQueuedMessageNow).toHaveBeenCalledWith('queued-1')
+    })
+
+    it('hides queued message actions while awaiting approval', () => {
       mockUseChat.agentStatus = 'thinking'
+      mockUseChat.queuedMessages = [{
+        id: 'queued-1',
+        text: 'wait',
+        files: [],
+        sessionId: 'session-1',
+      }]
+
       mockUseChat.currentInterrupt = {
         interrupts: [{ id: 'i1', name: 'approval', reason: {} }],
       }
-      rerender(<ChatInterface />)
+      render(<ChatInterface />)
       expect(screen.queryByRole('button', {
-        name: /interrupt with this message/i,
+        name: /this message/i,
       })).not.toBeInTheDocument()
     })
   })

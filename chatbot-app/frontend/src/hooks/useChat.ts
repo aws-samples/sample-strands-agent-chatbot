@@ -58,6 +58,8 @@ interface UseChatReturn {
   releaseQueue: () => void
   /** Stop the current turn and immediately dispatch the selected queued turn. */
   interruptWithQueuedMessage: (id: string) => Promise<boolean>
+  /** Immediately dispatch the selected queued turn while the agent is idle. */
+  sendQueuedMessageNow: (id: string) => Promise<boolean>
   newChat: () => Promise<void>
   compactSession: () => Promise<void>
   truncateFromMessage: (message: Message) => Promise<void>
@@ -181,6 +183,8 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
   const messagesRef = useRef<Message[]>([])
   const sessionStateRef = useRef(sessionState)
   sessionStateRef.current = sessionState
+  const uiStateRef = useRef(uiState)
+  uiStateRef.current = uiState
   // Set once the queue hook is initialized below; newChat and respondToInterrupt
   // are declared before it.
   const clearQueuedMessagesRef = useRef<() => void>(() => {})
@@ -704,6 +708,31 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
     })
   }, [releaseHold, flushNext, sessionId, sessionState.interrupt, sessionState.pendingOAuth])
 
+  const sendQueuedMessageNow = useCallback(async (id: string): Promise<boolean> => {
+    const targetSessionId = sessionId
+    const latestState = sessionStateRef.current
+    if (
+      uiStateRef.current.agentStatus !== 'idle' ||
+      latestState.interrupt ||
+      latestState.pendingOAuth
+    ) {
+      return false
+    }
+    if (!prioritizeQueuedMessage(id, targetSessionId)) return false
+    if (currentSessionIdRef.current !== targetSessionId) return false
+
+    releaseHold()
+    return flushNext(targetSessionId, {
+      hasInterrupt: false,
+      hasPendingOAuth: false,
+    })
+  }, [
+    flushNext,
+    prioritizeQueuedMessage,
+    releaseHold,
+    sessionId,
+  ])
+
   // localStorage key for compact recovery across browser refresh
   const getCompactPendingKey = (sid: string) => `compact_pending_${sid}`
 
@@ -1150,6 +1179,7 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
     clearQueuedMessages,
     releaseQueue,
     interruptWithQueuedMessage,
+    sendQueuedMessageNow,
     newChat,
     compactSession,
     truncateFromMessage,

@@ -29,8 +29,9 @@ interface QueuedMessagesProps {
   onRemove: (id: string) => void
   onSendNow: () => void
   onDiscardAll: () => void
-  canInterrupt: boolean
+  actionMode: "interrupt" | "send" | null
   onInterrupt: (id: string) => Promise<boolean>
+  onSendMessageNow: (id: string) => Promise<boolean>
 }
 
 export function QueuedMessages({
@@ -39,8 +40,9 @@ export function QueuedMessages({
   onRemove,
   onSendNow,
   onDiscardAll,
-  canInterrupt,
+  actionMode,
   onInterrupt,
+  onSendMessageNow,
 }: QueuedMessagesProps) {
   if (queue.length === 0) return null
 
@@ -93,19 +95,33 @@ export function QueuedMessages({
                     +{message.files.length}
                   </span>
                 )}
-                {canInterrupt && (
+                {actionMode && (
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <button
                         type="button"
-                        onClick={() => void onInterrupt(message.id)}
-                        aria-label={`Interrupt with this message: ${label}`}
-                        className="shrink-0 flex h-6 w-6 items-center justify-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+                        onClick={() => {
+                          void (
+                            actionMode === "interrupt"
+                              ? onInterrupt(message.id)
+                              : onSendMessageNow(message.id)
+                          )
+                        }}
+                        aria-label={
+                          actionMode === "interrupt"
+                            ? `Interrupt with this message: ${label}`
+                            : `Send this message now: ${label}`
+                        }
+                        className="shrink-0 flex h-6 w-6 items-center justify-center rounded-full border border-border/60 bg-background text-muted-foreground hover:border-primary/40 hover:bg-accent hover:text-foreground transition-colors"
                       >
                         <SendHorizontal className="h-3.5 w-3.5" />
                       </button>
                     </TooltipTrigger>
-                    <TooltipContent side="top">Interrupt with this message</TooltipContent>
+                    <TooltipContent side="top">
+                      {actionMode === "interrupt"
+                        ? "Interrupt with this message"
+                        : "Send this message now"}
+                    </TooltipContent>
                   </Tooltip>
                 )}
                 {/* Always visible: a hover-only control is unreachable on touch and
