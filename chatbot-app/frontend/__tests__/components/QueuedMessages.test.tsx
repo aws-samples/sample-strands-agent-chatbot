@@ -83,6 +83,7 @@ describe('QueuedMessages', () => {
     const buttons = screen.getAllByRole('button', {
       name: /interrupt with this message/i,
     })
+    expect(screen.getAllByText('Interrupt')).toHaveLength(2)
 
     fireEvent.click(buttons[1])
 
@@ -107,6 +108,7 @@ describe('QueuedMessages', () => {
     const buttons = screen.getAllByRole('button', {
       name: /send this message now/i,
     })
+    expect(screen.getAllByText('Send now')).toHaveLength(2)
 
     fireEvent.click(buttons[1])
 

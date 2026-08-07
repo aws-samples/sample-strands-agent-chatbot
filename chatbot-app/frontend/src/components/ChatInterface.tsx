@@ -240,15 +240,13 @@ export function ChatInterface() {
     }
     return invocationIds.size
   }, [groupedMessages])
-  const { jobs: researchJobs } = useResearchJobs(
+  const {
+    jobs: researchJobs,
+    isActive: hasPendingSessionDelivery,
+  } = useResearchJobs(
     sessionId,
     researchInvocationCount,
   )
-  const hasPendingSessionDelivery =
-    researchInvocationCount > researchJobs.length ||
-    researchJobs.some(job =>
-      ['queued', 'running', 'completed', 'delivering'].includes(job.status)
-    )
   const { events: sessionEvents } = useSessionEvents(
     sessionId,
     hasPendingSessionDelivery,

@@ -8,6 +8,7 @@ const DISCOVERY_WINDOW_MS = 15000
 export function useResearchJobs(sessionId: string, refreshToken = 0) {
   const [jobs, setJobs] = useState<ResearchJob[]>([])
   const [deliveredJobIds, setDeliveredJobIds] = useState<string[]>([])
+  const [isActive, setIsActive] = useState(false)
   const [snapshotSessionId, setSnapshotSessionId] = useState(sessionId)
   const statusesRef = useRef<Map<string, string> | null>(null)
   const jobsRef = useRef<ResearchJob[]>([])
@@ -16,8 +17,10 @@ export function useResearchJobs(sessionId: string, refreshToken = 0) {
   const activeRef = useRef(false)
   const discoveryUntilRef = useRef(0)
   const invocationCountRef = useRef(0)
+  const refreshTokenRef = useRef(refreshToken)
   const sessionRef = useRef(sessionId)
   sessionRef.current = sessionId
+  refreshTokenRef.current = refreshToken
 
   const refresh = useCallback(async () => {
     if (!sessionId) return
@@ -70,7 +73,7 @@ export function useResearchJobs(sessionId: string, refreshToken = 0) {
       }
       statusesRef.current = new Map(nextJobs.map(job => [job.jobId, job.status]))
       const hasActiveJobs = nextJobs.some(job =>
-        ['queued', 'running', 'delivering'].includes(job.status),
+        ['queued', 'running', 'completed', 'delivering'].includes(job.status),
       )
       const expectedJobs = invocationCountRef.current
       if (nextJobs.length >= expectedJobs) {
@@ -79,7 +82,9 @@ export function useResearchJobs(sessionId: string, refreshToken = 0) {
       const waitingForReceipt =
         nextJobs.length < expectedJobs &&
         Date.now() < discoveryUntilRef.current
-      activeRef.current = hasActiveJobs || waitingForReceipt
+      const nextActive = hasActiveJobs || waitingForReceipt
+      activeRef.current = nextActive
+      setIsActive(nextActive)
       const changed = nextJobs.length !== jobsRef.current.length || nextJobs.some((job, index) => {
         const current = jobsRef.current[index]
         return !current ||
@@ -107,12 +112,15 @@ export function useResearchJobs(sessionId: string, refreshToken = 0) {
     jobsRef.current = []
     activeRef.current = false
     discoveryUntilRef.current = 0
-    invocationCountRef.current = 0
+    // Tool invocations already present when a session opens are history, not
+    // evidence that a new job receipt is still propagating.
+    invocationCountRef.current = refreshTokenRef.current
     refreshingRef.current = false
     pendingRefreshRef.current = false
     setSnapshotSessionId(sessionId)
     setJobs([])
     setDeliveredJobIds([])
+    setIsActive(false)
     void refresh()
     const timer = window.setInterval(() => {
       if (activeRef.current) void refresh()
@@ -125,6 +133,7 @@ export function useResearchJobs(sessionId: string, refreshToken = 0) {
     invocationCountRef.current = refreshToken
     discoveryUntilRef.current = Date.now() + DISCOVERY_WINDOW_MS
     activeRef.current = true
+    setIsActive(true)
     void refresh()
   }, [refresh, refreshToken])
 
@@ -132,6 +141,7 @@ export function useResearchJobs(sessionId: string, refreshToken = 0) {
     jobs: snapshotSessionId === sessionId ? jobs : [],
     deliveredJobIds:
       snapshotSessionId === sessionId ? deliveredJobIds : [],
+    isActive: snapshotSessionId === sessionId && isActive,
     refresh,
   }
 }
