@@ -40,6 +40,20 @@ _BACKGROUND_RESEARCH_TAG = "background-research-result"
 router = APIRouter(tags=["chat"])
 
 
+def _build_background_research_message(report: str) -> str:
+    """Build model input without exposing mailbox correlation identifiers."""
+    return (
+        f"<{_BACKGROUND_RESEARCH_TAG}>\n"
+        "Background research requested earlier has completed. "
+        "The full report is now stored as an artifact. Incorporate "
+        "the result into the ongoing conversation and tell the user "
+        "the report is ready. Do not call tools or start another "
+        "research job.\n\n"
+        f"{report}\n"
+        f"</{_BACKGROUND_RESEARCH_TAG}>"
+    )
+
+
 def _is_mailbox_dispatcher_request(http_request: Request) -> bool:
     expected_client_id = os.environ.get("M2M_CLIENT_ID")
     if not expected_client_id:
@@ -465,7 +479,7 @@ async def _handle_agui_invocation(body: dict, http_request: Request) -> Streamin
     if pending_research:
         reports = "\n\n".join(
             (
-                f"<completed-background-research artifact_id=\"{item['artifact']['id']}\">\n"
+                "<completed-background-research>\n"
                 f"{item['artifact']['content']}\n"
                 "</completed-background-research>"
             )
@@ -697,17 +711,8 @@ async def deliver_research_job(record: dict, artifact: dict) -> None:
                     execution.status = ExecutionStatus.COMPLETED
                     return
 
-                report = artifact.get("content", "")
-                hidden_message = (
-                    f"<{_BACKGROUND_RESEARCH_TAG} "
-                    f"job_id=\"{record['jobId']}\" artifact_id=\"{artifact['id']}\">\n"
-                    "Background research requested earlier has completed. "
-                    "The full report is now stored as an artifact. Incorporate "
-                    "the result into the ongoing conversation and tell the user "
-                    "the report is ready. Do not call tools or start another "
-                    "research job.\n\n"
-                    f"{report}\n"
-                    f"</{_BACKGROUND_RESEARCH_TAG}>"
+                hidden_message = _build_background_research_message(
+                    artifact.get("content", ""),
                 )
                 processor = AGUIStreamEventProcessor(
                     thread_id=session_id,
@@ -719,7 +724,6 @@ async def deliver_research_job(record: dict, artifact: dict) -> None:
                     "run_id": run_id,
                     "model_id": agent.model_id,
                     "session_manager": agent.session_manager,
-                    "background_research_job_id": record["jobId"],
                 }
                 scope = getattr(agent.session_manager, "mailbox_event_scope", None)
                 scope_context = (

@@ -25,12 +25,15 @@ describe('parseResearchStartReceipt', () => {
 })
 
 describe('hideBackgroundResearchInputs', () => {
-  it('moves the hidden wake-up boundary to the delivery response', () => {
+  it.each([
+    '<background-research-result>',
+    '<background-research-result job_id="legacy-job">',
+  ])('moves the hidden wake-up boundary to the delivery response for %s', tag => {
     const messages = hideBackgroundResearchInputs([
       { role: 'assistant', content: [{ text: 'Research started.' }] },
       {
         role: 'user',
-        content: [{ text: '<background-research-result job_id="job-1">' }],
+        content: [{ text: tag }],
       },
       { role: 'assistant', content: [{ text: 'Research complete.' }] },
     ])

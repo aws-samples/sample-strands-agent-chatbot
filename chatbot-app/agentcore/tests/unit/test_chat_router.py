@@ -233,6 +233,16 @@ class TestExecutionRegistry:
 
 
 class TestMailboxDelivery:
+    def test_model_input_excludes_internal_correlation_ids(self):
+        from routers import chat
+
+        message = chat._build_background_research_message("# Finished report")
+
+        assert message.startswith("<background-research-result>\n")
+        assert "job_id" not in message
+        assert "artifact_id" not in message
+        assert "# Finished report" in message
+
     @pytest.mark.asyncio
     async def test_generic_event_loads_research_job_and_marks_delivered(
         self,
