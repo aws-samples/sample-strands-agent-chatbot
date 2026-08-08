@@ -44,13 +44,12 @@ interface ChatInputAreaProps {
   onPrefillConsumed?: () => void
 }
 
-function useDebounce<T extends (...args: any[]) => any>(callback: T, delay: number): T {
-  const timeoutRef = useRef<NodeJS.Timeout | undefined>(undefined)
-  return useCallback((...args: Parameters<T>) => {
-    if (timeoutRef.current) clearTimeout(timeoutRef.current)
-    timeoutRef.current = setTimeout(() => callback(...args), delay)
-  }, [callback, delay]) as T
-}
+export const LARGE_PASTE_ATTACHMENT_THRESHOLD = 20_000
+export const MAX_PASTED_TEXT_BYTES = 1_000_000
+
+const MAX_AUTO_RESIZE_CHARS = 4_000
+const TEXTAREA_MAX_HEIGHT_PX = 128
+const MAX_SLASH_COMMAND_LENGTH = 64
 
 export function ChatInputArea({
   selectedFiles,
@@ -77,6 +76,7 @@ export function ChatInputArea({
   onPrefillConsumed,
 }: ChatInputAreaProps) {
   const [inputMessage, setInputMessage] = useState('')
+  const [inputError, setInputError] = useState<string | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const isComposingRef = useRef(false)
 
@@ -86,7 +86,10 @@ export function ChatInputArea({
 
   // Slash command autocomplete
   useEffect(() => {
-    const trimmed = inputMessage.trim()
+    const isShortSingleLine =
+      inputMessage.length <= MAX_SLASH_COMMAND_LENGTH &&
+      !inputMessage.includes('\n')
+    const trimmed = isShortSingleLine ? inputMessage.trim() : ''
     if (trimmed.startsWith('/')) {
       const filtered = filterCommands(trimmed)
       setSlashCommands(filtered)
@@ -95,13 +98,16 @@ export function ChatInputArea({
         setInputRect(textareaRef.current.getBoundingClientRect())
       }
     } else {
-      setSlashCommands([])
+      setSlashCommands(current => current.length === 0 ? current : [])
     }
   }, [inputMessage])
 
+  const closeSlashCommands = useCallback(() => {
+    setSlashCommands(current => current.length === 0 ? current : [])
+  }, [])
 
   const handleSlashCommand = useCallback((command: SlashCommand) => {
-    setSlashCommands([])
+    closeSlashCommands()
     setInputMessage('')
 
     switch (command.name) {
@@ -115,17 +121,17 @@ export function ChatInputArea({
         onCompact()
         break
     }
-  }, [onExportConversation, onNewChat, onCompact, setInputMessage])
+  }, [closeSlashCommands, onExportConversation, onNewChat, onCompact])
 
   // Single submit path shared by Enter, the form, and the send button.
   // While the agent is busy the composer stays open and the turn is queued
   // instead of sent; the parent decides when it is safe to dispatch it.
-  const hasContent = inputMessage.trim().length > 0 || selectedFiles.length > 0
+  const hasContent = /\S/.test(inputMessage) || selectedFiles.length > 0
 
   const submit = useCallback(() => {
     if (!hasContent || isVoiceActive) return
     // Slash commands are handled in handleKeyDown.
-    if (inputMessage.trim().startsWith('/')) return
+    if (/^\s*\//.test(inputMessage)) return
 
     if (isBusy) {
       onEnqueueMessage(inputMessage, selectedFiles)
@@ -141,6 +147,7 @@ export function ChatInputArea({
 
   const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.target.files || [])
+    setInputError(null)
     setSelectedFiles(prev => [...prev, ...files])
     event.target.value = ""
   }
@@ -169,7 +176,7 @@ export function ChatInputArea({
       }
       if (e.key === "Escape") {
         e.preventDefault()
-        setSlashCommands([])
+        closeSlashCommands()
         return
       }
     }
@@ -206,25 +213,45 @@ export function ChatInputArea({
 
     if (imageFiles.length > 0) {
       e.preventDefault()
+      setInputError(null)
       setSelectedFiles(prev => [...prev, ...imageFiles])
+      return
+    }
+
+    const pastedText = e.clipboardData.getData('text/plain')
+    if (pastedText.length >= LARGE_PASTE_ATTACHMENT_THRESHOLD) {
+      e.preventDefault()
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
+      const pastedFile = new File(
+        [pastedText],
+        `pasted-text-${timestamp}.txt`,
+        { type: 'text/plain' },
+      )
+      if (pastedFile.size > MAX_PASTED_TEXT_BYTES) {
+        setInputError('Pasted text exceeds the 1 MB limit. Split it into smaller sections.')
+        return
+      }
+      setInputError(null)
+      setSelectedFiles(prev => [...prev, pastedFile])
     }
   }
 
-  const adjustTextareaHeightImmediate = useCallback(() => {
+  useEffect(() => {
     const textarea = textareaRef.current
-    if (textarea) {
+    if (!textarea) return
+
+    if (inputMessage.length > MAX_AUTO_RESIZE_CHARS) {
+      textarea.style.height = `${TEXTAREA_MAX_HEIGHT_PX}px`
+      return
+    }
+
+    const frameId = window.requestAnimationFrame(() => {
       textarea.style.height = "auto"
       const scrollHeight = textarea.scrollHeight
-      const maxHeight = 128
-      textarea.style.height = `${Math.min(scrollHeight, maxHeight)}px`
-    }
-  }, [])
-
-  const adjustTextareaHeight = useDebounce(adjustTextareaHeightImmediate, 100)
-
-  useEffect(() => {
-    adjustTextareaHeight()
-  }, [inputMessage, adjustTextareaHeight])
+      textarea.style.height = `${Math.min(scrollHeight, TEXTAREA_MAX_HEIGHT_PX)}px`
+    })
+    return () => window.cancelAnimationFrame(frameId)
+  }, [inputMessage])
 
   useEffect(() => {
     if (prefillMessage) {
@@ -276,7 +303,10 @@ export function ChatInputArea({
               <Textarea
                 ref={textareaRef}
                 value={inputMessage}
-                onChange={(e) => setInputMessage(e.target.value)}
+                onChange={(e) => {
+                  setInputError(null)
+                  setInputMessage(e.target.value)
+                }}
                 onKeyDown={handleKeyDown}
                 onPaste={handlePaste}
                 onCompositionStart={() => { isComposingRef.current = true }}
@@ -288,7 +318,7 @@ export function ChatInputArea({
                     ? "Send a follow-up — it'll go next"
                     : "Ask me anything..."
                 }
-                className="flex-1 min-h-[52px] max-h-36 border-0 focus:ring-0 focus:ring-offset-0 ring-0 ring-offset-0 resize-none py-2 px-1 leading-relaxed overflow-y-auto bg-transparent transition-all duration-200 placeholder:text-muted-foreground/60 shadow-none"
+                className="flex-1 min-h-[52px] max-h-36 border-0 focus:ring-0 focus:ring-offset-0 ring-0 ring-offset-0 resize-none py-2 px-1 leading-relaxed overflow-y-auto bg-transparent transition-colors duration-200 placeholder:text-muted-foreground/60 shadow-none"
                 // Stays enabled while the agent runs so follow-ups can be queued.
                 // Voice mode still owns the composer exclusively.
                 disabled={isVoiceActive}
@@ -377,6 +407,11 @@ export function ChatInputArea({
                 )}
               </div>
             </div>
+            {inputError && (
+              <p role="alert" className="mt-2 text-caption text-destructive">
+                {inputError}
+              </p>
+            )}
           </form>
 
           {/* Bottom Options Bar */}
@@ -438,13 +473,15 @@ export function ChatInputArea({
       </div>
 
       {/* Slash Command Autocomplete */}
-      <SlashCommandPopover
-        commands={slashCommands}
-        selectedIndex={selectedCommandIndex}
-        onSelect={handleSlashCommand}
-        onClose={() => setSlashCommands([])}
-        anchorRect={inputRect}
-      />
+      {slashCommands.length > 0 && inputRect && (
+        <SlashCommandPopover
+          commands={slashCommands}
+          selectedIndex={selectedCommandIndex}
+          onSelect={handleSlashCommand}
+          onClose={closeSlashCommands}
+          anchorRect={inputRect}
+        />
+      )}
     </>
   )
 }

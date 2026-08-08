@@ -8,6 +8,7 @@ import { buildToolMaps, createToolExecution } from '@/utils/messageParser'
 import { isSessionTimedOut, getLastActivity, updateLastActivity, clearSessionData, triggerWarmup, generateSessionId } from '@/config/session'
 import { isA2ATool } from './usePolling'
 import { useSSEReconnect } from './useSSEReconnect'
+import { arrayBufferToBase64 } from '@/lib/base64'
 
 /**
  * Process swarm message content blocks in order to preserve text/tool interleaving.
@@ -513,7 +514,7 @@ export const useChatAPI = ({
         if (files && files.length > 0) {
           for (const file of files) {
             const arrayBuffer = await file.arrayBuffer()
-            const base64 = btoa(new Uint8Array(arrayBuffer).reduce((d, b) => d + String.fromCharCode(b), ''))
+            const base64 = arrayBufferToBase64(arrayBuffer)
             contentParts.push({
               type: 'binary',
               mimeType: file.type || 'application/octet-stream',
