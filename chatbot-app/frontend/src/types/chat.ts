@@ -2,6 +2,8 @@ export interface ToolExecution {
   id: string
   toolName: string
   toolInput?: any
+  toolInputRaw?: string
+  toolInputState?: 'streaming' | 'complete'
   reasoning: string[]
   reasoningText?: string
   toolResult?: string
