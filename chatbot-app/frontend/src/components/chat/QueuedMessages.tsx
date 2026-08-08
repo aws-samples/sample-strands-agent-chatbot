@@ -55,7 +55,7 @@ export function QueuedMessages({
     <TooltipProvider delayDuration={300}>
       <div className="mx-auto px-4 w-full md:max-w-4xl mb-2">
         {holdReason && (
-          <div className="flex items-center justify-between gap-3 mb-2 px-3 py-2 rounded-lg border border-amber-500/40 bg-amber-500/5 text-sm">
+          <div className="flex items-center justify-between gap-3 mb-2 px-3 py-2 rounded-lg border border-border bg-card text-sm">
             <span className="text-muted-foreground">
               {HOLD_MESSAGE[holdReason]}{" "}
               {queue.length === 1
@@ -100,7 +100,7 @@ export function QueuedMessages({
                 initial={{ opacity: 0, y: 4 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: 4 }}
-                className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-border/60 bg-muted/50 text-sm"
+                className="flex items-center gap-2 px-3 py-2 rounded-lg border border-border bg-card text-sm"
               >
                 <Clock3 className="h-4 w-4 shrink-0 text-muted-foreground" />
                 <span className="min-w-0 flex-1 truncate text-foreground/80">

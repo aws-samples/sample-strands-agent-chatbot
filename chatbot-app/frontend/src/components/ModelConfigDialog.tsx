@@ -202,18 +202,9 @@ export function ModelConfigDialog({ sessionId, trigger, agentStatus, currentMode
   // Voice mode active - show special Nova Sonic 2 badge
   if (isVoiceActive) {
     return (
-      <div className="relative group">
-        {/* Animated gradient border */}
-        <div className="absolute -inset-[1px] rounded-lg bg-gradient-to-r from-violet-500 via-fuchsia-500 via-pink-500 via-rose-500 via-orange-500 via-amber-500 via-yellow-500 via-lime-500 via-green-500 via-emerald-500 via-teal-500 via-cyan-500 via-sky-500 via-blue-500 via-indigo-500 to-violet-500 opacity-75 blur-[2px] animate-gradient-x" />
-        <div className="absolute -inset-[1px] rounded-lg bg-gradient-to-r from-violet-500 via-fuchsia-500 via-pink-500 via-rose-500 via-orange-500 via-amber-500 via-yellow-500 via-lime-500 via-green-500 via-emerald-500 via-teal-500 via-cyan-500 via-sky-500 via-blue-500 via-indigo-500 to-violet-500 opacity-50 animate-gradient-x" />
-
-        {/* Content */}
-        <div className="relative h-8 px-3 flex items-center gap-2 text-label font-semibold bg-background rounded-lg cursor-default">
-          <AudioWaveform className="w-4 h-4 text-fuchsia-500 animate-pulse" />
-          <span className="bg-gradient-to-r from-violet-500 via-fuchsia-500 to-pink-500 bg-clip-text text-transparent">
-            Nova Sonic 2
-          </span>
-        </div>
+      <div className="h-8 px-3 flex items-center gap-2 rounded-md border border-primary/25 bg-accent text-label font-medium text-accent-foreground">
+        <AudioWaveform className="w-4 h-4 text-primary animate-pulse" />
+        <span>Nova Sonic 2</span>
       </div>
     );
   }
@@ -239,7 +230,7 @@ export function ModelConfigDialog({ sessionId, trigger, agentStatus, currentMode
         sideOffset={10}
       >
         {/* Header */}
-        <div className="p-4 border-b shrink-0 bg-gradient-to-b from-slate-50/50 to-transparent dark:from-slate-900/50">
+        <div className="p-4 border-b shrink-0 bg-muted/30">
           <div className="flex items-center justify-between mb-3">
             <h3 className="text-body font-semibold flex items-center gap-2 text-slate-900 dark:text-slate-100">
               <Cpu className="w-4.5 h-4.5 text-slate-700 dark:text-slate-300" />
