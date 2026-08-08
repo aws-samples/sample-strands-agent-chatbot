@@ -3,7 +3,11 @@ import { Message, ToolExecution } from '@/types/chat'
 import { ReasoningState, ChatSessionState, ChatUIState, InterruptState, AgentStatus, PendingOAuthState } from '@/types/events'
 import { detectBackendUrl } from '@/utils/chat'
 import { useStreamEvents } from './useStreamEvents'
-import { useChatAPI, SessionPreferences } from './useChatAPI'
+import {
+  useChatAPI,
+  ReplayMessageIdentity,
+  SessionPreferences,
+} from './useChatAPI'
 import { usePolling, hasOngoingA2ATools, A2A_TOOLS_REQUIRING_POLLING } from './usePolling'
 import { useMessageQueue, QueuedMessage, QueueHoldReason } from './useMessageQueue'
 import { getApiUrl } from '@/config/environment'
@@ -39,7 +43,10 @@ interface UseChatReturn {
   showProgressPanel: boolean
   toggleProgressPanel: () => void
   sendMessage: (text: string, files?: File[], systemPrompt?: string, selectedArtifactId?: string | null) => Promise<void>
-  replayExecution: (executionId: string) => Promise<boolean>
+  replayExecution: (
+    executionId: string,
+    messageIdentity?: ReplayMessageIdentity,
+  ) => Promise<boolean>
   stopGeneration: () => Promise<void>
   // Queue for turns composed while the agent is busy
   queuedMessages: QueuedMessage[]
@@ -628,17 +635,26 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
     })
   }, [enqueue, sessionId])
 
-  const replayExecution = useCallback(async (executionId: string) => {
-    const replayed = await apiReplayExecution(executionId)
+  const replayExecution = useCallback(async (
+    executionId: string,
+    messageIdentity?: ReplayMessageIdentity,
+  ) => {
+    const replaySessionId = sessionId
+    const replayed = messageIdentity
+      ? await apiReplayExecution(executionId, messageIdentity)
+      : await apiReplayExecution(executionId)
+    if (currentSessionIdRef.current !== replaySessionId) return false
     if (!replayed) {
       // Runtime buffers expire; history contains the same durable assistant
       // response and preserves its synthetic turn boundary.
-      await loadSessionWithPreferences(sessionId)
+      await loadSessionWithPreferences(replaySessionId)
     }
+
+    if (currentSessionIdRef.current !== replaySessionId) return replayed
 
     // A message composed while the delivery was rendering is a normal queued
     // user turn. Dispatch it only after replay or history fallback completes.
-    await flushNext(sessionId, {
+    await flushNext(replaySessionId, {
       hasInterrupt: sessionState.interrupt !== null,
       hasPendingOAuth: !!sessionState.pendingOAuth,
     })
@@ -776,14 +792,21 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
     const currentSessionId = sessionId
     if (!currentSessionId) return
 
-    // History messages have their eventId as message.id (non-numeric string).
-    // Newly sent messages in the current session have String(Date.now()) as id (numeric).
-    const isHistoryMessage = isNaN(Number(message.id))
-    const params = isHistoryMessage
-      ? { fromEventId: message.id }
-      : { fromTimestamp: message.rawTimestamp }
+    // History messages keep AgentCore eventId as a storage locator while the
+    // UI may use a stable logicalMessageId as message.id.
+    const isHistoryMessage = !!message.eventId
+    const messageTimestamp =
+      message.rawTimestamp ?? new Date(message.timestamp).getTime()
+    const params = {
+      ...(isHistoryMessage
+        ? { fromEventId: message.eventId || message.id }
+        : { fromTimestamp: messageTimestamp }),
+      ...(message.originEventId && {
+        originEventId: message.originEventId,
+      }),
+    }
 
-    if (!isHistoryMessage && !message.rawTimestamp) {
+    if (!isHistoryMessage && !Number.isFinite(messageTimestamp)) {
       console.warn('[truncate] Missing rawTimestamp for non-history message, aborting')
       return
     }

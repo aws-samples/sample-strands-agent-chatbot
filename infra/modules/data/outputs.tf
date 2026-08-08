@@ -13,3 +13,15 @@ output "sessions_table_name" {
 output "sessions_table_arn" {
   value = aws_dynamodb_table.sessions.arn
 }
+
+output "session_orchestration_table_name" {
+  value = aws_dynamodb_table.session_orchestration.name
+}
+
+output "session_orchestration_table_arn" {
+  value = aws_dynamodb_table.session_orchestration.arn
+}
+
+output "session_orchestration_stream_arn" {
+  value = aws_dynamodb_table.session_orchestration.stream_arn
+}

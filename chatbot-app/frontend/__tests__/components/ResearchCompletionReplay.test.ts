@@ -12,7 +12,7 @@ async function readChatInterfaceSource(): Promise<string> {
 }
 
 describe('durable research completion replay', () => {
-  it('uses the durable research job hook as the completion source', async () => {
+  it('uses the durable research job hook as the artifact source', async () => {
     const source = await readChatInterfaceSource()
 
     expect(source).toContain('useResearchJobs(')
@@ -25,7 +25,7 @@ describe('durable research completion replay', () => {
     const source = await readChatInterfaceSource()
     const effect = source.slice(
       source.indexOf('A completed report is readable'),
-      source.indexOf('Background continuations have their own buffered'),
+      source.indexOf('Durable session projections are the generic delivery signal'),
     )
 
     expect(effect).toContain('researchArtifactVersionsRef')
@@ -46,19 +46,25 @@ describe('durable research completion replay', () => {
     expect(reset).toContain('researchArtifactVersionsRef.current.clear()')
   })
 
-  it('replays the background delivery execution instead of replacing history', async () => {
+  it('replays background delivery from generic durable session events', async () => {
     const source = await readChatInterfaceSource()
     const effect = source.slice(
-      source.indexOf('Background continuations have their own buffered'),
+      source.indexOf('Durable session projections are the generic delivery signal'),
       source.indexOf('// Keep reloadFromStorage ref'),
     )
 
-    expect(effect).toContain('research-delivery-${jobId}')
-    expect(effect).toContain('await replayExecution(executionId)')
-    expect(effect).toContain('for (const jobId of unseen)')
+    expect(source).toContain('useSessionEvents(sessionId)')
+    expect(effect).toContain("event.eventType === 'assistant.turn.completed'")
+    expect(effect).toContain('event.payload.executionId,')
+    expect(effect).toContain('event.payload.logicalMessageId')
+    expect(effect).toContain('representedOriginEventIds.has(event.originEventId)')
+    expect(effect).toContain('isLoadingMessages')
+    expect(effect).toContain('for (const event of unseen)')
+    expect(effect).toContain('if (!replayed) break')
+    expect(effect).toContain('reloadedDeliveriesRef.current.delete(event.eventId)')
     expect(effect).toContain('queuedMessages.length > 0')
     expect(effect).toContain("agentStatus !== 'idle'")
-    expect(effect).not.toContain('await loadSession(sessionId)')
+    expect(effect).not.toContain('deliveredJobIds')
   })
 
   it('marks the first visible event of each run as a new assistant turn', async () => {

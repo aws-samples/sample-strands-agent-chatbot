@@ -1,10 +1,13 @@
 """Compacting Session Manager for Long Context Optimization."""
 
 import copy
+import hashlib
 import json
 import logging
 import sys
+import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional, Dict, List
@@ -49,6 +52,12 @@ class CompactionState:
             summary=data.get("summary"),
             updatedAt=data.get("updatedAt")
         )
+
+
+@dataclass
+class MailboxPersistenceScope:
+    origin_event_id: str
+    message_index: int = 0
 
 
 class CompactingSessionManager(AgentCoreMemorySessionManager):
@@ -126,6 +135,8 @@ class CompactingSessionManager(AgentCoreMemorySessionManager):
         # API call metrics for performance measurement
         self._api_call_count = 0
         self._api_call_total_ms = 0.0
+        self._mailbox_scope: Optional[MailboxPersistenceScope] = None
+        self._mailbox_scope_lock = threading.Lock()
 
         mode_str = "metrics_only" if metrics_only else "full_compaction"
         logger.debug(f"CompactingSessionManager: mode={mode_str}")
@@ -169,6 +180,82 @@ class CompactingSessionManager(AgentCoreMemorySessionManager):
         elapsed_ms = (time.time() - start) * 1000
         self._api_call_count += 1
         self._api_call_total_ms += elapsed_ms
+
+    @contextmanager
+    def mailbox_event_scope(self, origin_event_id: str):
+        """Make message writes idempotent for one durable mailbox event."""
+        with self._mailbox_scope_lock:
+            if self._mailbox_scope is not None:
+                raise RuntimeError("Nested mailbox persistence scopes are not supported")
+            self._mailbox_scope = MailboxPersistenceScope(origin_event_id)
+        try:
+            yield
+        finally:
+            with self._mailbox_scope_lock:
+                self._mailbox_scope = None
+
+    @override
+    def create_message(
+        self,
+        session_id: str,
+        agent_id: str,
+        session_message: SessionMessage,
+        **kwargs: Any,
+    ) -> Optional[Dict[str, Any]]:
+        """Attach stable identity and an AgentCore idempotency token in mailbox scope."""
+        with self._mailbox_scope_lock:
+            scope = self._mailbox_scope
+            if scope is None:
+                scoped_message = None
+            else:
+                message_index = scope.message_index
+                scope.message_index += 1
+                scoped_message = (scope.origin_event_id, message_index)
+
+        if scoped_message is None:
+            return super().create_message(
+                session_id,
+                agent_id,
+                session_message,
+                **kwargs,
+            )
+
+        origin_event_id, message_index = scoped_message
+        logical_message_id = f"mailbox:{origin_event_id}:{message_index}"
+        role = session_message.message.get("role", "")
+        metadata = dict(kwargs.pop("metadata", {}) or {})
+        metadata.update({
+            "originEventId": {"stringValue": origin_event_id},
+            "logicalMessageId": {"stringValue": logical_message_id},
+            "visibility": {
+                "stringValue": "internal" if role == "user" else "conversation"
+            },
+        })
+
+        token_material = (
+            f"{self.config.memory_id}\n{session_id}\n"
+            f"{origin_event_id}\n{message_index}"
+        )
+        client_token = hashlib.sha256(token_material.encode("utf-8")).hexdigest()
+        event_name = "before-parameter-build.bedrock-agentcore.CreateEvent"
+        unique_id = f"mailbox-client-token-{client_token}"
+        emitter = self.memory_client.gmdp_client.meta.events
+
+        def inject_idempotency(params, **_):
+            params["clientToken"] = client_token
+            params["extractionMode"] = "SKIP"
+
+        emitter.register_first(event_name, inject_idempotency, unique_id=unique_id)
+        try:
+            return super().create_message(
+                session_id,
+                agent_id,
+                session_message,
+                metadata=metadata,
+                **kwargs,
+            )
+        finally:
+            emitter.unregister(event_name, unique_id=unique_id)
 
     @override
     def sync_agent(self, agent: "Agent", **kwargs: Any) -> None:

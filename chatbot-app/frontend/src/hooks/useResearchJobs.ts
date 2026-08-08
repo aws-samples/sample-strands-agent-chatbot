@@ -8,6 +8,7 @@ const DISCOVERY_WINDOW_MS = 15000
 export function useResearchJobs(sessionId: string, refreshToken = 0) {
   const [jobs, setJobs] = useState<ResearchJob[]>([])
   const [deliveredJobIds, setDeliveredJobIds] = useState<string[]>([])
+  const [snapshotSessionId, setSnapshotSessionId] = useState(sessionId)
   const statusesRef = useRef<Map<string, string> | null>(null)
   const jobsRef = useRef<ResearchJob[]>([])
   const refreshingRef = useRef(false)
@@ -88,7 +89,10 @@ export function useResearchJobs(sessionId: string, refreshToken = 0) {
           current.artifact?.content !== job.artifact?.content
       })
       jobsRef.current = nextJobs
-      if (changed) setJobs(nextJobs)
+      if (changed) {
+        setSnapshotSessionId(requestedSessionId)
+        setJobs(nextJobs)
+      }
     } finally {
       refreshingRef.current = false
       if (pendingRefreshRef.current && sessionRef.current === requestedSessionId) {
@@ -106,6 +110,7 @@ export function useResearchJobs(sessionId: string, refreshToken = 0) {
     invocationCountRef.current = 0
     refreshingRef.current = false
     pendingRefreshRef.current = false
+    setSnapshotSessionId(sessionId)
     setJobs([])
     setDeliveredJobIds([])
     void refresh()
@@ -123,5 +128,10 @@ export function useResearchJobs(sessionId: string, refreshToken = 0) {
     void refresh()
   }, [refresh, refreshToken])
 
-  return { jobs, deliveredJobIds, refresh }
+  return {
+    jobs: snapshotSessionId === sessionId ? jobs : [],
+    deliveredJobIds:
+      snapshotSessionId === sessionId ? deliveredJobIds : [],
+    refresh,
+  }
 }

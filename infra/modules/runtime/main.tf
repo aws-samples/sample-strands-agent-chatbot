@@ -349,6 +349,16 @@ resource "aws_iam_role_policy" "execution_ddb" {
         ]
         Resource = [var.user_data_table_arn]
       }] : [],
+      var.orchestration_table_arn != "" ? [{
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem",
+          "dynamodb:DeleteItem", "dynamodb:TransactWriteItems",
+          "dynamodb:ConditionCheckItem",
+          "dynamodb:Query",
+        ]
+        Resource = [var.orchestration_table_arn]
+      }] : [],
     )
   })
 }
@@ -612,6 +622,9 @@ resource "aws_bedrockagentcore_agent_runtime" "this" {
     },
     var.user_data_table_name != "" ? { USER_DATA_TABLE = var.user_data_table_name } : {},
     var.global_data_table_name != "" ? { GLOBAL_DATA_TABLE = var.global_data_table_name } : {},
+    var.orchestration_table_name != "" ? {
+      SESSION_ORCHESTRATION_TABLE = var.orchestration_table_name
+    } : {},
     var.runtime_type == "orchestrator" ? {
       GATEWAY_URL = var.gateway_url
       REGISTRY_ID = var.registry_id

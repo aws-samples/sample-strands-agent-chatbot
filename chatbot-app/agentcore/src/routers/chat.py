@@ -14,10 +14,13 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from typing import AsyncGenerator, List, Optional
 import asyncio
+import base64
 import logging
 import json
 import os
 import time
+from contextlib import nullcontext
+from datetime import datetime, timezone
 
 from models.schemas import FileContent
 from agent import async_tasks
@@ -35,6 +38,42 @@ registry = ExecutionRegistry()
 _BACKGROUND_RESEARCH_TAG = "background-research-result"
 
 router = APIRouter(tags=["chat"])
+
+
+def _build_background_research_message(report: str) -> str:
+    """Build model input without exposing mailbox correlation identifiers."""
+    return (
+        f"<{_BACKGROUND_RESEARCH_TAG}>\n"
+        "Background research requested earlier has completed. "
+        "The full report is now stored as an artifact. Incorporate "
+        "the result into the ongoing conversation and tell the user "
+        "the report is ready. Do not call tools or start another "
+        "research job.\n\n"
+        f"{report}\n"
+        f"</{_BACKGROUND_RESEARCH_TAG}>"
+    )
+
+
+def _is_mailbox_dispatcher_request(http_request: Request) -> bool:
+    expected_client_id = os.environ.get("M2M_CLIENT_ID")
+    if not expected_client_id:
+        return os.environ.get("ENVIRONMENT", "development") == "development"
+
+    authorization = http_request.headers.get("authorization", "")
+    if not authorization.lower().startswith("bearer "):
+        return False
+    token = authorization.split(" ", 1)[1]
+    try:
+        encoded_payload = token.split(".")[1]
+        encoded_payload += "=" * (-len(encoded_payload) % 4)
+        claims = json.loads(
+            base64.urlsafe_b64decode(encoded_payload.encode("ascii"))
+        )
+    except (IndexError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    # Signature, issuer, expiry, and audience are already checked by the
+    # AgentCore Runtime custom JWT authorizer.
+    return claims.get("client_id") == expected_client_id
 
 
 async def keepalive_stream(
@@ -193,6 +232,38 @@ async def invocations(http_request: Request):
     # Debug: log incoming action for stop signal troubleshooting
     if action:
         logger.info(f"[Invocation] action={action}, thread_id={thread_id}, state_keys={list(state.keys())}")
+
+    if action == "drain_mailbox":
+        if not _is_mailbox_dispatcher_request(http_request):
+            raise HTTPException(status_code=403, detail="Mailbox dispatcher token required")
+        user_id = state.get("user_id")
+        if not user_id or not thread_id:
+            raise HTTPException(
+                status_code=400,
+                detail="thread_id and state.user_id are required",
+            )
+
+        from agent.mailbox import PENDING, PROCESSING, get_mailbox_repository
+        from agent.mailbox_runtime import drain_session_mailbox
+
+        result = await drain_session_mailbox(user_id, thread_id)
+        remaining = await asyncio.to_thread(
+            get_mailbox_repository().list_events,
+            user_id,
+            thread_id,
+        )
+        pending = sum(
+            item.status in (PENDING, PROCESSING)
+            for item in remaining
+        )
+        return {
+            "status": "drained" if pending == 0 else "pending",
+            "processed": result.processed,
+            "retried": result.retried,
+            "dead": result.dead,
+            "acquired": result.acquired,
+            "pending": pending,
+        }
 
     # Warmup — triggers container cold start, Python modules load (TOOL_REGISTRY, etc.)
     if action == "warmup":
@@ -389,15 +460,26 @@ async def _handle_agui_invocation(body: dict, http_request: Request) -> Streamin
         f"disabled_skills={disabled_skills}"
     )
 
-    # Recover reports that were durably completed but whose idle continuation
-    # failed (for example because the process restarted). The next foreground
-    # turn becomes the retry boundary.
-    from agent.research_jobs import load_pending_results
-    pending_research = load_pending_results(user_id, session_id)
+    from agent.mailbox_runtime import mailbox_delivery_enabled
+
+    use_mailbox_delivery = mailbox_delivery_enabled()
+    pending_research = []
+    if use_mailbox_delivery:
+        # A foreground invocation is also a recovery signal. Recreate any
+        # deterministic completion envelopes that predate mailbox delivery;
+        # the coordinator will materialize them as separate assistant turns.
+        from agent.research_jobs import recover_pending_mailbox_events
+
+        recover_pending_mailbox_events(user_id, session_id)
+    else:
+        # Legacy fallback while mailbox delivery is disabled.
+        from agent.research_jobs import load_pending_results
+
+        pending_research = load_pending_results(user_id, session_id)
     if pending_research:
         reports = "\n\n".join(
             (
-                f"<completed-background-research artifact_id=\"{item['artifact']['id']}\">\n"
+                "<completed-background-research>\n"
                 f"{item['artifact']['content']}\n"
                 "</completed-background-research>"
             )
@@ -530,7 +612,17 @@ async def _handle_agui_invocation(body: dict, http_request: Request) -> Streamin
                 if execution.status == ExecutionStatus.RUNNING:
                     execution.status = ExecutionStatus.COMPLETED
                 execution.completed_at = time.time()
+                execution._new_event.set()
                 logger.info(f"[Execution] AG-UI completed {execution.execution_id}, {len(execution.events)} events buffered")
+                if use_mailbox_delivery:
+                    # The foreground run has reached a safe boundary. A
+                    # coordinator holding this session's lease may now append
+                    # one or more asynchronous completion turns.
+                    from agent.mailbox_runtime import drain_session_mailbox
+
+                    asyncio.create_task(
+                        drain_session_mailbox(user_id, session_id)
+                    )
 
         execution.task = asyncio.create_task(run_agui_to_buffer())
 
@@ -590,25 +682,37 @@ async def deliver_research_job(record: dict, artifact: dict) -> None:
                     user_id=user_id,
                     model_id=record.get("modelId") or None,
                 )
+                # Mailbox retries are at-least-once. Keep continuation
+                # generation pure so an ambiguous retry cannot repeat external
+                # tool side effects.
+                tool_registry = getattr(agent.agent, "tool_registry", None)
+                registered_tools = getattr(tool_registry, "registry", None)
+                if isinstance(registered_tools, dict):
+                    registered_tools.clear()
+
+                from agent.research_jobs import _build_artifact_reference
 
                 artifacts = dict(agent.agent.state.get("artifacts") or {})
-                artifacts[artifact["id"]] = artifact
+                artifacts[artifact["id"]] = _build_artifact_reference(
+                    record,
+                    artifact,
+                )
                 agent.agent.state.set("artifacts", artifacts)
                 # Delivery is not successful unless the canonical agent state is
                 # durable. Let sync failures propagate so the job remains ready
                 # for retry instead of being falsely marked delivered.
                 agent.session_manager.sync_agent(agent.agent)
 
-                report = artifact.get("content", "")
-                hidden_message = (
-                    f"<{_BACKGROUND_RESEARCH_TAG} "
-                    f"job_id=\"{record['jobId']}\" artifact_id=\"{artifact['id']}\">\n"
-                    "Background research requested earlier has completed. "
-                    "The full report is now stored as an artifact. Incorporate "
-                    "the result into the ongoing conversation and tell the user "
-                    "the report is ready. Do not start another research job.\n\n"
-                    f"{report}\n"
-                    f"</{_BACKGROUND_RESEARCH_TAG}>"
+                commit_id = record.get("mailboxEventId") or run_id
+                existing_commits = dict(
+                    agent.agent.state.get("mailbox_commits") or {}
+                )
+                if commit_id in existing_commits:
+                    execution.status = ExecutionStatus.COMPLETED
+                    return
+
+                hidden_message = _build_background_research_message(
+                    artifact.get("content", ""),
                 )
                 processor = AGUIStreamEventProcessor(
                     thread_id=session_id,
@@ -620,20 +724,36 @@ async def deliver_research_job(record: dict, artifact: dict) -> None:
                     "run_id": run_id,
                     "model_id": agent.model_id,
                     "session_manager": agent.session_manager,
-                    "background_research_job_id": record["jobId"],
                 }
-                stream = processor.process_stream(
-                    agent.agent,
-                    hidden_message,
-                    session_id=session_id,
-                    invocation_state=invocation_state,
-                    elicitation_bridge=getattr(agent, "elicitation_bridge", None),
+                scope = getattr(agent.session_manager, "mailbox_event_scope", None)
+                scope_context = (
+                    scope(commit_id)
+                    if scope
+                    else nullcontext()
                 )
-                async for sse_chunk in stream:
-                    execution.append_event(
-                        sse_chunk,
-                        _extract_event_type(sse_chunk),
+                with scope_context:
+                    stream = processor.process_stream(
+                        agent.agent,
+                        hidden_message,
+                        session_id=session_id,
+                        invocation_state=invocation_state,
+                        elicitation_bridge=getattr(agent, "elicitation_bridge", None),
                     )
+                    async for sse_chunk in stream:
+                        execution.append_event(
+                            sse_chunk,
+                            _extract_event_type(sse_chunk),
+                        )
+
+                commits = dict(agent.agent.state.get("mailbox_commits") or {})
+                commits[commit_id] = {
+                    "completedAt": datetime.now(timezone.utc).isoformat(),
+                    "sourceId": record["jobId"],
+                }
+                if len(commits) > 100:
+                    commits = dict(list(commits.items())[-100:])
+                agent.agent.state.set("mailbox_commits", commits)
+                agent.session_manager.sync_agent(agent.agent)
                 execution.status = ExecutionStatus.COMPLETED
             except asyncio.CancelledError:
                 execution.status = ExecutionStatus.STOPPED
@@ -660,6 +780,79 @@ async def deliver_research_job(record: dict, artifact: dict) -> None:
                 record["jobId"],
             )
             await asyncio.sleep(0)
+
+
+async def deliver_mailbox_event(event):
+    """Materialize one generic asynchronous result into the conversation."""
+    if event.source.get("type") != "research_job":
+        raise RuntimeError(f"Unsupported async result source: {event.source}")
+
+    from agent.research_jobs import (
+        _build_artifact,
+        _list_jobs,
+        _load_report,
+        mark_delivered,
+    )
+
+    job_id = event.source["id"]
+    record = next(
+        (
+            item
+            for item in _list_jobs(event.user_id, event.session_id)
+            if item.get("jobId") == job_id
+        ),
+        None,
+    )
+    if record is None:
+        raise RuntimeError(f"Research job not found: {job_id}")
+
+    record["mailboxEventId"] = event.event_id
+    report = _load_report(record)
+    artifact = _build_artifact(record, report)
+    await deliver_research_job(record, artifact)
+    mark_delivered(record)
+
+    from agent.mailbox import SessionEvent
+
+    run_id = f"research-delivery-{job_id}"
+    correlation = {
+        **event.correlation,
+        "jobId": job_id,
+        "artifactId": artifact["id"],
+        "runId": run_id,
+    }
+    artifact_metadata = {
+        key: value
+        for key, value in artifact.items()
+        if key != "content"
+    }
+    return [
+        SessionEvent.create(
+            event_id=f"{event.event_id}:artifact",
+            event_type="artifact.upserted",
+            session_id=event.session_id,
+            user_id=event.user_id,
+            origin_event_id=event.event_id,
+            correlation=correlation,
+            payload={
+                "artifact": artifact_metadata,
+                "payloadRef": event.payload_ref,
+            },
+        ),
+        SessionEvent.create(
+            event_id=f"{event.event_id}:assistant",
+            event_type="assistant.turn.completed",
+            session_id=event.session_id,
+            user_id=event.user_id,
+            origin_event_id=event.event_id,
+            correlation=correlation,
+            payload={
+                "executionId": f"{event.session_id}:{run_id}",
+                "logicalMessageId": f"mailbox:{event.event_id}:1",
+                "source": event.source,
+            },
+        ),
+    ]
 
 
 _cleanup_task: Optional[asyncio.Task] = None

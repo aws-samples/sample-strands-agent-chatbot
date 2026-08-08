@@ -51,6 +51,20 @@ export async function POST(request: NextRequest) {
         console.warn(`[API] LOCAL - Session not found: ${sessionId}`)
       }
     } else {
+      const {
+        messageMetadataEnabled,
+        updateMessageMetadataRecord,
+      } = await import('@/lib/message-metadata')
+      if (messageMetadataEnabled()) {
+        await updateMessageMetadataRecord(
+          userId,
+          sessionId,
+          messageId,
+          metadata,
+        )
+        return NextResponse.json({ success: true })
+      }
+
       const { updateSession, getSession } = await import('@/lib/dynamodb-client')
       const session = await getSession(userId, sessionId)
       console.log(`[API] Session found: ${!!session}, metadata: ${JSON.stringify(session?.metadata || null)}`)

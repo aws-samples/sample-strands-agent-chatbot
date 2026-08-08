@@ -31,6 +31,12 @@ export async function DELETE(request: NextRequest) {
 
     console.log(`[API] Deleting session ${sessionId} for user ${userId}`)
 
+    // Fence mailbox delivery before removing the list projection. A background
+    // worker that completes after this point will observe the tombstone and
+    // cancel instead of recreating conversation state.
+    const { tombstoneSessionOrchestration } = await import('@/lib/session-lifecycle')
+    await tombstoneSessionOrchestration(userId, sessionId)
+
     if (userId === 'anonymous') {
       // Anonymous user - delete from local file storage
       if (IS_LOCAL) {

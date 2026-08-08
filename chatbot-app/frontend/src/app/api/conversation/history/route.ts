@@ -22,6 +22,13 @@ let GetParameterCommand: any
 // Cache for MEMORY_ID
 let cachedMemoryId: string | null = null
 
+function eventMetadataString(event: any, key: string): string | undefined {
+  const value = event?.metadata?.[key]
+  if (typeof value === 'string') return value
+  if (typeof value?.stringValue === 'string') return value.stringValue
+  return undefined
+}
+
 async function getMemoryId(): Promise<string | null> {
   // Use environment variable if available
   const envMemoryId = process.env.MEMORY_ID || process.env.NEXT_PUBLIC_MEMORY_ID
@@ -226,9 +233,14 @@ export async function GET(request: NextRequest) {
             continue
           }
 
+          const logicalMessageId = eventMetadataString(event, 'logicalMessageId')
+          const originEventId = eventMetadataString(event, 'originEventId')
           const message: any = {
             ...parsed.message,
-            id: event.eventId || `msg-${sessionId}-${msgIndex}`,
+            id: logicalMessageId || event.eventId || `msg-${sessionId}-${msgIndex}`,
+            ...(logicalMessageId && { logicalMessageId }),
+            ...(event.eventId && { eventId: event.eventId }),
+            ...(originEventId && { originEventId }),
             timestamp: event.eventTime || new Date().toISOString()
           }
           // Extract SDK-persisted metadata (usage + metrics) from message.metadata
@@ -259,9 +271,14 @@ export async function GET(request: NextRequest) {
               const blobMessageData = JSON.parse(blobParsed[0])
 
               if (blobMessageData?.message) {
+                const logicalMessageId = eventMetadataString(event, 'logicalMessageId')
+                const originEventId = eventMetadataString(event, 'originEventId')
                 const message: any = {
                   ...blobMessageData.message,
-                  id: event.eventId || `msg-${sessionId}-${msgIndex}`,
+                  id: logicalMessageId || event.eventId || `msg-${sessionId}-${msgIndex}`,
+                  ...(logicalMessageId && { logicalMessageId }),
+                  ...(event.eventId && { eventId: event.eventId }),
+                  ...(originEventId && { originEventId }),
                   timestamp: event.eventTime || new Date().toISOString()
                 }
                 if (blobMessageData.message.metadata?.usage) {
@@ -299,10 +316,21 @@ export async function GET(request: NextRequest) {
       sessionMetadata = session?.metadata
     }
 
-    // Merge DynamoDB metadata with messages (overrides SDK metadata for backward compat)
-    if (sessionMetadata?.messages) {
+    let messageMetadataRecords: Record<string, any> = {}
+    if (!IS_LOCAL && userId !== 'anonymous') {
+      const { listMessageMetadataRecords } = await import('@/lib/message-metadata')
+      messageMetadataRecords = await listMessageMetadataRecords(userId, sessionId)
+    }
+
+    // Individual orchestration records win. The legacy session metadata map is
+    // retained as a read fallback until old sessions age out.
+    if (sessionMetadata?.messages || Object.keys(messageMetadataRecords).length > 0) {
       messages = messages.map(msg => {
-        const messageMetadata = sessionMetadata.messages[msg.id]
+        const identity = msg.logicalMessageId || msg.id
+        const messageMetadata =
+          messageMetadataRecords[identity] ||
+          sessionMetadata?.messages?.[identity] ||
+          sessionMetadata?.messages?.[msg.eventId]
         if (messageMetadata) {
           return {
             ...msg,
@@ -317,7 +345,11 @@ export async function GET(request: NextRequest) {
         }
         return msg
       })
-      console.log(`[API] Merged metadata for ${Object.keys(sessionMetadata.messages).length} message(s)`)
+      console.log(
+        `[API] Merged individual metadata for ${
+          Object.keys(messageMetadataRecords).length
+        } message(s)`,
+      )
     }
 
     // Synthetic background-research inputs wake the supervisor but are an
