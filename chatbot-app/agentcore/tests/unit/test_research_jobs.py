@@ -1,5 +1,6 @@
 import asyncio
 from copy import deepcopy
+from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -198,6 +199,7 @@ def test_cloud_job_reads_merge_orchestration_and_legacy_rows(monkeypatch):
     )
     monkeypatch.setenv("DYNAMODB_USERS_TABLE", "users-table")
     monkeypatch.setenv("SESSION_ORCHESTRATION_TABLE", "orchestration-table")
+    monkeypatch.setenv("RESEARCH_JOB_LEGACY_READ_ENABLED", "true")
     monkeypatch.setattr(research_jobs.boto3, "resource", lambda *args, **kwargs: resource)
 
     jobs = research_jobs._list_jobs("user-1", "session-1")
@@ -210,6 +212,31 @@ def test_cloud_job_reads_merge_orchestration_and_legacy_rows(monkeypatch):
         ":session_key": "USER#user-1#SESSION#session-1",
         ":prefix": "JOB#",
     }
+
+
+def test_cloud_job_reads_skip_legacy_table_by_default(monkeypatch):
+    orchestration = MagicMock()
+    orchestration.query.return_value = {
+        "Items": [{
+            "jobId": "new-job",
+            "sessionId": "session-1",
+            "userId": "user-1",
+        }],
+    }
+    legacy = MagicMock()
+    resource = MagicMock()
+    resource.Table.side_effect = lambda name: (
+        orchestration if name == "orchestration-table" else legacy
+    )
+    monkeypatch.setenv("DYNAMODB_USERS_TABLE", "users-table")
+    monkeypatch.setenv("SESSION_ORCHESTRATION_TABLE", "orchestration-table")
+    monkeypatch.delenv("RESEARCH_JOB_LEGACY_READ_ENABLED", raising=False)
+    monkeypatch.setattr(research_jobs.boto3, "resource", lambda *args, **kwargs: resource)
+
+    jobs = research_jobs._list_jobs("user-1", "session-1")
+
+    assert [item["jobId"] for item in jobs] == ["new-job"]
+    legacy.query.assert_not_called()
 
 
 def test_completion_mailbox_event_is_small_and_idempotent(monkeypatch):
@@ -332,6 +359,46 @@ def test_recover_pending_job_reenqueues_existing_idempotency_key(monkeypatch):
     assert recovered == ["research-result:job-1"]
     enqueue.assert_called_once_with(record)
     save.assert_called_once_with(record)
+
+
+def test_reconcile_processed_delivery_marks_job_delivered(monkeypatch):
+    from agent.mailbox import MailboxEvent, PROCESSED
+
+    record = {
+        "jobId": "job-1",
+        "userId": "user-1",
+        "sessionId": "session-1",
+        "status": "delivering",
+        "mailboxEventId": "research-result:job-1",
+    }
+    event = replace(
+        MailboxEvent.create(
+            event_id="research-result:job-1",
+            event_type="async_result.ready",
+            session_id="session-1",
+            user_id="user-1",
+            source_type="research_job",
+            source_id="job-1",
+        ),
+        status=PROCESSED,
+    )
+    repository = MagicMock()
+    repository.get_event.return_value = event
+    delivered = MagicMock()
+    monkeypatch.setattr(research_jobs, "_list_jobs", lambda *_: [record])
+    monkeypatch.setattr(research_jobs, "mark_delivered", delivered)
+    monkeypatch.setattr(
+        "agent.mailbox.get_mailbox_repository",
+        lambda: repository,
+    )
+
+    reconciled = research_jobs.reconcile_processed_deliveries(
+        "user-1",
+        "session-1",
+    )
+
+    assert reconciled == 1
+    delivered.assert_called_once_with(record)
 
 
 @pytest.mark.asyncio

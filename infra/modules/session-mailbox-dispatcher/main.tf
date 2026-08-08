@@ -1,5 +1,6 @@
 locals {
   function_name = "${var.project_name}-${var.environment}-session-mailbox-dispatcher"
+  worker_name   = "${local.function_name}-worker"
   zip_path      = "${path.module}/.build/session-mailbox-dispatcher.zip"
 }
 
@@ -36,8 +37,54 @@ resource "aws_iam_role" "this" {
 }
 
 resource "aws_iam_role_policy" "this" {
-  name = "dispatcher"
+  name = "stream-ingress"
   role = aws_iam_role.this.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents",
+        ]
+        Resource = "arn:aws:logs:${var.aws_region}:${var.account_id}:*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "dynamodb:DescribeStream",
+          "dynamodb:GetRecords",
+          "dynamodb:GetShardIterator",
+          "dynamodb:ListStreams",
+        ]
+        Resource = var.orchestration_stream_arn
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["sqs:SendMessage"]
+        Resource = aws_sqs_queue.wake.arn
+      },
+    ]
+  })
+}
+
+resource "aws_iam_role" "worker" {
+  name = "${local.worker_name}-role"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "worker" {
+  name = "queue-worker"
+  role = aws_iam_role.worker.id
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
@@ -58,12 +105,20 @@ resource "aws_iam_role_policy" "this" {
       {
         Effect = "Allow"
         Action = [
-          "dynamodb:DescribeStream",
-          "dynamodb:GetRecords",
-          "dynamodb:GetShardIterator",
-          "dynamodb:ListStreams",
+          "sqs:ReceiveMessage",
+          "sqs:DeleteMessage",
+          "sqs:GetQueueAttributes",
+          "sqs:ChangeMessageVisibility",
         ]
-        Resource = var.orchestration_stream_arn
+        Resource = aws_sqs_queue.wake.arn
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:UpdateItem",
+        ]
+        Resource = var.orchestration_table_arn
       },
     ]
   })
@@ -74,13 +129,45 @@ resource "aws_cloudwatch_log_group" "this" {
   retention_in_days = 14
 }
 
+resource "aws_cloudwatch_log_group" "worker" {
+  name              = "/aws/lambda/${local.worker_name}"
+  retention_in_days = 14
+}
+
+resource "aws_sqs_queue" "wake_dead_letter" {
+  name                      = "${local.function_name}-dlq.fifo"
+  fifo_queue                = true
+  message_retention_seconds = 1209600
+  sqs_managed_sse_enabled   = true
+}
+
+resource "aws_sqs_queue" "wake" {
+  name                       = "${local.function_name}.fifo"
+  fifo_queue                 = true
+  message_retention_seconds  = 345600
+  visibility_timeout_seconds = (var.runtime_request_timeout_seconds + 30) * 6
+  sqs_managed_sse_enabled    = true
+  redrive_policy = jsonencode({
+    deadLetterTargetArn = aws_sqs_queue.wake_dead_letter.arn
+    maxReceiveCount     = 8
+  })
+}
+
+resource "aws_sqs_queue_redrive_allow_policy" "wake_dead_letter" {
+  queue_url = aws_sqs_queue.wake_dead_letter.id
+  redrive_allow_policy = jsonencode({
+    redrivePermission = "byQueue"
+    sourceQueueArns   = [aws_sqs_queue.wake.arn]
+  })
+}
+
 resource "aws_lambda_function" "this" {
   function_name = local.function_name
   role          = aws_iam_role.this.arn
   handler       = "lambda_function.lambda_handler"
   runtime       = "python3.13"
   architectures = ["arm64"]
-  timeout       = 45
+  timeout       = 30
   memory_size   = 256
 
   filename         = data.archive_file.this.output_path
@@ -88,15 +175,44 @@ resource "aws_lambda_function" "this" {
 
   environment {
     variables = {
-      AGENTCORE_RUNTIME_URL = var.agentcore_runtime_url
-      COGNITO_TOKEN_URL     = "${var.cognito_domain_url}/oauth2/token"
-      M2M_SECRET_ARN        = aws_secretsmanager_secret.m2m.arn
+      WAKE_QUEUE_URL = aws_sqs_queue.wake.url
     }
   }
 
   depends_on = [
     aws_cloudwatch_log_group.this,
     aws_iam_role_policy.this,
+  ]
+}
+
+resource "aws_lambda_function" "worker" {
+  function_name = local.worker_name
+  role          = aws_iam_role.worker.arn
+  handler       = "lambda_function.lambda_handler"
+  runtime       = "python3.13"
+  architectures = ["arm64"]
+  timeout       = var.runtime_request_timeout_seconds + 30
+  memory_size   = 256
+
+  filename         = data.archive_file.this.output_path
+  source_code_hash = data.archive_file.this.output_base64sha256
+
+  environment {
+    variables = {
+      AGENTCORE_RUNTIME_URL    = var.agentcore_runtime_url
+      COGNITO_TOKEN_URL        = "${var.cognito_domain_url}/oauth2/token"
+      M2M_SECRET_ARN           = aws_secretsmanager_secret.m2m.arn
+      ORCHESTRATION_TABLE_NAME = var.orchestration_table_name
+      WAKE_QUEUE_URL           = aws_sqs_queue.wake.url
+      RUNTIME_REQUEST_TIMEOUT_SECONDS = tostring(
+        var.runtime_request_timeout_seconds
+      )
+    }
+  }
+
+  depends_on = [
+    aws_cloudwatch_log_group.worker,
+    aws_iam_role_policy.worker,
     aws_secretsmanager_secret_version.m2m,
   ]
 }
@@ -111,4 +227,11 @@ resource "aws_lambda_event_source_mapping" "this" {
   maximum_retry_attempts             = -1
   bisect_batch_on_function_error     = true
   function_response_types            = ["ReportBatchItemFailures"]
+}
+
+resource "aws_lambda_event_source_mapping" "worker" {
+  event_source_arn        = aws_sqs_queue.wake.arn
+  function_name           = aws_lambda_function.worker.arn
+  batch_size              = 10
+  function_response_types = ["ReportBatchItemFailures"]
 }

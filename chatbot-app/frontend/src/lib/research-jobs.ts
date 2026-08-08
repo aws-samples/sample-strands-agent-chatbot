@@ -2,6 +2,7 @@ import fs from 'fs'
 import path from 'path'
 import {
   DynamoDBClient,
+  GetItemCommand,
   QueryCommand,
 } from '@aws-sdk/client-dynamodb'
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3'
@@ -36,6 +37,7 @@ export interface ResearchJob {
   deliveredAt?: string
   error?: string
   deliveryError?: string
+  conversationEpoch?: number
   progress?: {
     stepNumber: number
     content: string
@@ -48,6 +50,33 @@ export interface ResearchJob {
 
 function validSessionId(sessionId: string): boolean {
   return /^[a-zA-Z0-9_-]+$/.test(sessionId)
+}
+
+function legacyJobReadsEnabled(): boolean {
+  return (
+    !ORCHESTRATION_TABLE_NAME ||
+    process.env.RESEARCH_JOB_LEGACY_READ_ENABLED === 'true'
+  )
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  operation: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length)
+  let nextIndex = 0
+  const workers = Array.from(
+    { length: Math.min(concurrency, items.length) },
+    async () => {
+      while (nextIndex < items.length) {
+        const index = nextIndex++
+        results[index] = await operation(items[index])
+      }
+    },
+  )
+  await Promise.all(workers)
+  return results
 }
 
 async function bodyToString(body: any): Promise<string> {
@@ -143,26 +172,88 @@ async function readCloudJobs(sessionId: string, userId: string): Promise<Researc
     } while (exclusiveStartKey)
   }
 
-  let legacyStartKey: Record<string, any> | undefined
-  do {
-    const response = await client.send(new QueryCommand({
-      TableName: USERS_TABLE_NAME,
-      KeyConditionExpression: 'userId = :userId AND begins_with(sk, :prefix)',
-      ExpressionAttributeValues: {
-        ':userId': { S: userId },
-        ':prefix': { S: `RESEARCH_JOB#${sessionId}#` },
-      },
-      ConsistentRead: true,
-      ExclusiveStartKey: legacyStartKey,
-    }))
-    for (const item of response.Items || []) {
-      const job = unmarshall(item) as ResearchJob
-      if (!jobsById.has(job.jobId)) jobsById.set(job.jobId, job)
-    }
-    legacyStartKey = response.LastEvaluatedKey
-  } while (legacyStartKey)
+  if (legacyJobReadsEnabled()) {
+    let legacyStartKey: Record<string, any> | undefined
+    do {
+      const response = await client.send(new QueryCommand({
+        TableName: USERS_TABLE_NAME,
+        KeyConditionExpression: 'userId = :userId AND begins_with(sk, :prefix)',
+        ExpressionAttributeValues: {
+          ':userId': { S: userId },
+          ':prefix': { S: `RESEARCH_JOB#${sessionId}#` },
+        },
+        ConsistentRead: true,
+        ExclusiveStartKey: legacyStartKey,
+      }))
+      for (const item of response.Items || []) {
+        const job = unmarshall(item) as ResearchJob
+        if (!jobsById.has(job.jobId)) jobsById.set(job.jobId, job)
+      }
+      legacyStartKey = response.LastEvaluatedKey
+    } while (legacyStartKey)
+  }
 
   return Array.from(jobsById.values())
+}
+
+export async function getResearchJob(
+  userId: string,
+  sessionId: string,
+  jobId: string,
+  options: { includeContent?: boolean } = {},
+): Promise<ResearchJob | null> {
+  let job: ResearchJob | null = null
+  if (IS_LOCAL || userId === 'anonymous') {
+    job = readLocalJobs(sessionId, userId)
+      .find(item => item.jobId === jobId) || null
+  } else {
+    const client = new DynamoDBClient({ region: AWS_REGION })
+    if (ORCHESTRATION_TABLE_NAME) {
+      const response = await client.send(new GetItemCommand({
+        TableName: ORCHESTRATION_TABLE_NAME,
+        Key: {
+          sessionKey: { S: `USER#${userId}#SESSION#${sessionId}` },
+          recordKey: { S: `JOB#${jobId}` },
+        },
+        ConsistentRead: true,
+      }))
+      if (response.Item) job = unmarshall(response.Item) as ResearchJob
+    }
+    if (!job && legacyJobReadsEnabled()) {
+      const response = await client.send(new GetItemCommand({
+        TableName: USERS_TABLE_NAME,
+        Key: {
+          userId: { S: userId },
+          sk: { S: `RESEARCH_JOB#${sessionId}#${jobId}` },
+        },
+        ConsistentRead: true,
+      }))
+      if (response.Item) job = unmarshall(response.Item) as ResearchJob
+    }
+  }
+
+  if (!job || !options.includeContent) return job
+  try {
+    return await hydrateArtifact(job)
+  } catch (error) {
+    console.error(`[ResearchJobs] Failed to hydrate ${job.jobId}:`, error)
+    return job
+  }
+}
+
+export async function getResearchJobs(
+  userId: string,
+  sessionId: string,
+  jobIds: string[],
+  options: { includeContent?: boolean } = {},
+): Promise<ResearchJob[]> {
+  const uniqueIds = Array.from(new Set(jobIds)).slice(0, 100)
+  const jobs = await mapWithConcurrency(uniqueIds, 10, jobId =>
+    getResearchJob(userId, sessionId, jobId, options),
+  )
+  return jobs
+    .filter((job): job is ResearchJob => job !== null)
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
 }
 
 export async function listResearchJobs(
@@ -178,14 +269,14 @@ export async function listResearchJobs(
     return jobs.sort((a, b) => a.createdAt.localeCompare(b.createdAt))
   }
 
-  const hydrated = await Promise.all(jobs.map(async job => {
+  const hydrated = await mapWithConcurrency(jobs, 4, async job => {
     try {
       return await hydrateArtifact(job)
     } catch (error) {
       console.error(`[ResearchJobs] Failed to hydrate ${job.jobId}:`, error)
       return job
     }
-  }))
+  })
   return hydrated.sort((a, b) => a.createdAt.localeCompare(b.createdAt))
 }
 

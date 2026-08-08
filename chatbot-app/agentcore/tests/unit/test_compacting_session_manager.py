@@ -103,12 +103,13 @@ class TestMailboxPersistenceScope:
             0,
         )
 
-        with manager.mailbox_event_scope("mailbox-event-1"):
+        with manager.mailbox_event_scope("mailbox-event-1", 7):
             result = manager.create_message("session-1", "default", message)
 
         assert result == {"eventId": "stored-1"}
         metadata = parent_create.call_args.kwargs["metadata"]
         assert metadata["originEventId"]["stringValue"] == "mailbox-event-1"
+        assert metadata["conversationEpoch"]["stringValue"] == "7"
         assert metadata["logicalMessageId"]["stringValue"] == (
             "mailbox:mailbox-event-1:0"
         )
@@ -146,6 +147,42 @@ class TestMailboxPersistenceScope:
             ":1"
         )
         assert calls[0].kwargs["metadata"]["visibility"]["stringValue"] == "conversation"
+
+    def test_list_messages_filters_stale_mailbox_epochs(self, manager):
+        repository = MagicMock()
+        repository.get_conversation_epoch.return_value = 3
+        manager.config.filter_restored_tool_context = False
+        manager.memory_client.list_events.return_value = [
+            {"eventId": "foreground"},
+            {
+                "eventId": "stale",
+                "metadata": {
+                    "conversationEpoch": {"stringValue": "2"},
+                },
+            },
+            {
+                "eventId": "current",
+                "metadata": {
+                    "conversationEpoch": {"stringValue": "3"},
+                },
+            },
+        ]
+        manager.converter = MagicMock()
+        manager.converter.events_to_messages.side_effect = (
+            lambda events: [event["eventId"] for event in events]
+        )
+
+        with patch(
+            "agent.mailbox.get_mailbox_repository",
+            return_value=repository,
+        ):
+            messages = manager.list_messages("session-1", "default")
+
+        assert messages == ["foreground", "current"]
+        repository.get_conversation_epoch.assert_called_once_with(
+            "user-1",
+            "session-1",
+        )
 
 class TestCompactionState:
     """Test CompactionState dataclass"""
@@ -1630,4 +1667,3 @@ class TestEndToEndScenarios:
 
         assert manager.compaction_state.checkpoint == 50
         assert manager.compaction_state.summary == "Previous summary"
-

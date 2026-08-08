@@ -15,8 +15,10 @@ Implemented:
 - Research job migration from the users table to orchestration records.
 - Stable logical message identity with legacy event-ID fallback.
 - Session delete tombstones that reject late background delivery.
-- Truncate invalidation for mailbox assistant projections when origin identity
-  is available.
+- Conversation-epoch fencing for truncate across jobs, inbox work, projections,
+  AgentCore Memory restore, and frontend history.
+- Cursor-based incremental OUTBOX consumption.
+- FIFO SQS isolation between DynamoDB Streams and long-running Runtime drains.
 
 Compatibility paths remain for legacy research jobs, message metadata maps,
 and non-research artifacts. General tool artifacts still require the catalog
@@ -127,6 +129,7 @@ terminal projections.
   "userId": "authenticated owner id",
   "createdAt": "ISO-8601",
   "availableAt": "ISO-8601",
+  "conversationEpoch": 0,
   "source": {
     "type": "research_job",
     "id": "job id"
@@ -163,7 +166,7 @@ Record families:
 ```text
 STATE
 INBOX#{eventId}
-OUTBOX#{eventId}
+OUTBOX_V2#{createdAt}#{eventId}
 RUN#{runId}
 JOB#{jobId}
 ARTIFACT#{artifactId}
@@ -187,6 +190,7 @@ leaseEpoch
 leaseUntil
 version
 lastProcessedAt
+conversationEpoch
 ```
 
 Lease acquisition and renewal are conditional on `version` and `leaseEpoch`.
@@ -209,11 +213,14 @@ to be small. A status GSI is added only if measurements show it is necessary.
    tokens and stable logical message metadata.
 8. Coordinator transactionally marks the inbox event processed, updates small
    projections, and creates durable outbox milestones.
-9. Live subscribers receive the outbox milestone and any available transient
+9. Only after acknowledgement succeeds, a post-ack hook updates the producer
+   job projection to `delivered`.
+10. Live subscribers receive the outbox milestone and any available transient
    stream.
 
 The acknowledgement occurs only after canonical AgentCore persistence
-succeeds.
+succeeds. Producer job status is not the delivery commit point; the processed
+INBOX record plus its OUTBOX projections are.
 
 ## Cross-store Recovery
 
@@ -246,6 +253,7 @@ AgentCore Memory event metadata also records:
 logicalMessageId
 originEventId
 visibility
+conversationEpoch
 ```
 
 If the process crashes after the Memory write, retrying the mailbox event does
@@ -277,6 +285,13 @@ ambiguous retry window can repeat a model inference but cannot repeat an
 external tool side effect. Deterministic Memory client tokens prevent duplicate
 transcript events. Exactly-once model execution is not claimed.
 
+Truncate increments `STATE.conversationEpoch`. A continuation checks its
+captured epoch before generation and before committing agent state. Scoped
+Memory messages carry that epoch; backend restore and frontend history exclude
+messages from older epochs. This logical fence covers a Memory write that
+races with physical deletion. Physical cleanup remains a garbage-collection
+concern, not a correctness dependency.
+
 ## Busy and Idle Semantics
 
 ### Idle session
@@ -285,10 +300,14 @@ A pending mailbox event triggers a dispatcher invocation for the same Runtime
 session. The coordinator creates a separate assistant turn and publishes its
 terminal projection.
 
-DynamoDB Streams alone do not wake AgentCore Runtime. The dispatcher must
-obtain a service Cognito token, invoke `drain_mailbox`, and prove that the
-mailbox session belongs to the requested user. Runtime code must not trust an
-arbitrary `state.user_id` supplied by a general client.
+DynamoDB Streams alone do not wake AgentCore Runtime. A short-lived ingress
+Lambda coalesces inserts per session and writes a FIFO SQS wake message. A
+worker Lambda obtains a service Cognito token and invokes `drain_mailbox`.
+FIFO message groups serialize wakes for one session while allowing unrelated
+sessions to drain concurrently. Failed wakes retry through SQS and eventually
+move to a DLQ, so a slow or poisoned session cannot block a DynamoDB stream
+shard. Runtime code must still prove ownership and must not trust an arbitrary
+`state.user_id` supplied by a general client.
 
 ### Busy session
 
@@ -320,6 +339,15 @@ assistant completion as a separate turn.
 Process-local SSE buffering remains an optimization. If it is unavailable
 after a restart, the frontend reloads AgentCore history and DynamoDB
 projections instead of treating replay failure as data loss.
+
+New projections use `OUTBOX_V2#{createdAt}#{eventId}`. The frontend retains a
+server-issued cursor and reads only later keys. Legacy `OUTBOX#` records are
+loaded only on the initial baseline during migration.
+
+Research polling follows the same bounded-read rule: the first baseline and
+new-job discovery query the session job prefix, then active polling reads only
+the known queued/running/delivering job IDs. Artifact hydration uses direct job
+reads and bounded S3 concurrency.
 
 ## Artifact Migration
 
@@ -363,9 +391,11 @@ The target workflows are:
 - Pending asynchronous results targeting a deleted session become cancelled,
   not delivered to a recreated session with the same display title.
 
-The current rollout implements the delete tombstone and mailbox projection
-invalidation. It does not yet perform the full cross-store garbage collection
-described above.
+The current rollout implements delete tombstones and truncate epoch fencing.
+Truncate first advances the epoch, cancels old inbox work and affected jobs,
+then removes Memory events and OUTBOX projections. Retrying this saga is
+fail-closed: another epoch increment is safe. Full physical garbage collection
+of stale Memory, S3, and metadata records remains asynchronous cleanup work.
 
 ## Migration Plan
 
@@ -419,6 +449,7 @@ Exit criteria:
 ### Phase 4: wake dispatcher
 
 - Add DynamoDB Stream to dispatcher integration.
+- Buffer stream wakes in a per-session FIFO SQS queue with a DLQ.
 - Acquire a service Cognito token and invoke `drain_mailbox`.
 - Add ownership validation and wake coalescing.
 
@@ -453,13 +484,16 @@ Feature flags:
 ```text
 SESSION_MAILBOX_WRITE_ENABLED
 SESSION_MAILBOX_DELIVERY_ENABLED
+RESEARCH_JOB_LEGACY_READ_ENABLED
 SESSION_EVENT_PROJECTION_ENABLED
 ARTIFACT_CATALOG_WRITE_ENABLED
 ARTIFACT_CATALOG_READ_ENABLED
 ```
 
-The first two flags are implemented. The remaining names reserve later
-artifact-catalog rollout boundaries and are not active configuration yet.
+The first three flags are implemented. Legacy research reads default off once
+the orchestration table is configured and may be enabled only for a bounded
+migration window. The remaining names reserve later artifact-catalog rollout
+boundaries and are not active configuration yet.
 
 Rollout order is write-only, shadow verification, read enablement, delivery
 enablement, then legacy removal.
@@ -474,6 +508,8 @@ Rollback must not delete mailbox events or catalog entries.
 - Lease expiry and stale-owner acknowledgement.
 - Crash after S3 upload but before catalog commit.
 - Crash after AgentCore message write but before mailbox acknowledgement.
+- Producer job remains non-delivered until mailbox acknowledgement commits.
+- Post-ack job update failure reconciles from a processed inbox event.
 - Busy user turn plus one or more asynchronous completions.
 - Interrupt waiting while an asynchronous result arrives.
 - Stop signal while mailbox work is queued.
@@ -481,5 +517,8 @@ Rollback must not delete mailbox events or catalog entries.
 - Runtime restart before frontend replay.
 - Artifact update version conflict.
 - Session delete while a worker is running.
+- Truncate while a mailbox continuation is writing Memory.
+- Cursor pagination, epoch reset, and legacy OUTBOX baseline.
+- SQS wake retry and per-session coalescing.
 - Old event-ID feedback migration.
 - Internal message exclusion from UI and long-term-memory extraction.

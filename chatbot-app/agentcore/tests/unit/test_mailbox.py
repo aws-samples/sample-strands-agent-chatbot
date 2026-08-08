@@ -5,6 +5,7 @@ import pytest
 from botocore.exceptions import ClientError
 
 from agent.mailbox import (
+    CANCELLED,
     DEAD,
     PENDING,
     PROCESSED,
@@ -12,6 +13,7 @@ from agent.mailbox import (
     FileMailboxRepository,
     MailboxEvent,
     SessionDeletedError,
+    SessionSupersededError,
     SessionEvent,
 )
 
@@ -40,6 +42,8 @@ def test_enqueue_is_idempotent(tmp_path):
     assert [stored.event_id for stored in repository.list_events("user-1", "session-1")] == [
         "event-1"
     ]
+    assert repository.get_event("user-1", "session-1", "event-1") == item
+    assert repository.get_event("user-1", "session-1", "missing") is None
 
 
 def test_deleted_session_rejects_new_events_and_leases(tmp_path):
@@ -55,6 +59,59 @@ def test_deleted_session_rejects_new_events_and_leases(tmp_path):
         lease_seconds=30,
         now=NOW,
     ) is None
+
+
+def test_truncate_epoch_rejects_stale_events_and_accepts_current_work(tmp_path):
+    repository = FileMailboxRepository(tmp_path)
+    stale = event("stale")
+
+    assert repository.advance_conversation_epoch(
+        "user-1",
+        "session-1",
+        now=NOW,
+    ) == 1
+    with pytest.raises(SessionSupersededError):
+        repository.enqueue(stale)
+
+    current = event("current")
+    current.conversation_epoch = 1
+    assert repository.enqueue(current) is True
+
+
+def test_truncate_epoch_fences_claimed_event_and_cancels_it(tmp_path):
+    repository = FileMailboxRepository(tmp_path)
+    repository.enqueue(event("event-1"))
+    lease = repository.acquire_lease(
+        "user-1",
+        "session-1",
+        "worker-1",
+        lease_seconds=30,
+        now=NOW,
+    )
+    claimed = repository.claim_next(
+        "user-1",
+        "session-1",
+        lease,
+        event_lease_seconds=30,
+        now=NOW,
+    )
+
+    repository.advance_conversation_epoch(
+        "user-1",
+        "session-1",
+        now=NOW + timedelta(seconds=1),
+    )
+
+    assert repository.acknowledge(
+        claimed,
+        lease,
+        now=NOW + timedelta(seconds=1),
+    ) is False
+    assert repository.get_event(
+        "user-1",
+        "session-1",
+        "event-1",
+    ).status == CANCELLED
 
 
 def test_tombstone_fences_claimed_event_acknowledgement(tmp_path):
@@ -329,6 +386,22 @@ def test_dynamodb_enqueue_uses_event_key_for_idempotency():
     assert repository.enqueue(item) is False
 
 
+def test_dynamodb_get_event_uses_direct_consistent_read():
+    client = MagicMock()
+    repository = DynamoDBMailboxRepository("mailbox-table", client=client)
+    item = event("event-1")
+    client.get_item.return_value = {
+        "Item": repository._serialize(item.to_record()),
+    }
+
+    assert repository.get_event("user-1", "session-1", "event-1") == item
+    client.get_item.assert_called_once_with(
+        TableName="mailbox-table",
+        Key=repository._key("user-1", "session-1", "INBOX#event-1"),
+        ConsistentRead=True,
+    )
+
+
 def test_dynamodb_enqueue_rejects_tombstoned_session():
     client = MagicMock()
     repository = DynamoDBMailboxRepository("mailbox-table", client=client)
@@ -408,5 +481,7 @@ def test_dynamodb_ack_writes_projections_in_fenced_transaction():
     transaction = client.transact_write_items.call_args.kwargs["TransactItems"]
     assert len(transaction) == 3
     stored = repository._deserialize(transaction[2]["Put"]["Item"])
-    assert stored["recordKey"] == "OUTBOX#event-1:assistant"
+    assert stored["recordKey"] == (
+        "OUTBOX_V2#2026-08-06T12:00:00+00:00#event-1:assistant"
+    )
     assert stored["originEventId"] == "event-1"

@@ -13,10 +13,22 @@ vi.mock('aws-amplify/auth', () => ({
   }),
 }))
 
-function response(events: unknown[]) {
+function response(
+  events: unknown[],
+  options: {
+    cursor?: string
+    conversationEpoch?: number
+    hasMore?: boolean
+  } = {},
+) {
   return Promise.resolve({
     ok: true,
-    json: () => Promise.resolve({ events }),
+    json: () => Promise.resolve({
+      events,
+      cursor: options.cursor ?? 'OUTBOX_V2#',
+      conversationEpoch: options.conversationEpoch ?? 0,
+      hasMore: options.hasMore ?? false,
+    }),
   } as Response)
 }
 
@@ -79,7 +91,7 @@ describe('useSessionEvents', () => {
 
     expect(hook.result.current.events).toEqual([completion])
     expect(fetchMock).toHaveBeenLastCalledWith(
-      '/api/session/events?session_id=session-1',
+      '/api/session/events?session_id=session-1&cursor=OUTBOX_V2%23&epoch=0',
       expect.objectContaining({
         headers: expect.objectContaining({
           Authorization: 'Bearer session-event-token',
@@ -100,7 +112,9 @@ describe('useSessionEvents', () => {
   it('removes a projection after truncate deletes it from durable storage', async () => {
     const fetchMock = vi.fn()
       .mockImplementationOnce(() => response([completion]))
-      .mockImplementationOnce(() => response([]))
+      .mockImplementationOnce(() => response([], {
+        conversationEpoch: 1,
+      }))
     vi.stubGlobal('fetch', fetchMock)
 
     const hook = renderHook(() => useSessionEvents('session-1', true))
@@ -109,6 +123,28 @@ describe('useSessionEvents', () => {
 
     await advance(2000)
 
+    expect(hook.result.current.events).toEqual([])
+  })
+
+  it('refreshes immediately after a truncate mutation version changes', async () => {
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(() => response([completion]))
+      .mockImplementationOnce(() => response([], {
+        conversationEpoch: 1,
+      }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const hook = renderHook(
+      ({ version }) => useSessionEvents('session-1', false, 0, version),
+      { initialProps: { version: 0 } },
+    )
+    await flushAsyncWork()
+    expect(hook.result.current.events).toEqual([completion])
+
+    hook.rerender({ version: 1 })
+    await flushAsyncWork()
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
     expect(hook.result.current.events).toEqual([])
   })
 

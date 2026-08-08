@@ -259,7 +259,7 @@ class TestMailboxDelivery:
         }
         delivered = AsyncMock()
         marked = MagicMock()
-        monkeypatch.setattr(research_jobs, "_list_jobs", lambda *_: [record])
+        monkeypatch.setattr(research_jobs, "_get_job", lambda *_: record)
         monkeypatch.setattr(research_jobs, "_load_report", lambda _: "# Report")
         monkeypatch.setattr(
             research_jobs,
@@ -277,11 +277,12 @@ class TestMailboxDelivery:
             payload_ref={"bucket": "bucket", "key": "report.md"},
         )
 
-        projections = await chat.deliver_mailbox_event(event)
+        result = await chat.deliver_mailbox_event(event)
+        projections = result.session_events
 
         assert record["mailboxEventId"] == "research-result:job-1"
         delivered.assert_awaited_once()
-        marked.assert_called_once_with(record)
+        marked.assert_not_called()
         assert [item.event_type for item in projections] == [
             "artifact.upserted",
             "assistant.turn.completed",
@@ -292,6 +293,8 @@ class TestMailboxDelivery:
         assert projections[1].payload["logicalMessageId"] == (
             "mailbox:research-result:job-1:1"
         )
+        result.after_ack()
+        marked.assert_called_once_with(record)
 
     @pytest.mark.asyncio
     async def test_committed_event_skips_duplicate_agent_generation(
@@ -359,7 +362,7 @@ class TestMailboxDelivery:
             "id": "artifact-1",
             "content_ref": {"path": "/tmp/job-1.md"},
         }
-        assert session_manager.sync_agent.call_count == 1
+        session_manager.sync_agent.assert_not_called()
 
 
 # ============================================================
@@ -556,6 +559,7 @@ class TestLifecycleActions:
             )
         )
         repository = MagicMock()
+        repository.is_session_deleted.return_value = False
         repository.list_events.return_value = []
         monkeypatch.setattr(mailbox_runtime, "drain_session_mailbox", drain)
         monkeypatch.setattr(mailbox, "get_mailbox_repository", lambda: repository)
@@ -587,6 +591,50 @@ class TestLifecycleActions:
             "pending": 0,
         }
         drain.assert_awaited_once_with("user-1", "session-1")
+
+    def test_mailbox_drain_absorbs_deleted_session_wake(
+        self,
+        monkeypatch,
+    ):
+        from agent import mailbox, mailbox_runtime
+        from routers.chat import router
+        from fastapi import FastAPI
+
+        monkeypatch.setenv("M2M_CLIENT_ID", "dispatcher-client")
+        drain = AsyncMock()
+        repository = MagicMock()
+        repository.is_session_deleted.return_value = True
+        monkeypatch.setattr(mailbox_runtime, "drain_session_mailbox", drain)
+        monkeypatch.setattr(mailbox, "get_mailbox_repository", lambda: repository)
+        app = FastAPI()
+        app.include_router(router)
+        client = TestClient(app)
+
+        response = client.post(
+            "/invocations",
+            headers={
+                "Authorization": (
+                    f"Bearer {_unsigned_test_token({'client_id': 'dispatcher-client'})}"
+                )
+            },
+            json={
+                "thread_id": "session-1",
+                "run_id": str(uuid.uuid4()),
+                "state": {"action": "drain_mailbox", "user_id": "user-1"},
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "status": "drained",
+            "processed": 0,
+            "retried": 0,
+            "dead": 0,
+            "acquired": False,
+            "pending": 0,
+            "deleted": True,
+        }
+        drain.assert_not_awaited()
 
     @patch('agent.stop_signal.get_stop_signal_provider')
     def test_stop_sets_signal(self, mock_get_provider):

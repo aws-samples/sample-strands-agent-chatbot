@@ -68,6 +68,7 @@ interface UseChatReturn {
   newChat: () => Promise<void>
   compactSession: () => Promise<void>
   truncateFromMessage: (message: Message) => Promise<void>
+  sessionEventRefreshVersion: number
   sessionId: string
   isLoadingMessages: boolean
   isCompacting: boolean
@@ -181,6 +182,7 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
     }
   })
   const [isForegroundRunActive, setIsForegroundRunActive] = useState(false)
+  const [sessionEventRefreshVersion, setSessionEventRefreshVersion] = useState(0)
 
   // ==================== REFS ====================
   const currentToolExecutionsRef = useRef<ToolExecution[]>([])
@@ -871,6 +873,7 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
 
     try {
       await apiTruncateSession(params)
+      setSessionEventRefreshVersion(version => version + 1)
       console.log('[truncate] Backend truncation complete')
     } catch (error) {
       console.error('[truncate] Error truncating session:', error)
@@ -1211,6 +1214,7 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
     newChat,
     compactSession,
     truncateFromMessage,
+    sessionEventRefreshVersion,
     sessionId,
     isLoadingMessages,
     isCompacting: isCurrentSessionCompacting,

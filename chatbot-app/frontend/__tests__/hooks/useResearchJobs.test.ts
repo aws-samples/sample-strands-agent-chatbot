@@ -20,6 +20,13 @@ function response(jobs: unknown[]) {
   } as Response)
 }
 
+function jobResponse(job: unknown) {
+  return Promise.resolve({
+    ok: true,
+    json: () => Promise.resolve({ job }),
+  } as Response)
+}
+
 async function flushAsyncWork() {
   await act(async () => {
     await Promise.resolve()
@@ -76,13 +83,13 @@ describe('useResearchJobs', () => {
       .mockImplementationOnce(() => response([]))
       .mockImplementationOnce(() => response([runningJob]))
       .mockImplementationOnce(() => response([deliveredJob]))
-      .mockImplementationOnce(() => response([{
+      .mockImplementationOnce(() => jobResponse({
         ...deliveredJob,
         artifact: {
           ...deliveredJob.artifact,
           content: '# Finished report',
         },
-      }]))
+      }))
     vi.stubGlobal('fetch', fetchMock)
 
     const hook = renderHook(
@@ -116,6 +123,14 @@ describe('useResearchJobs', () => {
           Authorization: 'Bearer research-access-token',
         }),
       }),
+    )
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/research/jobs?session_id=session-1&job_ids=job-1',
+      expect.any(Object),
+    )
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/research/jobs?session_id=session-1&job_id=job-1&include_content=true',
+      expect.any(Object),
     )
     expect(hook.result.current.jobs[0]?.artifact?.content).toBe('# Finished report')
     expect(hook.result.current.deliveredJobIds).toEqual(['job-1'])
@@ -206,13 +221,13 @@ describe('useResearchJobs', () => {
   it('hydrates a completed job without keeping fast polling active', async () => {
     const fetchMock = vi.fn()
       .mockImplementationOnce(() => response([completedJob]))
-      .mockImplementationOnce(() => response([{
+      .mockImplementationOnce(() => jobResponse({
         ...completedJob,
         artifact: {
           ...completedJob.artifact,
           content: '# Finished report',
         },
-      }]))
+      }))
     vi.stubGlobal('fetch', fetchMock)
 
     const hook = renderHook(() => useResearchJobs('session-1', 1))

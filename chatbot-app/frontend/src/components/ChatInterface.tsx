@@ -168,6 +168,7 @@ export function ChatInterface() {
     newChat,
     compactSession,
     truncateFromMessage,
+    sessionEventRefreshVersion,
     sessionId,
     isLoadingMessages,
     isCompacting,
@@ -253,6 +254,7 @@ export function ChatInterface() {
     sessionId,
     hasPendingDelivery,
     deliveryVersion,
+    sessionEventRefreshVersion,
   )
   const representedOriginEventIds = useMemo(() => {
     const ids = new Set<string>()

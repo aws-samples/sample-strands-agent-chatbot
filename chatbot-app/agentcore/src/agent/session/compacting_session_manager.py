@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional, Dict, List
 
 from strands.types.session import SessionAgent, SessionMessage
+from strands.types.exceptions import SessionException
 from typing_extensions import override
 
 from bedrock_agentcore.memory.integrations.strands.session_manager import AgentCoreMemorySessionManager
@@ -57,6 +58,7 @@ class CompactionState:
 @dataclass
 class MailboxPersistenceScope:
     origin_event_id: str
+    conversation_epoch: int
     message_index: int = 0
 
 
@@ -182,12 +184,19 @@ class CompactingSessionManager(AgentCoreMemorySessionManager):
         self._api_call_total_ms += elapsed_ms
 
     @contextmanager
-    def mailbox_event_scope(self, origin_event_id: str):
+    def mailbox_event_scope(
+        self,
+        origin_event_id: str,
+        conversation_epoch: int = 0,
+    ):
         """Make message writes idempotent for one durable mailbox event."""
         with self._mailbox_scope_lock:
             if self._mailbox_scope is not None:
                 raise RuntimeError("Nested mailbox persistence scopes are not supported")
-            self._mailbox_scope = MailboxPersistenceScope(origin_event_id)
+            self._mailbox_scope = MailboxPersistenceScope(
+                origin_event_id,
+                conversation_epoch,
+            )
         try:
             yield
         finally:
@@ -210,7 +219,11 @@ class CompactingSessionManager(AgentCoreMemorySessionManager):
             else:
                 message_index = scope.message_index
                 scope.message_index += 1
-                scoped_message = (scope.origin_event_id, message_index)
+                scoped_message = (
+                    scope.origin_event_id,
+                    scope.conversation_epoch,
+                    message_index,
+                )
 
         if scoped_message is None:
             return super().create_message(
@@ -220,12 +233,13 @@ class CompactingSessionManager(AgentCoreMemorySessionManager):
                 **kwargs,
             )
 
-        origin_event_id, message_index = scoped_message
+        origin_event_id, conversation_epoch, message_index = scoped_message
         logical_message_id = f"mailbox:{origin_event_id}:{message_index}"
         role = session_message.message.get("role", "")
         metadata = dict(kwargs.pop("metadata", {}) or {})
         metadata.update({
             "originEventId": {"stringValue": origin_event_id},
+            "conversationEpoch": {"stringValue": str(conversation_epoch)},
             "logicalMessageId": {"stringValue": logical_message_id},
             "visibility": {
                 "stringValue": "internal" if role == "user" else "conversation"
@@ -256,6 +270,62 @@ class CompactingSessionManager(AgentCoreMemorySessionManager):
             )
         finally:
             emitter.unregister(event_name, unique_id=unique_id)
+
+    @staticmethod
+    def _event_conversation_epoch(event: Dict[str, Any]) -> Optional[int]:
+        value = (event.get("metadata") or {}).get("conversationEpoch")
+        if isinstance(value, dict):
+            value = value.get("stringValue") or value.get("numberValue")
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            logger.warning("Ignoring invalid conversationEpoch metadata: %r", value)
+            return None
+
+    @override
+    def list_messages(
+        self,
+        session_id: str,
+        agent_id: str,
+        limit: Optional[int] = None,
+        offset: int = 0,
+        **kwargs: Any,
+    ) -> List[SessionMessage]:
+        """Restore messages while fencing stale mailbox continuations."""
+        if session_id != self.config.session_id:
+            raise SessionException(
+                f"Session ID mismatch: expected {self.config.session_id}, got {session_id}"
+            )
+
+        from agent.mailbox import get_mailbox_repository
+
+        current_epoch = get_mailbox_repository().get_conversation_epoch(
+            self.user_id or self.config.actor_id,
+            session_id,
+        )
+        max_results = (limit + offset) if limit else 10_000
+        events = self.memory_client.list_events(
+            memory_id=self.config.memory_id,
+            actor_id=self.config.actor_id,
+            session_id=session_id,
+            max_results=max_results,
+        )
+        events = [
+            event
+            for event in events
+            if (
+                (event_epoch := self._event_conversation_epoch(event)) is None
+                or event_epoch >= current_epoch
+            )
+        ]
+        messages = self.converter.events_to_messages(events)
+        if self.config.filter_restored_tool_context:
+            messages = self._filter_restored_tool_context(messages)
+        if limit is not None:
+            return messages[offset:offset + limit]
+        return messages[offset:]
 
     @override
     def sync_agent(self, agent: "Agent", **kwargs: Any) -> None:

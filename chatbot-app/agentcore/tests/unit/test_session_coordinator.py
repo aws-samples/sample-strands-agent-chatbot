@@ -9,7 +9,7 @@ from agent.mailbox import (
     MailboxEvent,
     SessionEvent,
 )
-from agent.session_coordinator import SessionCoordinator
+from agent.session_coordinator import MailboxHandlerResult, SessionCoordinator
 
 
 def mailbox_event(event_id: str, event_type: str = "test.ready") -> MailboxEvent:
@@ -72,6 +72,93 @@ async def test_handler_projections_are_committed_with_acknowledgement(tmp_path):
         item.event_id
         for item in repository.list_session_events("user-1", "session-1")
     ] == ["event-1:assistant"]
+
+
+@pytest.mark.asyncio
+async def test_post_ack_hook_runs_after_projections_are_durable(tmp_path):
+    repository = FileMailboxRepository(tmp_path)
+    repository.enqueue(mailbox_event("event-1"))
+    observed = []
+
+    async def handler(event):
+        projection = SessionEvent.create(
+            event_id=f"{event.event_id}:assistant",
+            event_type="assistant.turn.completed",
+            session_id=event.session_id,
+            user_id=event.user_id,
+            origin_event_id=event.event_id,
+        )
+
+        def after_ack():
+            observed.extend(
+                item.event_id
+                for item in repository.list_session_events(
+                    event.user_id,
+                    event.session_id,
+                )
+            )
+
+        return MailboxHandlerResult(
+            session_events=[projection],
+            after_ack=after_ack,
+        )
+
+    result = await SessionCoordinator(
+        repository,
+        {"test.ready": handler},
+    ).drain("user-1", "session-1", owner="worker-1")
+
+    assert result.processed == 1
+    assert result.post_ack_failed == 0
+    assert observed == ["event-1:assistant"]
+
+
+@pytest.mark.asyncio
+async def test_post_ack_failure_does_not_retry_durable_delivery(tmp_path):
+    repository = FileMailboxRepository(tmp_path)
+    repository.enqueue(mailbox_event("event-1"))
+
+    async def handler(event):
+        def after_ack():
+            raise RuntimeError("job status unavailable")
+
+        return MailboxHandlerResult(after_ack=after_ack)
+
+    result = await SessionCoordinator(
+        repository,
+        {"test.ready": handler},
+    ).drain("user-1", "session-1", owner="worker-1")
+
+    assert result.processed == 1
+    assert result.retried == 0
+    assert result.post_ack_failed == 1
+    assert repository.get_event("user-1", "session-1", "event-1").status == PROCESSED
+
+
+@pytest.mark.asyncio
+async def test_post_ack_hook_retries_projection_updates(tmp_path):
+    repository = FileMailboxRepository(tmp_path)
+    repository.enqueue(mailbox_event("event-1"))
+    attempts = 0
+
+    async def handler(event):
+        def after_ack():
+            nonlocal attempts
+            attempts += 1
+            if attempts < 3:
+                raise RuntimeError("temporarily unavailable")
+
+        return MailboxHandlerResult(after_ack=after_ack)
+
+    result = await SessionCoordinator(
+        repository,
+        {"test.ready": handler},
+        post_ack_attempts=3,
+    ).drain("user-1", "session-1", owner="worker-1")
+
+    assert result.processed == 1
+    assert result.post_ack_failed == 0
+    assert attempts == 3
 
 
 @pytest.mark.asyncio
