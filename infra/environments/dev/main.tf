@@ -360,6 +360,8 @@ module "session_mailbox_dispatcher" {
   source_dir   = "${local.root_dir}/infra/lambda/session-mailbox-dispatcher"
 
   orchestration_stream_arn = module.data.session_orchestration_stream_arn
+  orchestration_table_arn  = module.data.session_orchestration_table_arn
+  orchestration_table_name = module.data.session_orchestration_table_name
   agentcore_runtime_url    = module.runtime_orchestrator.runtime_invocation_url
   cognito_domain_url       = module.auth.domain_url
   m2m_client_id            = module.auth.m2m_client_id

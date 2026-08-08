@@ -357,9 +357,9 @@ class AGUIStreamEventFormatter:
         self._run_id: Optional[str] = None
         self._current_message_id: Optional[str] = None
         self._message_open: bool = False
-        # tool_call_ids for which TOOL_CALL_START has already been emitted.
-        # Subsequent tool_use events with the same id stream args-only updates.
         self._started_tool_calls: set[str] = set()
+        self._ended_tool_calls: set[str] = set()
+        self._tool_call_names: Dict[str, str] = {}
 
     # ------------------------------------------------------------------ #
     # Internal helpers                                                     #
@@ -394,6 +394,10 @@ class AGUIStreamEventFormatter:
           response            -> TextMessageStartEvent + TextMessageContentEvent
           complete            -> (TextMessageEndEvent if message open, else TextMessage if message kwarg provided) + RunFinishedEvent
           tool_use            -> ToolCallStartEvent + ToolCallArgsEvent + ToolCallEndEvent
+          tool_call_start     -> ToolCallStartEvent
+          tool_call_args      -> ToolCallArgsEvent
+          tool_call_end       -> ToolCallEndEvent
+          tool_call_name_update -> CustomEvent(name='tool_call_name_update')
           tool_result         -> ToolCallResultEvent
           error               -> RunErrorEvent
           <all others>        -> CustomEvent(name=<original_type>, value=<payload>)
@@ -406,6 +410,10 @@ class AGUIStreamEventFormatter:
             "complete":    self._format_complete,
             "stop":        self._format_stop,
             "tool_use":    self._format_tool_use,
+            "tool_call_start": self._format_tool_call_start,
+            "tool_call_args": self._format_tool_call_args,
+            "tool_call_end": self._format_tool_call_end,
+            "tool_call_name_update": self._format_tool_call_name_update,
             "tool_result": self._format_tool_result,
             "error":       self._format_error,
         }
@@ -421,6 +429,9 @@ class AGUIStreamEventFormatter:
         self._initial_run_id = None  # consume once; subsequent calls (shouldn't happen) get a fresh uuid
         self._message_open = False
         self._current_message_id = None
+        self._started_tool_calls.clear()
+        self._ended_tool_calls.clear()
+        self._tool_call_names.clear()
         return self._encode(RunStartedEvent(
             type=EventType.RUN_STARTED,
             thread_id=self._thread_id,
@@ -512,8 +523,7 @@ class AGUIStreamEventFormatter:
         return result
 
     def _format_tool_use(self, event_type: str = "tool_use", **kwargs) -> str:
-        # Accept either format_event("tool_use", tool_use={...})
-        # or     format_event("tool_use", toolUseId=..., name=..., input=...)
+        """Format a complete tool call for non-streaming compatibility paths."""
         tool_use = kwargs.get("tool_use")
         if not isinstance(tool_use, dict):
             tool_use = kwargs
@@ -521,42 +531,118 @@ class AGUIStreamEventFormatter:
         tool_name: str = tool_use.get("name", "unknown")
         tool_input = tool_use.get("input", {})
 
-        # Unwrap skill_executor so SSE consumers see the effective tool name,
-        # not the Progressive Disclosure wrapper. Needs the populated
-        # tool_input, so only meaningful on the second emission.
         wire_tool_name = tool_name
         if tool_name == "skill_executor" and isinstance(tool_input, dict):
-            inner = tool_input.get("tool_name")
+            inner = (
+                tool_input.get("tool_name")
+                or tool_input.get("script_name")
+                or tool_input.get("skill_name")
+                or "skill"
+            )
             if isinstance(inner, str) and inner:
                 wire_tool_name = inner
 
-        # The processor calls us twice per tool_use: first on registration
-        # with empty input, then again once the model has streamed the
-        # arguments. Emit START only on the populated call so the wire
-        # carries the unwrapped name; emit ARGS and END on every call so
-        # consumers still see incremental state.
-        has_input = isinstance(tool_input, dict) and bool(tool_input)
         result = ""
-        if tool_use_id not in self._started_tool_calls:
-            if has_input or tool_name != "skill_executor":
-                result += self._close_open_message()
-                result += self._encode(ToolCallStartEvent(
-                    type=EventType.TOOL_CALL_START,
-                    tool_call_id=tool_use_id,
-                    tool_call_name=wire_tool_name,
-                    parent_message_id=None,
-                ))
-                self._started_tool_calls.add(tool_use_id)
-        result += self._encode(ToolCallArgsEvent(
-            type=EventType.TOOL_CALL_ARGS,
+        result += self._format_tool_call_start(
+            tool_call_id=tool_use_id,
+            tool_call_name=wire_tool_name,
+        )
+        result += self._format_tool_call_name_update(
+            tool_call_id=tool_use_id,
+            tool_call_name=wire_tool_name,
+        )
+        result += self._format_tool_call_args(
             tool_call_id=tool_use_id,
             delta=json.dumps(tool_input),
-        ))
-        result += self._encode(ToolCallEndEvent(
-            type=EventType.TOOL_CALL_END,
-            tool_call_id=tool_use_id,
-        ))
+        )
+        result += self._format_tool_call_end(tool_call_id=tool_use_id)
         return result
+
+    def _format_tool_call_start(
+        self,
+        event_type: str = "tool_call_start",
+        **kwargs,
+    ) -> str:
+        tool_call_id = kwargs.get("tool_call_id") or kwargs.get("toolCallId")
+        tool_call_name = (
+            kwargs.get("tool_call_name")
+            or kwargs.get("toolCallName")
+            or "unknown"
+        )
+        if not tool_call_id or tool_call_id in self._started_tool_calls:
+            return ""
+
+        self._started_tool_calls.add(tool_call_id)
+        self._tool_call_names[tool_call_id] = tool_call_name
+        self._ended_tool_calls.discard(tool_call_id)
+        return self._close_open_message() + self._encode(ToolCallStartEvent(
+            type=EventType.TOOL_CALL_START,
+            tool_call_id=tool_call_id,
+            tool_call_name=tool_call_name,
+            parent_message_id=None,
+        ))
+
+    def _format_tool_call_args(
+        self,
+        event_type: str = "tool_call_args",
+        **kwargs,
+    ) -> str:
+        tool_call_id = kwargs.get("tool_call_id") or kwargs.get("toolCallId")
+        delta = kwargs.get("delta", "")
+        if (
+            not tool_call_id
+            or tool_call_id not in self._started_tool_calls
+            or tool_call_id in self._ended_tool_calls
+            or not delta
+        ):
+            return ""
+        return self._encode(ToolCallArgsEvent(
+            type=EventType.TOOL_CALL_ARGS,
+            tool_call_id=tool_call_id,
+            delta=delta,
+        ))
+
+    def _format_tool_call_end(
+        self,
+        event_type: str = "tool_call_end",
+        **kwargs,
+    ) -> str:
+        tool_call_id = kwargs.get("tool_call_id") or kwargs.get("toolCallId")
+        if (
+            not tool_call_id
+            or tool_call_id not in self._started_tool_calls
+            or tool_call_id in self._ended_tool_calls
+        ):
+            return ""
+        self._ended_tool_calls.add(tool_call_id)
+        return self._encode(ToolCallEndEvent(
+            type=EventType.TOOL_CALL_END,
+            tool_call_id=tool_call_id,
+        ))
+
+    def _format_tool_call_name_update(
+        self,
+        event_type: str = "tool_call_name_update",
+        **kwargs,
+    ) -> str:
+        tool_call_id = kwargs.get("tool_call_id") or kwargs.get("toolCallId")
+        tool_call_name = kwargs.get("tool_call_name") or kwargs.get("toolCallName")
+        if (
+            not tool_call_id
+            or not tool_call_name
+            or tool_call_id not in self._started_tool_calls
+            or self._tool_call_names.get(tool_call_id) == tool_call_name
+        ):
+            return ""
+        self._tool_call_names[tool_call_id] = tool_call_name
+        return self._encode(CustomEvent(
+            type=EventType.CUSTOM,
+            name="tool_call_name_update",
+            value={
+                "toolCallId": tool_call_id,
+                "toolCallName": tool_call_name,
+            },
+        ))
 
     def _format_tool_result(self, event_type: str = "tool_result", **kwargs) -> str:
         # Accept either format_event("tool_result", tool_result={...})

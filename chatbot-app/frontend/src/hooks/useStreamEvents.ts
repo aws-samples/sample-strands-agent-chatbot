@@ -91,6 +91,30 @@ export const useStreamEvents = ({
   // not at initialization, to avoid stale closure issues with streamingIdRef
   const textBuffer = useTextBuffer({ flushInterval: 50 })
 
+  const updateToolExecution = useCallback((
+    toolCallId: string,
+    update: (tool: ToolExecution) => ToolExecution,
+  ) => {
+    const updatedExecutions = currentToolExecutionsRef.current.map(tool =>
+      tool.id === toolCallId ? update(tool) : tool
+    )
+    currentToolExecutionsRef.current = updatedExecutions
+
+    setSessionState(prev => ({
+      ...prev,
+      toolExecutions: updatedExecutions,
+    }))
+    setMessages(prevMessages => prevMessages.map(message => {
+      if (!message.isToolMessage || !message.toolExecutions) return message
+      return {
+        ...message,
+        toolExecutions: message.toolExecutions.map(tool =>
+          tool.id === toolCallId ? update(tool) : tool
+        ),
+      }
+    }))
+  }, [currentToolExecutionsRef, setMessages, setSessionState])
+
   const consumeAssistantTurnBoundary = useCallback(() => {
     if (!pendingAssistantTurnBoundaryRef.current) return {}
     pendingAssistantTurnBoundaryRef.current = false
@@ -371,6 +395,8 @@ export const useStreamEvents = ({
         id: event.toolCallId,
         toolName: event.toolCallName,
         toolInput: normalizedInput,
+        toolInputRaw: '',
+        toolInputState: 'streaming',
         reasoning: [],
         isComplete: false,
         isExpanded: true
@@ -404,8 +430,23 @@ export const useStreamEvents = ({
 
   const handleToolCallArgsEvent = useCallback((event: ToolCallArgsEvent) => {
     const current = toolInputAccumulatorRef.current[event.toolCallId] || ''
-    toolInputAccumulatorRef.current[event.toolCallId] = current + event.delta
-  }, [toolInputAccumulatorRef])
+    const accumulated = current + event.delta
+    toolInputAccumulatorRef.current[event.toolCallId] = accumulated
+
+    let parsedInput: any
+    try {
+      parsedInput = JSON.parse(accumulated)
+    } catch {
+      parsedInput = undefined
+    }
+
+    updateToolExecution(event.toolCallId, tool => ({
+      ...tool,
+      ...(parsedInput === undefined ? {} : { toolInput: parsedInput }),
+      toolInputRaw: accumulated,
+      toolInputState: 'streaming',
+    }))
+  }, [toolInputAccumulatorRef, updateToolExecution])
 
   const handleToolCallEndEvent = useCallback((event: ToolCallEndEvent) => {
     const accumulated = toolInputAccumulatorRef.current[event.toolCallId] || ''
@@ -420,26 +461,55 @@ export const useStreamEvents = ({
 
     const normalizedInput = parsedInput === null || parsedInput === undefined ? {} : parsedInput
 
-    const updatedExecutions = currentToolExecutionsRef.current.map(tool =>
-      tool.id === event.toolCallId ? { ...tool, toolInput: normalizedInput } : tool
-    )
-    currentToolExecutionsRef.current = updatedExecutions
-
-    setSessionState(prev => ({
-      ...prev,
-      toolExecutions: updatedExecutions
+    updateToolExecution(event.toolCallId, tool => ({
+      ...tool,
+      toolInput: normalizedInput,
+      toolInputRaw: accumulated,
+      toolInputState: 'complete',
     }))
+  }, [toolInputAccumulatorRef, updateToolExecution])
 
-    setMessages(prevMessages => prevMessages.map(msg => {
-      if (msg.isToolMessage && msg.toolExecutions) {
-        const updatedToolExecutions = msg.toolExecutions.map(tool =>
-          tool.id === event.toolCallId ? { ...tool, toolInput: normalizedInput } : tool
-        )
-        return { ...msg, toolExecutions: updatedToolExecutions }
+  const handleToolCallNameUpdateEvent = useCallback((event: CustomEvent) => {
+    const value = (event as any).value
+    const toolCallId = value?.toolCallId
+    const toolCallName = value?.toolCallName
+    if (!toolCallId || !toolCallName) return
+
+    if (swarmModeRef.current.isActive && swarmModeRef.current.agentSteps.length > 0) {
+      const stepIndex = swarmModeRef.current.agentSteps.length - 1
+      const currentStep = swarmModeRef.current.agentSteps[stepIndex]
+      const toolCalls = [...(currentStep.toolCalls || [])]
+      let runningIndex = -1
+      for (let index = toolCalls.length - 1; index >= 0; index -= 1) {
+        if (toolCalls[index].status === 'running') {
+          runningIndex = index
+          break
+        }
       }
-      return msg
+      if (runningIndex >= 0) {
+        toolCalls[runningIndex] = {
+          ...toolCalls[runningIndex],
+          toolName: toolCallName,
+        }
+        swarmModeRef.current.agentSteps[stepIndex] = {
+          ...currentStep,
+          toolCalls,
+        }
+      }
+    }
+
+    updateToolExecution(toolCallId, tool => ({
+      ...tool,
+      toolName: toolCallName,
     }))
-  }, [toolInputAccumulatorRef, currentToolExecutionsRef, setSessionState, setMessages])
+    if (isA2ATool(toolCallName) && sessionId && startPollingRef.current) {
+      startPollingRef.current(sessionId)
+    }
+    setUIState(prev => ({
+      ...prev,
+      agentStatus: getAgentStatusForTool(toolCallName),
+    }))
+  }, [sessionId, setUIState, startPollingRef, updateToolExecution])
 
   const handleToolCallResultEvent = useCallback((event: ToolCallResultEvent) => {
     // AG-UI: content is a JSON string: '{"result":"...","metadata":{...},"images":[...],"status":"..."}'
@@ -544,7 +614,15 @@ export const useStreamEvents = ({
 
     const updatedExecutions = currentToolExecutionsRef.current.map(tool =>
       tool.id === event.toolCallId
-        ? { ...tool, toolResult: toolOutput, metadata: toolMetadata, images: filteredImages, isComplete: true, isCancelled }
+        ? {
+            ...tool,
+            toolInputState: 'complete' as const,
+            toolResult: toolOutput,
+            metadata: toolMetadata,
+            images: filteredImages,
+            isComplete: true,
+            isCancelled,
+          }
         : tool
     )
 
@@ -584,7 +662,14 @@ export const useStreamEvents = ({
         if (msg.isToolMessage && msg.toolExecutions) {
           const updatedToolExecutions = msg.toolExecutions.map(tool =>
             tool.id === event.toolCallId
-              ? { ...tool, toolResult: toolOutput, metadata: toolMetadata, images: filteredImages, isComplete: true }
+              ? {
+                  ...tool,
+                  toolInputState: 'complete' as const,
+                  toolResult: toolOutput,
+                  metadata: toolMetadata,
+                  images: filteredImages,
+                  isComplete: true,
+                }
               : tool
           )
           return {
@@ -1511,6 +1596,9 @@ export const useStreamEvents = ({
             case 'reasoning':
               handleReasoningEvent(customEvent)
               break
+            case 'tool_call_name_update':
+              handleToolCallNameUpdateEvent(customEvent)
+              break
             case 'interrupt':
               handleInterruptEvent(customEvent)
               break
@@ -1607,6 +1695,7 @@ export const useStreamEvents = ({
     handleToolCallStartEvent,
     handleToolCallArgsEvent,
     handleToolCallEndEvent,
+    handleToolCallNameUpdateEvent,
     handleToolCallResultEvent,
     handleCompleteEvent,
     handleInitEvent,

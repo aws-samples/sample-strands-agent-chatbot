@@ -154,9 +154,9 @@ const TextFilePreview = React.forwardRef<HTMLDivElement, FilePreviewProps>(
       const reader = new FileReader()
       reader.onload = (e) => {
         const text = e.target?.result as string
-        setPreview(text.slice(0, 50) + (text.length > 50 ? "..." : ""))
+        setPreview(text.slice(0, 50) + (file.size > 50 ? "..." : ""))
       }
-      reader.readAsText(file)
+      reader.readAsText(file.slice(0, 64))
     }, [file])
 
     if (compact) {

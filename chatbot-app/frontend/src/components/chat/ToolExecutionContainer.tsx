@@ -681,7 +681,20 @@ export const ToolExecutionContainer = React.memo<ToolExecutionContainerProps>(({
   // Helper: render expanded detail for a single tool execution
   const renderExpandedDetail = (toolExecution: ToolExecution) => (
     <div className="ml-4 mt-1 mb-2 border-l-2 border-muted pl-3 space-y-2 animate-fade-in">
-      {toolExecution.toolInput && Object.keys(toolExecution.toolInput).length > 0 && (
+      {toolExecution.toolInputState === 'streaming' && !toolExecution.toolInputRaw && (
+        <div className="flex items-center gap-2 py-1 text-caption text-muted-foreground">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          <span>Preparing parameters...</span>
+        </div>
+      )}
+      {toolExecution.toolInputState === 'streaming' && toolExecution.toolInputRaw && (
+        <div className="text-label">
+          <JsonDisplay data={toolExecution.toolInputRaw} maxLines={4} label="Input" />
+        </div>
+      )}
+      {toolExecution.toolInputState !== 'streaming' &&
+        toolExecution.toolInput &&
+        Object.keys(toolExecution.toolInput).length > 0 && (
         <div className="text-label">
           <JsonDisplay data={toolExecution.toolInput} maxLines={4} label="Input" />
         </div>
@@ -943,8 +956,11 @@ export const ToolExecutionContainer = React.memo<ToolExecutionContainerProps>(({
     if (!nextTool) return false
 
     if (tool.id !== nextTool.id) return false
+    if (tool.toolName !== nextTool.toolName) return false
     if (tool.isComplete !== nextTool.isComplete) return false
     if (tool.toolResult !== nextTool.toolResult) return false
+    if (tool.toolInputState !== nextTool.toolInputState) return false
+    if (tool.toolInputRaw !== nextTool.toolInputRaw) return false
 
     const prevInput = JSON.stringify(tool.toolInput || {})
     const nextInput = JSON.stringify(nextTool.toolInput || {})

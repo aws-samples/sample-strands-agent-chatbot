@@ -20,6 +20,13 @@ function response(jobs: unknown[]) {
   } as Response)
 }
 
+function jobResponse(job: unknown) {
+  return Promise.resolve({
+    ok: true,
+    json: () => Promise.resolve({ job }),
+  } as Response)
+}
+
 async function flushAsyncWork() {
   await act(async () => {
     await Promise.resolve()
@@ -50,6 +57,17 @@ const deliveredJob = {
   },
 }
 
+const completedJob = {
+  ...runningJob,
+  status: 'completed',
+  updatedAt: '2026-08-06T00:00:02Z',
+  artifact: {
+    id: 'research-tool-1',
+    type: 'research',
+    title: 'Report',
+  },
+}
+
 describe('useResearchJobs', () => {
   beforeEach(() => {
     vi.useFakeTimers()
@@ -65,13 +83,13 @@ describe('useResearchJobs', () => {
       .mockImplementationOnce(() => response([]))
       .mockImplementationOnce(() => response([runningJob]))
       .mockImplementationOnce(() => response([deliveredJob]))
-      .mockImplementationOnce(() => response([{
+      .mockImplementationOnce(() => jobResponse({
         ...deliveredJob,
         artifact: {
           ...deliveredJob.artifact,
           content: '# Finished report',
         },
-      }]))
+      }))
     vi.stubGlobal('fetch', fetchMock)
 
     const hook = renderHook(
@@ -81,11 +99,14 @@ describe('useResearchJobs', () => {
 
     await flushAsyncWork()
     expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(hook.result.current.isActive).toBe(false)
 
     hook.rerender({ invocationCount: 1 })
     await flushAsyncWork()
     expect(fetchMock).toHaveBeenCalledTimes(2)
     expect(hook.result.current.jobs[0]?.status).toBe('running')
+    expect(hook.result.current.isActive).toBe(true)
+    expect(hook.result.current.hasPendingDelivery).toBe(false)
 
     await act(async () => {
       vi.advanceTimersByTime(2000)
@@ -103,8 +124,19 @@ describe('useResearchJobs', () => {
         }),
       }),
     )
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/research/jobs?session_id=session-1&job_ids=job-1',
+      expect.any(Object),
+    )
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/research/jobs?session_id=session-1&job_id=job-1&include_content=true',
+      expect.any(Object),
+    )
     expect(hook.result.current.jobs[0]?.artifact?.content).toBe('# Finished report')
     expect(hook.result.current.deliveredJobIds).toEqual(['job-1'])
+    expect(hook.result.current.isActive).toBe(false)
+    expect(hook.result.current.hasPendingDelivery).toBe(false)
+    expect(hook.result.current.deliveryVersion).toBe(1)
   })
 
   it('keeps polling during invocation discovery when the first lookup is empty', async () => {
@@ -124,6 +156,7 @@ describe('useResearchJobs', () => {
     hook.rerender({ invocationCount: 1 })
     await flushAsyncWork()
     expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(hook.result.current.isActive).toBe(true)
 
     await act(async () => {
       vi.advanceTimersByTime(2000)
@@ -133,6 +166,82 @@ describe('useResearchJobs', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(3)
     expect(hook.result.current.jobs[0]?.status).toBe('running')
+  })
+
+  it('ends discovery polling when a new invocation never gets a job row', async () => {
+    const fetchMock = vi.fn(() => response([]))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const hook = renderHook(
+      ({ invocationCount }) => useResearchJobs('session-1', invocationCount),
+      { initialProps: { invocationCount: 0 } },
+    )
+    await flushAsyncWork()
+
+    hook.rerender({ invocationCount: 1 })
+    await flushAsyncWork()
+    expect(hook.result.current.isActive).toBe(true)
+
+    for (let tick = 0; tick < 8; tick += 1) {
+      await act(async () => {
+        vi.advanceTimersByTime(2000)
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+    }
+
+    expect(hook.result.current.isActive).toBe(false)
+    expect(hook.result.current.hasPendingDelivery).toBe(false)
+    const callsAfterDiscovery = fetchMock.mock.calls.length
+    await act(async () => {
+      vi.advanceTimersByTime(10000)
+      await Promise.resolve()
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(callsAfterDiscovery)
+  })
+
+  it('treats invocations present at session load as a historical baseline', async () => {
+    const fetchMock = vi.fn(() => response([]))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const hook = renderHook(() => useResearchJobs('session-1', 3))
+    await flushAsyncWork()
+
+    expect(hook.result.current.isActive).toBe(false)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      vi.advanceTimersByTime(30000)
+      await Promise.resolve()
+    })
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('hydrates a completed job without keeping fast polling active', async () => {
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(() => response([completedJob]))
+      .mockImplementationOnce(() => jobResponse({
+        ...completedJob,
+        artifact: {
+          ...completedJob.artifact,
+          content: '# Finished report',
+        },
+      }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const hook = renderHook(() => useResearchJobs('session-1', 1))
+    await flushAsyncWork()
+
+    expect(hook.result.current.jobs[0]?.artifact?.content).toBe('# Finished report')
+    expect(hook.result.current.isActive).toBe(false)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+
+    await act(async () => {
+      vi.advanceTimersByTime(10000)
+      await Promise.resolve()
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
   it('hides the previous session snapshot immediately when switching sessions', async () => {
@@ -152,5 +261,6 @@ describe('useResearchJobs', () => {
 
     expect(hook.result.current.jobs).toEqual([])
     expect(hook.result.current.deliveredJobIds).toEqual([])
+    expect(hook.result.current.isActive).toBe(false)
   })
 })

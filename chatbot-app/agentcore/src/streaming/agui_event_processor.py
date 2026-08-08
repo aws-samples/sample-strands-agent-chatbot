@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import time
 import logging
@@ -30,6 +31,8 @@ class AGUIStreamEventProcessor:
         self.current_user_id = None
         self.current_run_id = run_id
         self.tool_use_registry = {}
+        self._streamed_tool_calls = {}
+        self._active_streamed_tool_id = None
         self.partial_response_text = ""  # Track partial response for graceful abort
         self.tool_use_started = False  # Track if tool_use has been emitted (to prevent duplicate assistant messages)
 
@@ -86,6 +89,169 @@ class AGUIStreamEventProcessor:
         """Get current timestamp in ISO format"""
         from datetime import datetime
         return datetime.now().isoformat()
+
+    @staticmethod
+    def _extract_partial_json_string_field(
+        serialized_input: str,
+        field_name: str,
+    ) -> str | None:
+        """Read a completed string field before the surrounding JSON is complete."""
+        key = json.dumps(field_name)
+        key_index = serialized_input.find(key)
+        if key_index < 0:
+            return None
+
+        colon_index = serialized_input.find(":", key_index + len(key))
+        if colon_index < 0:
+            return None
+
+        value_start = colon_index + 1
+        while (
+            value_start < len(serialized_input)
+            and serialized_input[value_start].isspace()
+        ):
+            value_start += 1
+
+        try:
+            value, _ = json.JSONDecoder().raw_decode(serialized_input[value_start:])
+        except (json.JSONDecodeError, TypeError):
+            return None
+        return value if isinstance(value, str) and value else None
+
+    async def _ensure_streamed_tool_call(
+        self,
+        tool_use_id: str,
+        tool_name: str,
+        *,
+        emit_start: bool = True,
+    ) -> str:
+        """Register a tool call and emit its start event exactly once."""
+        if not tool_use_id or not tool_name:
+            return ""
+
+        call = self._streamed_tool_calls.get(tool_use_id)
+        if call is None:
+            call = {
+                "name": tool_name,
+                "input": "",
+                "effective_name": (
+                    None if tool_name == "skill_executor" else tool_name
+                ),
+                "forwarded_input": "",
+                "started": False,
+            }
+            self._streamed_tool_calls[tool_use_id] = call
+            self.seen_tool_uses.add(tool_use_id)
+            self.tool_use_registry[tool_use_id] = {
+                "tool_name": tool_name,
+                "tool_use_id": tool_use_id,
+                "session_id": self.current_session_id,
+                "input": {},
+            }
+
+            if self.current_session_id:
+                try:
+                    from utils.tool_execution_context import tool_context_manager
+
+                    await tool_context_manager.create_context(
+                        tool_use_id,
+                        tool_name,
+                        self.current_session_id,
+                    )
+                except ImportError:
+                    pass
+        else:
+            call["name"] = tool_name
+
+        self._active_streamed_tool_id = tool_use_id
+        self.tool_use_started = True
+        if not emit_start:
+            return ""
+
+        start_event = self.formatter.format_event(
+            "tool_call_start",
+            tool_call_id=tool_use_id,
+            tool_call_name=call["effective_name"] or tool_name,
+        )
+        if start_event:
+            call["started"] = True
+        return start_event
+
+    def _start_streamed_tool_call(
+        self,
+        tool_use_id: str,
+        effective_name: str,
+    ) -> str:
+        call = self._streamed_tool_calls.get(tool_use_id)
+        if call is None or call.get("started") or not effective_name:
+            return ""
+
+        call["effective_name"] = effective_name
+        start_event = self.formatter.format_event(
+            "tool_call_start",
+            tool_call_id=tool_use_id,
+            tool_call_name=effective_name,
+        )
+        if start_event:
+            call["started"] = True
+        return start_event
+
+    def _forward_streamed_tool_input(self, tool_use_id: str) -> str:
+        call = self._streamed_tool_calls.get(tool_use_id)
+        if call is None or not call.get("started"):
+            return ""
+
+        serialized_input = call.get("input", "")
+        forwarded_input = call.get("forwarded_input", "")
+        if not serialized_input or serialized_input == forwarded_input:
+            return ""
+
+        delta = (
+            serialized_input[len(forwarded_input):]
+            if serialized_input.startswith(forwarded_input)
+            else serialized_input
+        )
+        call["forwarded_input"] = serialized_input
+        return self.formatter.format_event(
+            "tool_call_args",
+            tool_call_id=tool_use_id,
+            delta=delta,
+        )
+
+    def _finish_streamed_tool_call(self, tool_use_id: str) -> str:
+        """Finalize input state and emit the matching end event."""
+        call = self._streamed_tool_calls.get(tool_use_id)
+        if call is None:
+            return ""
+
+        serialized_input = call.get("input", "")
+        try:
+            parsed_input = json.loads(serialized_input) if serialized_input else {}
+        except (json.JSONDecodeError, TypeError):
+            parsed_input = {}
+
+        if tool_use_id in self.tool_use_registry:
+            self.tool_use_registry[tool_use_id]["input"] = parsed_input
+
+        result = ""
+        if not call.get("started"):
+            effective_name = (
+                parsed_input.get("tool_name")
+                or parsed_input.get("script_name")
+                or parsed_input.get("skill_name")
+                or "skill"
+            )
+            result += self._start_streamed_tool_call(
+                tool_use_id,
+                effective_name,
+            )
+        result += self._forward_streamed_tool_input(tool_use_id)
+        self._active_streamed_tool_id = None
+        result += self.formatter.format_event(
+            "tool_call_end",
+            tool_call_id=tool_use_id,
+        )
+        return result
 
     @property
     def stop_signal_provider(self):
@@ -287,6 +453,9 @@ class AGUIStreamEventProcessor:
 
         # Reset seen tool uses for each new stream
         self.seen_tool_uses.clear()
+        self.tool_use_registry.clear()
+        self._streamed_tool_calls.clear()
+        self._active_streamed_tool_id = None
 
         # Reset partial response tracking for this stream
         self.partial_response_text = ""
@@ -602,96 +771,74 @@ class AGUIStreamEventProcessor:
                         # Small delay to allow progress events to be processed
                         await asyncio.sleep(0.02)
 
-                # Handle callback events - ignore current_tool_use from delta events
+                # Legacy callback wrapper. Current Strands releases emit typed
+                # current_tool_use events separately, so there is nothing to relay here.
                 elif event.get("callback"):
-                    # Ignore current_tool_use from callback since it's incomplete
-                    # We only want to process tool_use when it's fully completed
                     continue
 
-                # Handle tool use events - only process when input looks complete
+                # Stream tool arguments as the model writes them. Strands exposes
+                # both the exact delta and the cumulative serialized input.
                 elif event.get("current_tool_use"):
                     tool_use = event["current_tool_use"]
                     tool_use_id = tool_use.get("toolUseId")
                     tool_name = tool_use.get("name")
-                    tool_input = tool_use.get("input", "")
+                    if not tool_use_id or not tool_name:
+                        continue
 
-                    # Only process if input looks complete (valid JSON or empty for no-param tools)
-                    should_process = False
-                    processed_input = None
+                    start_event = await self._ensure_streamed_tool_call(
+                        tool_use_id,
+                        tool_name,
+                        emit_start=tool_name != "skill_executor",
+                    )
+                    if start_event:
+                        yield start_event
 
-                    # Handle empty input case
-                    if tool_input == "" or tool_input == "{}":
-                        # Empty string or empty JSON object
-                        # Emit to frontend so it can show "Preparing..." state
-                        logger.debug(f"[Tool Use Event] Empty input for {tool_name} - emitting for frontend to show preparing state")
-                        should_process = True
-                        processed_input = {}
-                    else:
-                        # Check if input is valid JSON (complete)
-                        try:
-                            import json
-                            # Handle case where input might already be parsed
-                            if isinstance(tool_input, str):
-                                parsed_input = json.loads(tool_input)
-                                should_process = True
-                                processed_input = parsed_input  # Use parsed input
-                                logger.debug(f"[Tool Use Event] Parsed input for {tool_name} - keys: {list(parsed_input.keys()) if isinstance(parsed_input, dict) else 'not a dict'}")
-                            elif isinstance(tool_input, dict):
-                                # Already parsed
-                                should_process = True
-                                processed_input = tool_input
-                                logger.debug(f"[Tool Use Event] Dict input received for {tool_name} - keys: {list(tool_input.keys())}")
-                            else:
-                                should_process = False
-                                logger.debug(f"[Tool Use Event] Unexpected input type: {type(tool_input).__name__}")
-                        except json.JSONDecodeError as e:
-                            # Input is still incomplete (streaming in progress) - this is normal, skip silently
-                            should_process = False
-                            logger.debug(f"[Tool Use Event] Incomplete input for {tool_name} (streaming): {str(e)[:100]}")
+                    call = self._streamed_tool_calls[tool_use_id]
+                    cumulative_input = tool_use.get("input", "")
+                    delta = (
+                        ((event.get("delta") or {}).get("toolUse") or {}).get("input")
+                    )
 
-                    if should_process and tool_use_id:
-                        # Check if this is a new tool or parameter update
-                        is_new_tool = tool_use_id not in self.seen_tool_uses
-                        is_parameter_update = (not is_new_tool and
-                                             processed_input is not None and
-                                             len(processed_input) > 0)
+                    if isinstance(cumulative_input, dict):
+                        cumulative_input = json.dumps(cumulative_input)
+                    if not isinstance(cumulative_input, str):
+                        cumulative_input = ""
 
-                        if is_new_tool or is_parameter_update:
-                            # Mark as seen for new tools
-                            if is_new_tool:
-                                self.seen_tool_uses.add(tool_use_id)
-                                logger.debug(f"[Tool Use Event] New tool use registered: {tool_name} ({tool_use_id})")
+                    previous_input = call.get("input", "")
+                    if not isinstance(delta, str):
+                        delta = (
+                            cumulative_input[len(previous_input):]
+                            if cumulative_input.startswith(previous_input)
+                            else cumulative_input
+                        )
+                    call["input"] = (
+                        cumulative_input
+                        if cumulative_input
+                        else previous_input + delta
+                    )
 
-                            # Create a copy of tool_use with processed input (don't modify original)
-                            tool_use_copy = {
-                                "toolUseId": tool_use_id,
-                                "name": tool_name,
-                                "input": processed_input
-                            }
+                    if tool_name == "skill_executor" and not call.get("started"):
+                        effective_name = (
+                            self._extract_partial_json_string_field(
+                                call["input"],
+                                "tool_name",
+                            )
+                            or self._extract_partial_json_string_field(
+                                call["input"],
+                                "script_name",
+                            )
+                        )
+                        if effective_name:
+                            start_event = self._start_streamed_tool_call(
+                                tool_use_id,
+                                effective_name,
+                            )
+                            if start_event:
+                                yield start_event
 
-                            # Create tool execution context for new tools
-                            if is_new_tool and tool_name and self.current_session_id:
-                                try:
-                                    from utils.tool_execution_context import tool_context_manager
-                                    await tool_context_manager.create_context(tool_use_id, tool_name, self.current_session_id)
-                                except ImportError:
-                                    pass
-
-                            # Register tool info for later result processing (for new tools)
-                            if is_new_tool and tool_name:
-                                self.tool_use_registry[tool_use_id] = {
-                                    'tool_name': tool_name,
-                                    'tool_use_id': tool_use_id,
-                                    'session_id': self.current_session_id,
-                                    'input': processed_input
-                                }
-
-                            # Yield event (new tool or parameter update)
-                            logger.debug(f"[Tool Use Event] Emitting tool_use event for {tool_name} with {len(processed_input)} parameter(s)")
-                            yield self.formatter.format_event("tool_use", tool_use=tool_use_copy)
-                            self.tool_use_started = True  # Mark that tool_use was emitted
-
-                            await asyncio.sleep(0.1)
+                    args_event = self._forward_streamed_tool_input(tool_use_id)
+                    if args_event:
+                        yield args_event
 
                 # Handle tool streaming events (from async generator tools)
                 elif event.get("tool_stream_event"):
@@ -785,7 +932,32 @@ class AGUIStreamEventProcessor:
                 # Format: {"event": {"metadata": {"usage": {"inputTokens": N, ...}, ...}}}
                 elif event.get("event") and isinstance(event.get("event"), dict):
                     raw_chunk = event["event"]
-                    if "metadata" in raw_chunk:
+                    content_start = (
+                        raw_chunk.get("contentBlockStart", {})
+                        .get("start", {})
+                        .get("toolUse")
+                    )
+                    if content_start:
+                        tool_use_id = content_start.get("toolUseId")
+                        tool_name = content_start.get("name")
+                        if tool_use_id and tool_name:
+                            start_event = await self._ensure_streamed_tool_call(
+                                tool_use_id,
+                                tool_name,
+                                emit_start=tool_name != "skill_executor",
+                            )
+                            if start_event:
+                                yield start_event
+                    elif (
+                        "contentBlockStop" in raw_chunk
+                        and self._active_streamed_tool_id
+                    ):
+                        end_event = self._finish_streamed_tool_call(
+                            self._active_streamed_tool_id
+                        )
+                        if end_event:
+                            yield end_event
+                    elif "metadata" in raw_chunk:
                         metadata = raw_chunk["metadata"]
                         usage = metadata.get("usage", {})
                         input_tokens = usage.get("inputTokens", 0)

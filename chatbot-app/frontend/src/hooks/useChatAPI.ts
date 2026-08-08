@@ -1,4 +1,4 @@
-import { useCallback, useRef, useEffect } from 'react'
+import { useCallback, useRef, useEffect, useState } from 'react'
 import { Message, ToolExecution } from '@/types/chat'
 import { AGUIStreamEvent, ChatUIState, AGUI_EVENT_TYPES } from '@/types/events'
 import { getApiUrl } from '@/config/environment'
@@ -8,6 +8,7 @@ import { buildToolMaps, createToolExecution } from '@/utils/messageParser'
 import { isSessionTimedOut, getLastActivity, updateLastActivity, clearSessionData, triggerWarmup, generateSessionId } from '@/config/session'
 import { isA2ATool } from './usePolling'
 import { useSSEReconnect } from './useSSEReconnect'
+import { arrayBufferToBase64 } from '@/lib/base64'
 
 /**
  * Process swarm message content blocks in order to preserve text/tool interleaving.
@@ -191,6 +192,7 @@ interface UseChatAPIReturn {
   ) => Promise<boolean>
   cleanup: () => void
   sendStopSignal: () => Promise<boolean>
+  hasStoppableRun: boolean
   loadSession: (sessionId: string) => Promise<{ preferences: SessionPreferences | null; messages: Message[] }>
 }
 
@@ -211,6 +213,7 @@ export const useChatAPI = ({
   const abortRef = useRef<{ unsubscribe: () => void } | null>(null)
   const sessionIdRef = useRef<string | null>(null)
   const activeRunIdRef = useRef<string | null>(null)
+  const [hasStoppableRun, setHasStoppableRun] = useState(false)
   // Read through a ref: adding conciseMode to sendMessage's deps would rebuild
   // it whenever the toggle flips, and useChat's queue flush closes over it.
   const conciseModeRef = useRef(conciseMode)
@@ -511,7 +514,7 @@ export const useChatAPI = ({
         if (files && files.length > 0) {
           for (const file of files) {
             const arrayBuffer = await file.arrayBuffer()
-            const base64 = btoa(new Uint8Array(arrayBuffer).reduce((d, b) => d + String.fromCharCode(b), ''))
+            const base64 = arrayBufferToBase64(arrayBuffer)
             contentParts.push({
               type: 'binary',
               mimeType: file.type || 'application/octet-stream',
@@ -524,6 +527,7 @@ export const useChatAPI = ({
         const threadId = sessionIdRef.current ?? crypto.randomUUID()
         requestRunId = crypto.randomUUID()
         activeRunIdRef.current = requestRunId
+        setHasStoppableRun(true)
         const aguiBody = JSON.stringify({
           threadId,
           runId: requestRunId,
@@ -729,6 +733,7 @@ export const useChatAPI = ({
         // no run to target and only logged "No active run available to stop".
         if (activeRunIdRef.current === requestRunId && !endedAtInterrupt) {
           activeRunIdRef.current = null
+          setHasStoppableRun(false)
         }
         onSuccess?.()
       }
@@ -809,6 +814,7 @@ export const useChatAPI = ({
       onError?.(errorMessage)
       if (activeRunIdRef.current === requestRunId) {
         activeRunIdRef.current = null
+        setHasStoppableRun(false)
       }
     }
   }, [handleStreamEvent, setUIState, setMessages, onSessionCreated, currentModelId, currentTemperature, reconnect])
@@ -1405,6 +1411,7 @@ export const useChatAPI = ({
       abortRef.current = null
       if (activeRunIdRef.current === currentRunId) {
         activeRunIdRef.current = null
+        setHasStoppableRun(false)
       }
       logger.debug('Stop signal sent to backend')
       return true
@@ -1424,6 +1431,7 @@ export const useChatAPI = ({
     replayExecution,
     cleanup,
     sendStopSignal,
+    hasStoppableRun,
     loadSession,
     isReconnecting: reconnect.isReconnecting,
     reconnectAttempt: reconnect.reconnectAttempt,

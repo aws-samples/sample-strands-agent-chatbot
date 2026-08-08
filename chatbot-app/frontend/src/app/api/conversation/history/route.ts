@@ -150,7 +150,14 @@ export async function GET(request: NextRequest) {
         console.log(`[API] Retrieved ${pageEvents.length} events (total: ${allEvents.length})${nextToken ? ', fetching more...' : ''}`)
       } while (nextToken)
 
-      const events = allEvents
+      const { getSessionConversationEpoch } = await import('@/lib/session-events')
+      const conversationEpoch = await getSessionConversationEpoch(userId, sessionId)
+      const events = allEvents.filter(event => {
+        const rawEpoch = eventMetadataString(event, 'conversationEpoch')
+        if (rawEpoch === undefined) return true
+        const eventEpoch = Number(rawEpoch)
+        return Number.isFinite(eventEpoch) && eventEpoch >= conversationEpoch
+      })
       console.log(`[API] Retrieved ${events.length} total events from AgentCore Memory`)
 
       // Convert AgentCore Memory events to chat messages

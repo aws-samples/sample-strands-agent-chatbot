@@ -152,6 +152,7 @@ export function ChatInterface() {
     isConnected,
     isTyping,
     agentStatus,
+    turnControl,
     currentReasoning,
     sendMessage,
     replayExecution,
@@ -162,9 +163,12 @@ export function ChatInterface() {
     removeQueuedMessage,
     clearQueuedMessages,
     releaseQueue,
+    interruptWithQueuedMessage,
+    sendQueuedMessageNow,
     newChat,
     compactSession,
     truncateFromMessage,
+    sessionEventRefreshVersion,
     sessionId,
     isLoadingMessages,
     isCompacting,
@@ -238,11 +242,20 @@ export function ChatInterface() {
     }
     return invocationIds.size
   }, [groupedMessages])
-  const { jobs: researchJobs } = useResearchJobs(
+  const {
+    jobs: researchJobs,
+    hasPendingDelivery,
+    deliveryVersion,
+  } = useResearchJobs(
     sessionId,
     researchInvocationCount,
   )
-  const { events: sessionEvents } = useSessionEvents(sessionId)
+  const { events: sessionEvents } = useSessionEvents(
+    sessionId,
+    hasPendingDelivery,
+    deliveryVersion,
+    sessionEventRefreshVersion,
+  )
   const representedOriginEventIds = useMemo(() => {
     const ids = new Set<string>()
     for (const group of groupedMessages) {
@@ -989,6 +1002,15 @@ export function ChatInterface() {
           onRemove={removeQueuedMessage}
           onSendNow={releaseQueue}
           onDiscardAll={clearQueuedMessages}
+          actionMode={
+            turnControl.canInterrupt
+              ? 'interrupt'
+              : !turnControl.isBusy
+                ? 'send'
+                : null
+          }
+          onInterrupt={interruptWithQueuedMessage}
+          onSendMessageNow={sendQueuedMessageNow}
         />
 
         {/* Chat Input Area */}
@@ -996,6 +1018,7 @@ export function ChatInterface() {
           selectedFiles={selectedFiles}
           setSelectedFiles={setSelectedFiles}
           agentStatus={isCompacting ? 'compacting' : agentStatus}
+          isBusy={turnControl.isBusy}
           isVoiceActive={isVoiceActive}
           isVoiceSupported={isVoiceSupported}
           isCanvasOpen={isCanvasOpen}

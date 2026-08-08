@@ -13,15 +13,36 @@ vi.mock('aws-amplify/auth', () => ({
   }),
 }))
 
-function response(events: unknown[]) {
+function response(
+  events: unknown[],
+  options: {
+    cursor?: string
+    conversationEpoch?: number
+    hasMore?: boolean
+  } = {},
+) {
   return Promise.resolve({
     ok: true,
-    json: () => Promise.resolve({ events }),
+    json: () => Promise.resolve({
+      events,
+      cursor: options.cursor ?? 'OUTBOX_V2#',
+      conversationEpoch: options.conversationEpoch ?? 0,
+      hasMore: options.hasMore ?? false,
+    }),
   } as Response)
 }
 
 async function flushAsyncWork() {
   await act(async () => {
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+  })
+}
+
+async function advance(ms: number) {
+  await act(async () => {
+    vi.advanceTimersByTime(ms)
     await Promise.resolve()
     await Promise.resolve()
     await Promise.resolve()
@@ -62,20 +83,15 @@ describe('useSessionEvents', () => {
       .mockImplementationOnce(() => response([completion]))
     vi.stubGlobal('fetch', fetchMock)
 
-    const hook = renderHook(() => useSessionEvents('session-1'))
+    const hook = renderHook(() => useSessionEvents('session-1', true))
     await flushAsyncWork()
     expect(hook.result.current.events).toEqual([])
 
-    await act(async () => {
-      vi.advanceTimersByTime(2000)
-      await Promise.resolve()
-      await Promise.resolve()
-      await Promise.resolve()
-    })
+    await advance(2000)
 
     expect(hook.result.current.events).toEqual([completion])
     expect(fetchMock).toHaveBeenLastCalledWith(
-      '/api/session/events?session_id=session-1',
+      '/api/session/events?session_id=session-1&cursor=OUTBOX_V2%23&epoch=0',
       expect.objectContaining({
         headers: expect.objectContaining({
           Authorization: 'Bearer session-event-token',
@@ -87,7 +103,7 @@ describe('useSessionEvents', () => {
   it('surfaces initial projections so the consumer can close the history race', async () => {
     vi.stubGlobal('fetch', vi.fn(() => response([completion])))
 
-    const hook = renderHook(() => useSessionEvents('session-1'))
+    const hook = renderHook(() => useSessionEvents('session-1', true))
     await flushAsyncWork()
 
     expect(hook.result.current.events).toEqual([completion])
@@ -96,20 +112,39 @@ describe('useSessionEvents', () => {
   it('removes a projection after truncate deletes it from durable storage', async () => {
     const fetchMock = vi.fn()
       .mockImplementationOnce(() => response([completion]))
-      .mockImplementationOnce(() => response([]))
+      .mockImplementationOnce(() => response([], {
+        conversationEpoch: 1,
+      }))
     vi.stubGlobal('fetch', fetchMock)
 
-    const hook = renderHook(() => useSessionEvents('session-1'))
+    const hook = renderHook(() => useSessionEvents('session-1', true))
     await flushAsyncWork()
     expect(hook.result.current.events).toEqual([completion])
 
-    await act(async () => {
-      vi.advanceTimersByTime(2000)
-      await Promise.resolve()
-      await Promise.resolve()
-      await Promise.resolve()
-    })
+    await advance(2000)
 
+    expect(hook.result.current.events).toEqual([])
+  })
+
+  it('refreshes immediately after a truncate mutation version changes', async () => {
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(() => response([completion]))
+      .mockImplementationOnce(() => response([], {
+        conversationEpoch: 1,
+      }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const hook = renderHook(
+      ({ version }) => useSessionEvents('session-1', false, 0, version),
+      { initialProps: { version: 0 } },
+    )
+    await flushAsyncWork()
+    expect(hook.result.current.events).toEqual([completion])
+
+    hook.rerender({ version: 1 })
+    await flushAsyncWork()
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
     expect(hook.result.current.events).toEqual([])
   })
 
@@ -129,5 +164,94 @@ describe('useSessionEvents', () => {
     hook.rerender({ sessionId: 'session-2' })
 
     expect(hook.result.current.events).toEqual([])
+  })
+
+  it('does not poll periodically without a pending delivery', async () => {
+    const fetchMock = vi.fn(() => response([]))
+    vi.stubGlobal('fetch', fetchMock)
+
+    renderHook(() => useSessionEvents('session-1'))
+    await flushAsyncWork()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    await advance(60000)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not refresh an idle session on window focus', async () => {
+    const fetchMock = vi.fn(() => response([]))
+    vi.stubGlobal('fetch', fetchMock)
+
+    renderHook(() => useSessionEvents('session-1'))
+    await flushAsyncWork()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    window.dispatchEvent(new Event('focus'))
+    await flushAsyncWork()
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('polls immediately when pending delivery becomes active', async () => {
+    const fetchMock = vi.fn(() => response([]))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const hook = renderHook(
+      ({ active }) => useSessionEvents('session-1', active),
+      { initialProps: { active: false } },
+    )
+    await flushAsyncWork()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    hook.rerender({ active: true })
+    await flushAsyncWork()
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+
+    await advance(2000)
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+
+  it('refreshes once when a delivery completes between job polls', async () => {
+    const fetchMock = vi.fn(() => response([]))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const hook = renderHook(
+      ({ version }) => useSessionEvents('session-1', false, version),
+      { initialProps: { version: 0 } },
+    )
+    await flushAsyncWork()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    hook.rerender({ version: 1 })
+    await flushAsyncWork()
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+
+    await advance(60000)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('pauses while hidden and refreshes immediately when visible again', async () => {
+    const fetchMock = vi.fn(() => response([]))
+    vi.stubGlobal('fetch', fetchMock)
+
+    renderHook(() => useSessionEvents('session-1'))
+    await flushAsyncWork()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      value: 'hidden',
+    })
+    document.dispatchEvent(new Event('visibilitychange'))
+    await advance(60000)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      value: 'visible',
+    })
+    document.dispatchEvent(new Event('visibilitychange'))
+    await flushAsyncWork()
+    expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 })

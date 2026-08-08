@@ -55,6 +55,8 @@ export interface UseMessageQueueReturn {
   enqueue: (message: Omit<QueuedMessage, 'id'>) => void
   remove: (id: string) => void
   clear: () => void
+  /** Move a message to the front so it is the next turn dispatched. */
+  prioritize: (id: string, sessionId: string) => boolean
   /**
    * Send the next queued message for `sessionId` if it is safe to do so.
    * Must be called after React has committed the finishing turn's events, so
@@ -91,11 +93,12 @@ export function useMessageQueue({ send }: UseMessageQueueProps): UseMessageQueue
   const holdReasonRef = useRef<QueueHoldReason | null>(null)
 
   const updateQueue = useCallback((next: (prev: QueuedMessage[]) => QueuedMessage[]) => {
-    setQueue(prev => {
-      const value = next(prev)
-      queueRef.current = value
-      return value
-    })
+    // queueRef is the authority for imperative flush operations. Commit it
+    // synchronously so a send rejection cannot observe the pre-dispatch queue
+    // while React is still scheduling the render.
+    const value = next(queueRef.current)
+    queueRef.current = value
+    setQueue(value)
   }, [])
 
   const updateHold = useCallback((reason: QueueHoldReason | null) => {
@@ -127,6 +130,26 @@ export function useMessageQueue({ send }: UseMessageQueueProps): UseMessageQueue
     updateQueue(() => [])
     updateHold(null)
   }, [updateQueue, updateHold])
+
+  const prioritize = useCallback((id: string, sessionId: string): boolean => {
+    const current = queueRef.current
+    const index = current.findIndex(
+      message => message.id === id && message.sessionId === sessionId,
+    )
+    if (index < 0) return false
+    if (index === 0) return true
+
+    const next = [
+      current[index],
+      ...current.slice(0, index),
+      ...current.slice(index + 1),
+    ]
+    // Keep the ref current synchronously: an interrupt can proceed to flush as
+    // soon as the durable stop request resolves, before React renders again.
+    queueRef.current = next
+    setQueue(next)
+    return true
+  }, [])
 
   const hold = useCallback((reason: QueueHoldReason) => {
     if (queueRef.current.length === 0) return
@@ -166,14 +189,17 @@ export function useMessageQueue({ send }: UseMessageQueueProps): UseMessageQueue
     const next = queueRef.current.find(m => m.sessionId === sessionId)!
 
     isFlushingRef.current = true
+    // The queue represents turns that have not entered the conversation yet.
+    // Remove this item before dispatch so it disappears as soon as send()
+    // accepts it into the normal user-turn path, not after the response ends.
+    updateQueue(prev => prev.filter(m => m.id !== next.id))
     try {
       await send(next.text, next.files, next.systemPrompt, next.selectedArtifactId)
-      // A transport failure is not proof that the backend accepted the turn.
-      // Keep the item until success so a transient error cannot silently lose
-      // user input. The error hold requires an explicit retry/discard decision.
-      updateQueue(prev => prev.filter(m => m.id !== next.id))
       return true
     } catch {
+      // send() adds the user turn before awaiting the transport. Re-inserting it
+      // here could dispatch the same accepted turn twice. Hold only messages
+      // that are still waiting behind the failed turn.
       hold('error')
       return false
     } finally {
@@ -187,6 +213,7 @@ export function useMessageQueue({ send }: UseMessageQueueProps): UseMessageQueue
     enqueue,
     remove,
     clear,
+    prioritize,
     flushNext,
     hold,
     release,

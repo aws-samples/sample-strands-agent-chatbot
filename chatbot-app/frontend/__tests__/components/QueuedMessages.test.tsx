@@ -7,13 +7,26 @@ function msg(text: string, files: File[] = []): QueuedMessage {
   return { id: `id-${text}`, text, files, sessionId: 's1' }
 }
 
-function setup(queue: QueuedMessage[], holdReason: any = null) {
+function setup(
+  queue: QueuedMessage[],
+  holdReason: any = null,
+  actionMode: "interrupt" | "send" | null = null,
+) {
   const handlers = {
     onRemove: vi.fn(),
     onSendNow: vi.fn(),
     onDiscardAll: vi.fn(),
+    onInterrupt: vi.fn().mockResolvedValue(true),
+    onSendMessageNow: vi.fn().mockResolvedValue(true),
   }
-  render(<QueuedMessages queue={queue} holdReason={holdReason} {...handlers} />)
+  render(
+    <QueuedMessages
+      queue={queue}
+      holdReason={holdReason}
+      actionMode={actionMode}
+      {...handlers}
+    />,
+  )
   return handlers
 }
 
@@ -29,6 +42,9 @@ describe('QueuedMessages', () => {
         onRemove={vi.fn()}
         onSendNow={vi.fn()}
         onDiscardAll={vi.fn()}
+        actionMode={null}
+        onInterrupt={vi.fn()}
+        onSendMessageNow={vi.fn()}
       />,
     )
     expect(container).toBeEmptyDOMElement()
@@ -60,6 +76,60 @@ describe('QueuedMessages', () => {
 
     expect(onRemove).toHaveBeenCalledTimes(1)
     expect(onRemove).toHaveBeenCalledWith('id-second')
+  })
+
+  it('interrupts with the queued message that was clicked', () => {
+    const { onInterrupt } = setup([msg('first'), msg('second')], null, 'interrupt')
+    const buttons = screen.getAllByRole('button', {
+      name: 'Interrupt and send now',
+    })
+    expect(screen.queryByText('Interrupt')).not.toBeInTheDocument()
+    expect(buttons).toHaveLength(2)
+    expect(buttons[0]).toHaveClass('h-7', 'w-7')
+
+    fireEvent.click(buttons[1])
+
+    expect(onInterrupt).toHaveBeenCalledTimes(1)
+    expect(onInterrupt).toHaveBeenCalledWith('id-second')
+  })
+
+  it('explains the interrupt action on hover or keyboard focus', async () => {
+    setup([msg('queued')], null, 'interrupt')
+    const button = screen.getByRole('button', {
+      name: 'Interrupt and send now',
+    })
+
+    fireEvent.focus(button)
+
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(
+      'Interrupt and send now',
+    )
+  })
+
+  it('hides interrupt controls when the current state cannot be stopped', () => {
+    setup([msg('queued')])
+
+    expect(screen.queryByRole('button', {
+      name: 'Interrupt and send now',
+    })).not.toBeInTheDocument()
+  })
+
+  it('sends the selected queued message immediately in send mode', () => {
+    const { onSendMessageNow } = setup(
+      [msg('first'), msg('second')],
+      null,
+      'send',
+    )
+    const buttons = screen.getAllByRole('button', {
+      name: 'Send now',
+    })
+    expect(screen.queryByText('Send now')).not.toBeInTheDocument()
+    expect(buttons).toHaveLength(2)
+
+    fireEvent.click(buttons[1])
+
+    expect(onSendMessageNow).toHaveBeenCalledTimes(1)
+    expect(onSendMessageNow).toHaveBeenCalledWith('id-second')
   })
 
   it('labels each remove button with its message so they are distinguishable', () => {

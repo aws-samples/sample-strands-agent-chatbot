@@ -16,8 +16,17 @@ export async function GET(request: NextRequest) {
     }
 
     const user = await extractUserFromRequest(request)
-    const events = await listSessionEvents(user.userId, sessionId)
-    return NextResponse.json({ events })
+    const cursor = request.nextUrl.searchParams.get('cursor') || undefined
+    const rawEpoch = request.nextUrl.searchParams.get('epoch')
+    const knownEpoch =
+      rawEpoch !== null && Number.isFinite(Number(rawEpoch))
+        ? Number(rawEpoch)
+        : undefined
+    const page = await listSessionEvents(user.userId, sessionId, {
+      cursor,
+      knownEpoch,
+    })
+    return NextResponse.json(page)
   } catch (error) {
     console.error('[SessionEvents] Failed to list events:', error)
     return NextResponse.json(

@@ -28,6 +28,7 @@ PENDING = "pending"
 PROCESSING = "processing"
 PROCESSED = "processed"
 DEAD = "dead"
+CANCELLED = "cancelled"
 TERMINAL_TTL_DAYS = 30
 SESSION_EVENT_TTL_DAYS = 7
 
@@ -48,8 +49,8 @@ def _event_key(event_id: str) -> str:
     return f"INBOX#{event_id}"
 
 
-def _session_event_key(event_id: str) -> str:
-    return f"OUTBOX#{event_id}"
+def _session_event_key(created_at: str, event_id: str) -> str:
+    return f"OUTBOX_V2#{created_at}#{event_id}"
 
 
 def _error_code(error: Exception) -> str:
@@ -72,10 +73,15 @@ class MailboxLease:
     owner: str
     epoch: int
     expires_at: int
+    conversation_epoch: int = 0
 
 
 class SessionDeletedError(RuntimeError):
     """Mailbox work cannot be added to a tombstoned session."""
+
+
+class SessionSupersededError(RuntimeError):
+    """Mailbox work belongs to a conversation state removed by truncation."""
 
 
 @dataclass
@@ -92,6 +98,7 @@ class MailboxEvent:
     payload_ref: Optional[Dict[str, str]] = None
     visibility: str = "internal"
     schema_version: int = SCHEMA_VERSION
+    conversation_epoch: int = 0
     status: str = PENDING
     attempts: int = 0
     lease_owner: Optional[str] = None
@@ -114,6 +121,7 @@ class MailboxEvent:
         payload: Optional[Dict[str, Any]] = None,
         payload_ref: Optional[Dict[str, str]] = None,
         visibility: str = "internal",
+        conversation_epoch: int = 0,
         now: Optional[datetime] = None,
     ) -> "MailboxEvent":
         timestamp = _iso(now or utc_now())
@@ -129,6 +137,7 @@ class MailboxEvent:
             payload=dict(payload or {}),
             payload_ref=dict(payload_ref) if payload_ref else None,
             visibility=visibility,
+            conversation_epoch=conversation_epoch,
         )
 
     def to_record(self) -> Dict[str, Any]:
@@ -148,6 +157,7 @@ class MailboxEvent:
             "payload": self.payload,
             "payloadRef": self.payload_ref,
             "visibility": self.visibility,
+            "conversationEpoch": self.conversation_epoch,
             "status": self.status,
             "attempts": self.attempts,
             "leaseOwner": self.lease_owner,
@@ -173,6 +183,7 @@ class MailboxEvent:
             payload=record.get("payload", {}),
             payload_ref=record.get("payloadRef"),
             visibility=record.get("visibility", "internal"),
+            conversation_epoch=int(record.get("conversationEpoch", 0)),
             status=record.get("status", PENDING),
             attempts=int(record.get("attempts", 0)),
             lease_owner=record.get("leaseOwner"),
@@ -200,6 +211,7 @@ class SessionEvent:
     correlation: Dict[str, str] = field(default_factory=dict)
     payload: Dict[str, Any] = field(default_factory=dict)
     schema_version: int = SCHEMA_VERSION
+    conversation_epoch: int = 0
 
     @classmethod
     def create(
@@ -212,6 +224,7 @@ class SessionEvent:
         origin_event_id: str,
         correlation: Optional[Dict[str, str]] = None,
         payload: Optional[Dict[str, Any]] = None,
+        conversation_epoch: int = 0,
         now: Optional[datetime] = None,
     ) -> "SessionEvent":
         return cls(
@@ -223,12 +236,13 @@ class SessionEvent:
             origin_event_id=origin_event_id,
             correlation=dict(correlation or {}),
             payload=dict(payload or {}),
+            conversation_epoch=conversation_epoch,
         )
 
     def to_record(self, *, ttl: Optional[int] = None) -> Dict[str, Any]:
         record = {
             "sessionKey": _session_key(self.user_id, self.session_id),
-            "recordKey": _session_event_key(self.event_id),
+            "recordKey": _session_event_key(self.created_at, self.event_id),
             "recordType": "OUTBOX",
             "schemaVersion": self.schema_version,
             "eventId": self.event_id,
@@ -239,6 +253,7 @@ class SessionEvent:
             "originEventId": self.origin_event_id,
             "correlation": self.correlation,
             "payload": self.payload,
+            "conversationEpoch": self.conversation_epoch,
             "ttl": ttl,
         }
         return {key: value for key, value in record.items() if value is not None}
@@ -255,6 +270,7 @@ class SessionEvent:
             origin_event_id=record["originEventId"],
             correlation=record.get("correlation", {}),
             payload=record.get("payload", {}),
+            conversation_epoch=int(record.get("conversationEpoch", 0)),
         )
 
 
@@ -276,6 +292,20 @@ class MailboxRepository(ABC):
     @abstractmethod
     def is_session_deleted(self, user_id: str, session_id: str) -> bool:
         """Return whether the orchestration state has a delete tombstone."""
+
+    @abstractmethod
+    def get_conversation_epoch(self, user_id: str, session_id: str) -> int:
+        """Return the fencing epoch for the current visible conversation."""
+
+    @abstractmethod
+    def advance_conversation_epoch(
+        self,
+        user_id: str,
+        session_id: str,
+        *,
+        now: Optional[datetime] = None,
+    ) -> int:
+        """Fence work created before a truncate and return the new epoch."""
 
     @abstractmethod
     def acquire_lease(
@@ -351,6 +381,15 @@ class MailboxRepository(ABC):
         """List mailbox events in deterministic creation order."""
 
     @abstractmethod
+    def get_event(
+        self,
+        user_id: str,
+        session_id: str,
+        event_id: str,
+    ) -> Optional[MailboxEvent]:
+        """Load one mailbox event by its deterministic identity."""
+
+    @abstractmethod
     def list_session_events(
         self,
         user_id: str,
@@ -399,6 +438,12 @@ class DynamoDBMailboxRepository(MailboxRepository):
         })
 
     def enqueue(self, event: MailboxEvent) -> bool:
+        epoch_condition = "conversationEpoch = :conversation_epoch"
+        if event.conversation_epoch == 0:
+            epoch_condition = (
+                "(attribute_not_exists(conversationEpoch) "
+                "OR conversationEpoch = :conversation_epoch)"
+            )
         try:
             self.client.transact_write_items(
                 TransactItems=[
@@ -410,7 +455,13 @@ class DynamoDBMailboxRepository(MailboxRepository):
                                 event.session_id,
                                 "STATE",
                             ),
-                            "ConditionExpression": "attribute_not_exists(deletedAt)",
+                            "ConditionExpression": (
+                                "attribute_not_exists(deletedAt) AND "
+                                f"{epoch_condition}"
+                            ),
+                            "ExpressionAttributeValues": self._serialize({
+                                ":conversation_epoch": event.conversation_epoch,
+                            }),
                         }
                     },
                     {
@@ -428,6 +479,21 @@ class DynamoDBMailboxRepository(MailboxRepository):
                 if self.is_session_deleted(event.user_id, event.session_id):
                     raise SessionDeletedError(
                         f"Session {event.session_id} has been deleted"
+                    ) from error
+                if self.get_event(
+                    event.user_id,
+                    event.session_id,
+                    event.event_id,
+                ) is not None:
+                    return False
+                current_epoch = self.get_conversation_epoch(
+                    event.user_id,
+                    event.session_id,
+                )
+                if current_epoch != event.conversation_epoch:
+                    raise SessionSupersededError(
+                        f"Session {event.session_id} advanced from conversation "
+                        f"epoch {event.conversation_epoch} to {current_epoch}"
                     ) from error
                 return False
             raise
@@ -464,6 +530,91 @@ class DynamoDBMailboxRepository(MailboxRepository):
         )
         return bool(response.get("Item"))
 
+    def get_conversation_epoch(self, user_id: str, session_id: str) -> int:
+        response = self.client.get_item(
+            TableName=self.table_name,
+            Key=self._key(user_id, session_id, "STATE"),
+            ConsistentRead=True,
+            ProjectionExpression="conversationEpoch",
+        )
+        item = response.get("Item")
+        if not item:
+            return 0
+        return int(self._deserialize(item).get("conversationEpoch", 0))
+
+    def advance_conversation_epoch(
+        self,
+        user_id: str,
+        session_id: str,
+        *,
+        now: Optional[datetime] = None,
+    ) -> int:
+        current = now or utc_now()
+        response = self.client.update_item(
+            TableName=self.table_name,
+            Key=self._key(user_id, session_id, "STATE"),
+            UpdateExpression=(
+                "SET conversationEpoch = if_not_exists(conversationEpoch, :zero) + :one, "
+                "leaseEpoch = if_not_exists(leaseEpoch, :zero) + :one, "
+                "truncatedAt = :updated, updatedAt = :updated "
+                "REMOVE leaseOwner, leaseUntil"
+            ),
+            ConditionExpression="attribute_not_exists(deletedAt)",
+            ExpressionAttributeValues=self._serialize({
+                ":zero": 0,
+                ":one": 1,
+                ":updated": _iso(current),
+            }),
+            ReturnValues="ALL_NEW",
+        )
+        attributes = self._deserialize(response["Attributes"])
+        next_epoch = int(attributes["conversationEpoch"])
+        terminal_ttl = int(
+            (current + timedelta(days=TERMINAL_TTL_DAYS)).timestamp()
+        )
+        for event in self.list_events(user_id, session_id):
+            if (
+                event.conversation_epoch >= next_epoch
+                or event.status not in (PENDING, PROCESSING)
+            ):
+                continue
+            try:
+                self.client.update_item(
+                    TableName=self.table_name,
+                    Key=self._key(
+                        user_id,
+                        session_id,
+                        _event_key(event.event_id),
+                    ),
+                    UpdateExpression=(
+                        "SET #status = :cancelled, processedAt = :updated, "
+                        "updatedAt = :updated, lastError = :reason, #ttl = :ttl "
+                        "REMOVE leaseOwner, leaseEpoch, eventLeaseUntil"
+                    ),
+                    ConditionExpression=(
+                        "(attribute_not_exists(conversationEpoch) "
+                        "OR conversationEpoch < :epoch) AND "
+                        "(#status = :pending OR #status = :processing)"
+                    ),
+                    ExpressionAttributeNames={
+                        "#status": "status",
+                        "#ttl": "ttl",
+                    },
+                    ExpressionAttributeValues=self._serialize({
+                        ":cancelled": CANCELLED,
+                        ":updated": _iso(current),
+                        ":reason": "Conversation truncated",
+                        ":ttl": terminal_ttl,
+                        ":epoch": next_epoch,
+                        ":pending": PENDING,
+                        ":processing": PROCESSING,
+                    }),
+                )
+            except Exception as error:
+                if not _is_condition_failure(error):
+                    raise
+        return next_epoch
+
     def acquire_lease(
         self,
         user_id: str,
@@ -483,6 +634,7 @@ class DynamoDBMailboxRepository(MailboxRepository):
                 UpdateExpression=(
                     "SET leaseOwner = :owner, leaseUntil = :until, "
                     "leaseEpoch = if_not_exists(leaseEpoch, :zero) + :one, "
+                    "conversationEpoch = if_not_exists(conversationEpoch, :zero), "
                     "#version = if_not_exists(#version, :zero) + :one, "
                     "updatedAt = :updated"
                 ),
@@ -511,6 +663,7 @@ class DynamoDBMailboxRepository(MailboxRepository):
             owner=owner,
             epoch=int(attributes["leaseEpoch"]),
             expires_at=expires_at,
+            conversation_epoch=int(attributes.get("conversationEpoch", 0)),
         )
 
     def release_lease(
@@ -569,6 +722,7 @@ class DynamoDBMailboxRepository(MailboxRepository):
                 owner=lease.owner,
                 epoch=lease.epoch,
                 expires_at=expires_at,
+                conversation_epoch=lease.conversation_epoch,
             )
         except Exception as error:
             if _is_condition_failure(error):
@@ -600,32 +754,52 @@ class DynamoDBMailboxRepository(MailboxRepository):
         events = [MailboxEvent.from_record(item) for item in items]
         return sorted(events, key=lambda item: (item.created_at, item.event_id))
 
+    def get_event(
+        self,
+        user_id: str,
+        session_id: str,
+        event_id: str,
+    ) -> Optional[MailboxEvent]:
+        response = self.client.get_item(
+            TableName=self.table_name,
+            Key=self._key(user_id, session_id, _event_key(event_id)),
+            ConsistentRead=True,
+        )
+        item = response.get("Item")
+        if not item:
+            return None
+        return MailboxEvent.from_record(self._deserialize(item))
+
     def list_session_events(
         self,
         user_id: str,
         session_id: str,
     ) -> list[SessionEvent]:
         items: list[Dict[str, Any]] = []
-        start_key = None
-        while True:
-            kwargs: Dict[str, Any] = {
-                "TableName": self.table_name,
-                "KeyConditionExpression": (
-                    "sessionKey = :session AND begins_with(recordKey, :prefix)"
-                ),
-                "ExpressionAttributeValues": self._serialize({
-                    ":session": _session_key(user_id, session_id),
-                    ":prefix": "OUTBOX#",
-                }),
-                "ConsistentRead": True,
-            }
-            if start_key:
-                kwargs["ExclusiveStartKey"] = start_key
-            response = self.client.query(**kwargs)
-            items.extend(self._deserialize(item) for item in response.get("Items", []))
-            start_key = response.get("LastEvaluatedKey")
-            if not start_key:
-                break
+        for prefix in ("OUTBOX_V2#", "OUTBOX#"):
+            start_key = None
+            while True:
+                kwargs: Dict[str, Any] = {
+                    "TableName": self.table_name,
+                    "KeyConditionExpression": (
+                        "sessionKey = :session AND begins_with(recordKey, :prefix)"
+                    ),
+                    "ExpressionAttributeValues": self._serialize({
+                        ":session": _session_key(user_id, session_id),
+                        ":prefix": prefix,
+                    }),
+                    "ConsistentRead": True,
+                }
+                if start_key:
+                    kwargs["ExclusiveStartKey"] = start_key
+                response = self.client.query(**kwargs)
+                items.extend(
+                    self._deserialize(item)
+                    for item in response.get("Items", [])
+                )
+                start_key = response.get("LastEvaluatedKey")
+                if not start_key:
+                    break
         events = [SessionEvent.from_record(item) for item in items]
         return sorted(events, key=lambda item: (item.created_at, item.event_id))
 
@@ -641,14 +815,21 @@ class DynamoDBMailboxRepository(MailboxRepository):
         current = now or utc_now()
         now_epoch = int(current.timestamp())
         now_iso = _iso(current)
+        lease_conversation_epoch = int(
+            getattr(lease, "conversation_epoch", 0)
+        )
         candidates = [
             event
             for event in self.list_events(user_id, session_id)
-            if (
-                event.status == PENDING and event.available_at <= now_iso
-            ) or (
-                event.status == PROCESSING
-                and (event.event_lease_until or 0) < now_epoch
+            if event.conversation_epoch == lease_conversation_epoch and (
+                (
+                    event.status == PENDING
+                    and event.available_at <= now_iso
+                )
+                or (
+                    event.status == PROCESSING
+                    and (event.event_lease_until or 0) < now_epoch
+                )
             )
         ]
         for event in candidates:
@@ -661,12 +842,14 @@ class DynamoDBMailboxRepository(MailboxRepository):
                                 "Key": self._key(user_id, session_id, "STATE"),
                                 "ConditionExpression": (
                                     "leaseOwner = :owner AND leaseEpoch = :epoch "
-                                    "AND leaseUntil >= :now_epoch"
+                                    "AND leaseUntil >= :now_epoch "
+                                    "AND conversationEpoch = :conversation_epoch"
                                 ),
                                 "ExpressionAttributeValues": self._serialize({
                                     ":owner": lease.owner,
                                     ":epoch": lease.epoch,
                                     ":now_epoch": now_epoch,
+                                    ":conversation_epoch": event.conversation_epoch,
                                 }),
                             }
                         },
@@ -833,6 +1016,7 @@ class DynamoDBMailboxRepository(MailboxRepository):
                         event.session_id,
                         lease,
                         int(current.timestamp()),
+                        conversation_epoch=event.conversation_epoch,
                     ),
                     {
                         "Update": {
@@ -865,19 +1049,28 @@ class DynamoDBMailboxRepository(MailboxRepository):
         session_id: str,
         lease: MailboxLease,
         now_epoch: int,
+        *,
+        conversation_epoch: Optional[int] = None,
     ) -> Dict[str, Any]:
+        expected_conversation_epoch = (
+            int(getattr(lease, "conversation_epoch", 0))
+            if conversation_epoch is None
+            else conversation_epoch
+        )
         return {
             "ConditionCheck": {
                 "TableName": self.table_name,
                 "Key": self._key(user_id, session_id, "STATE"),
                 "ConditionExpression": (
                     "leaseOwner = :owner AND leaseEpoch = :epoch "
-                    "AND leaseUntil >= :now"
+                    "AND leaseUntil >= :now "
+                    "AND conversationEpoch = :conversation_epoch"
                 ),
                 "ExpressionAttributeValues": self._serialize({
                     ":owner": lease.owner,
                     ":epoch": lease.epoch,
                     ":now": now_epoch,
+                    ":conversation_epoch": expected_conversation_epoch,
                 }),
             }
         }
@@ -904,6 +1097,8 @@ class FileMailboxRepository(MailboxRepository):
                 "sessionEvents": {},
             }
         data = json.loads(path.read_text(encoding="utf-8"))
+        data.setdefault("state", {})
+        data["state"].setdefault("conversationEpoch", 0)
         data.setdefault("sessionEvents", {})
         return data
 
@@ -923,12 +1118,19 @@ class FileMailboxRepository(MailboxRepository):
     def enqueue(self, event: MailboxEvent) -> bool:
         with self._lock:
             data = self._load(event.user_id, event.session_id)
-            if data["state"].get("deletedAt"):
+            state = data["state"]
+            if state.get("deletedAt"):
                 raise SessionDeletedError(
                     f"Session {event.session_id} has been deleted"
                 )
             if event.event_id in data["events"]:
                 return False
+            current_epoch = int(state.get("conversationEpoch", 0))
+            if event.conversation_epoch != current_epoch:
+                raise SessionSupersededError(
+                    f"Session {event.session_id} advanced from conversation "
+                    f"epoch {event.conversation_epoch} to {current_epoch}"
+                )
             data["events"][event.event_id] = event.to_record()
             self._save(event.user_id, event.session_id, data)
             return True
@@ -957,6 +1159,55 @@ class FileMailboxRepository(MailboxRepository):
             return bool(
                 self._load(user_id, session_id)["state"].get("deletedAt")
             )
+
+    def get_conversation_epoch(self, user_id: str, session_id: str) -> int:
+        with self._lock:
+            state = self._load(user_id, session_id)["state"]
+            return int(state.get("conversationEpoch", 0))
+
+    def advance_conversation_epoch(
+        self,
+        user_id: str,
+        session_id: str,
+        *,
+        now: Optional[datetime] = None,
+    ) -> int:
+        current = now or utc_now()
+        with self._lock:
+            data = self._load(user_id, session_id)
+            state = data["state"]
+            if state.get("deletedAt"):
+                raise SessionDeletedError(
+                    f"Session {session_id} has been deleted"
+                )
+            state["conversationEpoch"] = int(
+                state.get("conversationEpoch", 0)
+            ) + 1
+            state["leaseEpoch"] = int(state.get("leaseEpoch", 0)) + 1
+            state["truncatedAt"] = _iso(current)
+            state["updatedAt"] = _iso(current)
+            state.pop("leaseOwner", None)
+            state.pop("leaseUntil", None)
+            for record in data["events"].values():
+                if (
+                    int(record.get("conversationEpoch", 0))
+                    < state["conversationEpoch"]
+                    and record.get("status") in (PENDING, PROCESSING)
+                ):
+                    record.update({
+                        "status": CANCELLED,
+                        "updatedAt": _iso(current),
+                        "processedAt": _iso(current),
+                        "lastError": "Conversation truncated",
+                        "ttl": int(
+                            (
+                                current + timedelta(days=TERMINAL_TTL_DAYS)
+                            ).timestamp()
+                        ),
+                    })
+                    self._clear_event_lease(record)
+            self._save(user_id, session_id, data)
+            return state["conversationEpoch"]
 
     def acquire_lease(
         self,
@@ -989,6 +1240,7 @@ class FileMailboxRepository(MailboxRepository):
                 owner=owner,
                 epoch=state["leaseEpoch"],
                 expires_at=state["leaseUntil"],
+                conversation_epoch=int(state.get("conversationEpoch", 0)),
             )
 
     def release_lease(
@@ -1037,6 +1289,7 @@ class FileMailboxRepository(MailboxRepository):
                 owner=lease.owner,
                 epoch=lease.epoch,
                 expires_at=state["leaseUntil"],
+                conversation_epoch=lease.conversation_epoch,
             )
 
     def list_events(self, user_id: str, session_id: str) -> list[MailboxEvent]:
@@ -1047,6 +1300,16 @@ class FileMailboxRepository(MailboxRepository):
                 for record in data["events"].values()
             ]
         return sorted(events, key=lambda item: (item.created_at, item.event_id))
+
+    def get_event(
+        self,
+        user_id: str,
+        session_id: str,
+        event_id: str,
+    ) -> Optional[MailboxEvent]:
+        with self._lock:
+            record = self._load(user_id, session_id)["events"].get(event_id)
+            return MailboxEvent.from_record(record) if record else None
 
     def list_session_events(
         self,
@@ -1087,6 +1350,10 @@ class FileMailboxRepository(MailboxRepository):
                 key=lambda item: (item["createdAt"], item["eventId"]),
             )
             for record in records:
+                if int(record.get("conversationEpoch", 0)) != int(
+                    state.get("conversationEpoch", 0)
+                ):
+                    continue
                 eligible = (
                     record["status"] == PENDING
                     and record["availableAt"] <= now_iso
@@ -1199,6 +1466,9 @@ class FileMailboxRepository(MailboxRepository):
             and state.get("leaseOwner") == lease.owner
             and state.get("leaseEpoch") == lease.epoch
             and state.get("leaseUntil", 0) >= now_epoch
+            and int(record.get("conversationEpoch", 0))
+            == int(state.get("conversationEpoch", 0))
+            == int(getattr(lease, "conversation_epoch", 0))
         )
 
     @staticmethod

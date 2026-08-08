@@ -237,6 +237,7 @@ async def invocations(http_request: Request):
         if not _is_mailbox_dispatcher_request(http_request):
             raise HTTPException(status_code=403, detail="Mailbox dispatcher token required")
         user_id = state.get("user_id")
+        event_ids = state.get("event_ids") or []
         if not user_id or not thread_id:
             raise HTTPException(
                 status_code=400,
@@ -246,9 +247,38 @@ async def invocations(http_request: Request):
         from agent.mailbox import PENDING, PROCESSING, get_mailbox_repository
         from agent.mailbox_runtime import drain_session_mailbox
 
-        result = await drain_session_mailbox(user_id, thread_id)
+        if not isinstance(event_ids, list):
+            raise HTTPException(status_code=400, detail="state.event_ids must be a list")
+        repository = get_mailbox_repository()
+        if await asyncio.to_thread(
+            repository.is_session_deleted,
+            user_id,
+            thread_id,
+        ):
+            return {
+                "status": "drained",
+                "processed": 0,
+                "retried": 0,
+                "dead": 0,
+                "acquired": False,
+                "pending": 0,
+                "deleted": True,
+            }
+        reconcile_event_ids = [
+            str(event_id)
+            for event_id in event_ids
+            if event_id
+        ]
+        if reconcile_event_ids:
+            result = await drain_session_mailbox(
+                user_id,
+                thread_id,
+                reconcile_event_ids=reconcile_event_ids,
+            )
+        else:
+            result = await drain_session_mailbox(user_id, thread_id)
         remaining = await asyncio.to_thread(
-            get_mailbox_repository().list_events,
+            repository.list_events,
             user_id,
             thread_id,
         )
@@ -468,8 +498,12 @@ async def _handle_agui_invocation(body: dict, http_request: Request) -> Streamin
         # A foreground invocation is also a recovery signal. Recreate any
         # deterministic completion envelopes that predate mailbox delivery;
         # the coordinator will materialize them as separate assistant turns.
-        from agent.research_jobs import recover_pending_mailbox_events
+        from agent.research_jobs import (
+            reconcile_processed_deliveries,
+            recover_pending_mailbox_events,
+        )
 
+        reconcile_processed_deliveries(user_id, session_id)
         recover_pending_mailbox_events(user_id, session_id)
     else:
         # Legacy fallback while mailbox delivery is disabled.
@@ -657,6 +691,20 @@ async def deliver_research_job(record: dict, artifact: dict) -> None:
     session_id = record["sessionId"]
     user_id = record["userId"]
     run_id = f"research-delivery-{record['jobId']}"
+    conversation_epoch = int(record.get("conversationEpoch", 0))
+
+    def ensure_current_epoch() -> None:
+        from agent.mailbox import SessionSupersededError, get_mailbox_repository
+
+        current_epoch = get_mailbox_repository().get_conversation_epoch(
+            user_id,
+            session_id,
+        )
+        if current_epoch != conversation_epoch:
+            raise SessionSupersededError(
+                f"Conversation epoch changed from {conversation_epoch} "
+                f"to {current_epoch}"
+            )
 
     while True:
         execution = await registry.create_execution(
@@ -676,6 +724,7 @@ async def deliver_research_job(record: dict, artifact: dict) -> None:
                 {"execution_id": execution.execution_id, "job_id": record["jobId"]},
             )
             try:
+                ensure_current_epoch()
                 agent = create_agent(
                     request_type=record.get("requestType") or "skill",
                     session_id=session_id,
@@ -698,10 +747,6 @@ async def deliver_research_job(record: dict, artifact: dict) -> None:
                     artifact,
                 )
                 agent.agent.state.set("artifacts", artifacts)
-                # Delivery is not successful unless the canonical agent state is
-                # durable. Let sync failures propagate so the job remains ready
-                # for retry instead of being falsely marked delivered.
-                agent.session_manager.sync_agent(agent.agent)
 
                 commit_id = record.get("mailboxEventId") or run_id
                 existing_commits = dict(
@@ -727,7 +772,7 @@ async def deliver_research_job(record: dict, artifact: dict) -> None:
                 }
                 scope = getattr(agent.session_manager, "mailbox_event_scope", None)
                 scope_context = (
-                    scope(commit_id)
+                    scope(commit_id, conversation_epoch)
                     if scope
                     else nullcontext()
                 )
@@ -745,6 +790,10 @@ async def deliver_research_job(record: dict, artifact: dict) -> None:
                             _extract_event_type(sse_chunk),
                         )
 
+                # Truncate may race with generation. Messages written by the
+                # scoped session manager carry the old epoch and are excluded
+                # from future restores; do not commit stale agent state.
+                ensure_current_epoch()
                 commits = dict(agent.agent.state.get("mailbox_commits") or {})
                 commits[commit_id] = {
                     "completedAt": datetime.now(timezone.utc).isoformat(),
@@ -789,20 +838,14 @@ async def deliver_mailbox_event(event):
 
     from agent.research_jobs import (
         _build_artifact,
-        _list_jobs,
+        _get_job,
         _load_report,
         mark_delivered,
     )
+    from agent.session_coordinator import MailboxHandlerResult
 
     job_id = event.source["id"]
-    record = next(
-        (
-            item
-            for item in _list_jobs(event.user_id, event.session_id)
-            if item.get("jobId") == job_id
-        ),
-        None,
-    )
+    record = _get_job(event.user_id, event.session_id, job_id)
     if record is None:
         raise RuntimeError(f"Research job not found: {job_id}")
 
@@ -810,7 +853,6 @@ async def deliver_mailbox_event(event):
     report = _load_report(record)
     artifact = _build_artifact(record, report)
     await deliver_research_job(record, artifact)
-    mark_delivered(record)
 
     from agent.mailbox import SessionEvent
 
@@ -826,33 +868,39 @@ async def deliver_mailbox_event(event):
         for key, value in artifact.items()
         if key != "content"
     }
-    return [
-        SessionEvent.create(
-            event_id=f"{event.event_id}:artifact",
-            event_type="artifact.upserted",
-            session_id=event.session_id,
-            user_id=event.user_id,
-            origin_event_id=event.event_id,
-            correlation=correlation,
-            payload={
-                "artifact": artifact_metadata,
-                "payloadRef": event.payload_ref,
-            },
-        ),
-        SessionEvent.create(
-            event_id=f"{event.event_id}:assistant",
-            event_type="assistant.turn.completed",
-            session_id=event.session_id,
-            user_id=event.user_id,
-            origin_event_id=event.event_id,
-            correlation=correlation,
-            payload={
-                "executionId": f"{event.session_id}:{run_id}",
-                "logicalMessageId": f"mailbox:{event.event_id}:1",
-                "source": event.source,
-            },
-        ),
-    ]
+    event_epoch = int(getattr(event, "conversation_epoch", 0))
+    return MailboxHandlerResult(
+        session_events=[
+            SessionEvent.create(
+                event_id=f"{event.event_id}:artifact",
+                event_type="artifact.upserted",
+                session_id=event.session_id,
+                user_id=event.user_id,
+                origin_event_id=event.event_id,
+                correlation=correlation,
+                payload={
+                    "artifact": artifact_metadata,
+                    "payloadRef": event.payload_ref,
+                },
+                conversation_epoch=event_epoch,
+            ),
+            SessionEvent.create(
+                event_id=f"{event.event_id}:assistant",
+                event_type="assistant.turn.completed",
+                session_id=event.session_id,
+                user_id=event.user_id,
+                origin_event_id=event.event_id,
+                correlation=correlation,
+                payload={
+                    "executionId": f"{event.session_id}:{run_id}",
+                    "logicalMessageId": f"mailbox:{event.event_id}:1",
+                    "source": event.source,
+                },
+                conversation_epoch=event_epoch,
+            ),
+        ],
+        after_ack=lambda: mark_delivered(record),
+    )
 
 
 _cleanup_task: Optional[asyncio.Task] = None

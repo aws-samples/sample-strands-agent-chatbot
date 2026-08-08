@@ -45,7 +45,6 @@ export async function POST(request: NextRequest) {
       sessionId,
       fromEventId,
       fromTimestamp,
-      originEventId,
     } = await request.json()
     if (!sessionId) {
       return NextResponse.json({ success: false, error: 'sessionId is required' }, { status: 400 })
@@ -61,18 +60,28 @@ export async function POST(request: NextRequest) {
 
     if (userId === 'anonymous' || IS_LOCAL) {
       if (typeof fromTimestamp === 'number') {
-        const { truncateSessionMessages } = await import('@/lib/local-session-store')
-        const deleted = truncateSessionMessages(userId, sessionId, fromTimestamp)
-        if (originEventId) {
-          const { deleteSessionEventProjection } = await import('@/lib/session-events')
-          await deleteSessionEventProjection(
-            userId,
-            sessionId,
-            `${originEventId}:assistant`,
+        if (!Number.isFinite(fromTimestamp)) {
+          return NextResponse.json(
+            { success: false, error: 'fromTimestamp must be finite' },
+            { status: 400 },
           )
         }
+        const { advanceSessionConversationEpoch } =
+          await import('@/lib/session-lifecycle')
+        const conversationEpoch = await advanceSessionConversationEpoch(
+          userId,
+          sessionId,
+          new Date(fromTimestamp).toISOString(),
+        )
+        const { truncateSessionMessages } = await import('@/lib/local-session-store')
+        const deleted = truncateSessionMessages(userId, sessionId, fromTimestamp)
         console.log(`[truncate] LOCAL - Deleted ${deleted} messages`)
-        return NextResponse.json({ success: true, sessionId, deleted })
+        return NextResponse.json({
+          success: true,
+          sessionId,
+          deleted,
+          conversationEpoch,
+        })
       }
       // Local mode has no eventId concept — nothing to do
       return NextResponse.json({ success: true, sessionId, deleted: 0 })
@@ -110,20 +119,39 @@ export async function POST(request: NextRequest) {
     console.log(`[truncate] Listed ${chronologicalEvents.length} events total`)
 
     let toDelete: { eventId: string; actorId: string }[] = []
+    let cutoffMs: number
 
     if (fromEventId) {
       // Positional approach: find the event and delete it + everything after
       const fromIndex = chronologicalEvents.findIndex((e: any) => e.eventId === fromEventId)
       if (fromIndex >= 0) {
+        const cutoffEventTime = chronologicalEvents[fromIndex]?.eventTime
+        cutoffMs = cutoffEventTime ? new Date(cutoffEventTime).getTime() : NaN
+        if (!Number.isFinite(cutoffMs)) {
+          return NextResponse.json(
+            { success: false, error: 'Target event has no usable eventTime' },
+            { status: 409 },
+          )
+        }
         toDelete = chronologicalEvents
           .slice(fromIndex)
           .filter((e: any) => e.eventId)
           .map((e: any) => ({ eventId: e.eventId, actorId: userId }))
         console.log(`[truncate] fromEventId found at index ${fromIndex}, deleting ${toDelete.length} events`)
       } else {
-        console.warn(`[truncate] fromEventId ${fromEventId} not found in ${chronologicalEvents.length} events`)
+        return NextResponse.json(
+          { success: false, error: `Event ${fromEventId} was not found` },
+          { status: 404 },
+        )
       }
     } else {
+      cutoffMs = fromTimestamp
+      if (!Number.isFinite(cutoffMs)) {
+        return NextResponse.json(
+          { success: false, error: 'fromTimestamp must be finite' },
+          { status: 400 },
+        )
+      }
       // Timestamp fallback: delete events with eventTime >= fromTimestamp
       for (const event of chronologicalEvents) {
         if (!event.eventId) continue
@@ -134,6 +162,14 @@ export async function POST(request: NextRequest) {
       }
       console.log(`[truncate] Timestamp approach: ${toDelete.length} events >= ${fromTimestamp}`)
     }
+
+    const { advanceSessionConversationEpoch } =
+      await import('@/lib/session-lifecycle')
+    const conversationEpoch = await advanceSessionConversationEpoch(
+      userId,
+      sessionId,
+      new Date(cutoffMs).toISOString(),
+    )
 
     const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
@@ -167,17 +203,13 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    if (originEventId) {
-      const { deleteSessionEventProjection } = await import('@/lib/session-events')
-      await deleteSessionEventProjection(
-        userId,
-        sessionId,
-        `${originEventId}:assistant`,
-      )
-    }
-
     console.log(`[truncate] Deleted ${toDelete.length} events from session ${sessionId}`)
-    return NextResponse.json({ success: true, sessionId, deleted: toDelete.length })
+    return NextResponse.json({
+      success: true,
+      sessionId,
+      deleted: toDelete.length,
+      conversationEpoch,
+    })
   } catch (error) {
     console.error('[truncate] Error:', error)
     return NextResponse.json(

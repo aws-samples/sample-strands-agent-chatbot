@@ -14,7 +14,9 @@ import os
 import re
 import tempfile
 import threading
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, Dict, Optional
 from urllib.parse import quote
@@ -33,6 +35,20 @@ DeliveryHandler = Callable[[Dict[str, Any], Dict[str, Any]], Awaitable[None]]
 _delivery_loop: Optional[asyncio.AbstractEventLoop] = None
 _delivery_handler: Optional[DeliveryHandler] = None
 _delivery_lock = threading.Lock()
+
+
+class CompletionPublishStatus(str, Enum):
+    DISABLED = "disabled"
+    DURABLE = "durable"
+    CANCELLED = "cancelled"
+    FAILED = "failed"
+
+
+@dataclass(frozen=True)
+class CompletionPublishResult:
+    status: CompletionPublishStatus
+    event_id: Optional[str] = None
+    error: Optional[str] = None
 
 
 def _now() -> str:
@@ -80,6 +96,16 @@ def _is_cloud_storage() -> bool:
     return bool(os.environ.get("DYNAMODB_USERS_TABLE"))
 
 
+def _legacy_job_reads_enabled() -> bool:
+    return (
+        not os.environ.get("SESSION_ORCHESTRATION_TABLE")
+        or os.environ.get(
+            "RESEARCH_JOB_LEGACY_READ_ENABLED",
+            "",
+        ).lower() == "true"
+    )
+
+
 def _save_job(record: Dict[str, Any]) -> None:
     if _is_cloud_storage():
         region = os.environ.get("AWS_REGION", "us-west-2")
@@ -108,6 +134,50 @@ def _save_job(record: Dict[str, Any]) -> None:
 
     path = _local_job_dir(record["sessionId"]) / f"{_safe_component(record['jobId'])}.json"
     _atomic_write(path, json.dumps(record, ensure_ascii=False, indent=2))
+
+
+def _get_job(
+    user_id: str,
+    session_id: str,
+    job_id: str,
+) -> Optional[Dict[str, Any]]:
+    if _is_cloud_storage():
+        region = os.environ.get("AWS_REGION", "us-west-2")
+        dynamodb = boto3.resource("dynamodb", region_name=region)
+        orchestration_table = os.environ.get("SESSION_ORCHESTRATION_TABLE")
+        if orchestration_table:
+            response = dynamodb.Table(orchestration_table).get_item(
+                Key={
+                    "sessionKey": _orchestration_session_key(user_id, session_id),
+                    "recordKey": _orchestration_job_key(job_id),
+                },
+                ConsistentRead=True,
+            )
+            if response.get("Item"):
+                return response["Item"]
+
+        if not _legacy_job_reads_enabled():
+            return None
+        response = dynamodb.Table(os.environ["DYNAMODB_USERS_TABLE"]).get_item(
+            Key={
+                "userId": user_id,
+                "sk": _job_sk(session_id, job_id),
+            },
+            ConsistentRead=True,
+        )
+        return response.get("Item")
+
+    path = _local_job_dir(session_id) / f"{_safe_component(job_id)}.json"
+    if not path.exists():
+        return None
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        logger.warning("[ResearchJob] Ignoring unreadable job file %s", path)
+        return None
+    if record.get("userId") != user_id or record.get("sessionId") != session_id:
+        return None
+    return record
 
 
 def _save_report(record: Dict[str, Any], report: str) -> Dict[str, str]:
@@ -182,8 +252,10 @@ def _list_jobs(user_id: str, session_id: str) -> list[Dict[str, Any]]:
                 if not start_key:
                     break
 
-        # Read legacy rows during migration. New writes use the orchestration
-        # table as soon as it is configured.
+        if not _legacy_job_reads_enabled():
+            return list(jobs_by_id.values())
+
+        # Explicit migration path. Disable after legacy rows have aged out.
         legacy_table = dynamodb.Table(os.environ["DYNAMODB_USERS_TABLE"])
         start_key = None
         while True:
@@ -295,6 +367,7 @@ def _enqueue_completion_event(record: Dict[str, Any]) -> Optional[str]:
             "artifact": record.get("artifact", {}),
         },
         payload_ref=payload_ref,
+        conversation_epoch=int(record.get("conversationEpoch", 0)),
     )
     inserted = get_mailbox_repository().enqueue(event)
     logger.info(
@@ -309,13 +382,59 @@ def _completion_event_exists(record: Dict[str, Any]) -> bool:
     event_id = record.get("mailboxEventId") or _completion_event_id(record)
     from agent.mailbox import get_mailbox_repository
 
-    return any(
-        event.event_id == event_id
-        for event in get_mailbox_repository().list_events(
-            record["userId"],
-            record["sessionId"],
+    return get_mailbox_repository().get_event(
+        record["userId"],
+        record["sessionId"],
+        event_id,
+    ) is not None
+
+
+def _publish_completion(record: Dict[str, Any]) -> CompletionPublishResult:
+    try:
+        event_id = _enqueue_completion_event(record)
+        if event_id is None:
+            return CompletionPublishResult(CompletionPublishStatus.DISABLED)
+        return CompletionPublishResult(
+            CompletionPublishStatus.DURABLE,
+            event_id=event_id,
         )
-    )
+    except Exception as exc:
+        from agent.mailbox import SessionDeletedError, SessionSupersededError
+
+        if isinstance(exc, (SessionDeletedError, SessionSupersededError)):
+            return CompletionPublishResult(
+                CompletionPublishStatus.CANCELLED,
+                error=str(exc),
+            )
+        try:
+            event_exists = _completion_event_exists(record)
+        except Exception:
+            logger.exception(
+                "[ResearchJob] Failed to reconcile mailbox write for %s",
+                record["jobId"],
+            )
+            return CompletionPublishResult(
+                CompletionPublishStatus.FAILED,
+                error=str(exc),
+            )
+        if event_exists:
+            logger.warning(
+                "[ResearchJob] Recovered ambiguous mailbox write for %s",
+                record["jobId"],
+            )
+            return CompletionPublishResult(
+                CompletionPublishStatus.DURABLE,
+                event_id=record.get("mailboxEventId")
+                or _completion_event_id(record),
+            )
+        logger.exception(
+            "[ResearchJob] Mailbox write failed for %s",
+            record["jobId"],
+        )
+        return CompletionPublishResult(
+            CompletionPublishStatus.FAILED,
+            error=str(exc),
+        )
 
 
 def load_pending_results(user_id: str, session_id: str) -> list[Dict[str, Any]]:
@@ -354,6 +473,23 @@ def recover_pending_mailbox_events(user_id: str, session_id: str) -> list[str]:
     recovered = []
     for item in load_pending_results(user_id, session_id):
         record = item["record"]
+        from agent.mailbox import PROCESSED, get_mailbox_repository
+
+        try:
+            existing = get_mailbox_repository().get_event(
+                user_id,
+                session_id,
+                record.get("mailboxEventId") or _completion_event_id(record),
+            )
+        except Exception:
+            logger.exception(
+                "[ResearchJob] Failed to inspect completion event for %s",
+                record["jobId"],
+            )
+            existing = None
+        if existing and existing.status == PROCESSED:
+            mark_delivered(record)
+            continue
         # Re-enqueue even when the job already has its deterministic ID. A
         # prior write may have failed after the job record was prepared but
         # before the INBOX transaction became durable.
@@ -365,6 +501,51 @@ def recover_pending_mailbox_events(user_id: str, session_id: str) -> list[str]:
         if event_id:
             recovered.append(event_id)
     return recovered
+
+
+def reconcile_processed_deliveries(
+    user_id: str,
+    session_id: str,
+    event_ids: Optional[list[str]] = None,
+) -> int:
+    """Project processed completion events back onto producer job rows."""
+    from agent.mailbox import PROCESSED, get_mailbox_repository
+
+    repository = get_mailbox_repository()
+    reconciled = 0
+    if event_ids:
+        records = []
+        for event_id in dict.fromkeys(event_ids):
+            event = repository.get_event(user_id, session_id, event_id)
+            if (
+                event is None
+                or event.status != PROCESSED
+                or event.source.get("type") != "research_job"
+            ):
+                continue
+            record = _get_job(
+                user_id,
+                session_id,
+                event.source["id"],
+            )
+            if record is not None:
+                records.append(record)
+    else:
+        records = _list_jobs(user_id, session_id)
+
+    for record in records:
+        if record.get("status") != "delivering":
+            continue
+        event = repository.get_event(
+            user_id,
+            session_id,
+            record.get("mailboxEventId") or _completion_event_id(record),
+        )
+        if event is None or event.status != PROCESSED:
+            continue
+        mark_delivered(record)
+        reconciled += 1
+    return reconciled
 
 
 def mark_delivered(record: Dict[str, Any]) -> None:
@@ -405,7 +586,11 @@ async def _deliver(record: Dict[str, Any], artifact: Dict[str, Any]) -> None:
 async def _notify_mailbox(record: Dict[str, Any]):
     from agent.mailbox_runtime import notify_session_mailbox
 
-    return await notify_session_mailbox(record["userId"], record["sessionId"])
+    return await notify_session_mailbox(
+        record["userId"],
+        record["sessionId"],
+        event_ids=[record["mailboxEventId"]],
+    )
 
 
 def _publish_progress(record: Dict[str, Any], event: Dict[str, Any]) -> None:
@@ -474,59 +659,41 @@ async def _run_job(record: Dict[str, Any], event_factory: EventFactory) -> None:
         # stale "completed" or "delivering" snapshot afterward.
         record.update(status="delivering", updatedAt=_now())
         _save_job(record)
-        try:
-            mailbox_event_id = _enqueue_completion_event(record)
-            if mailbox_event_id:
-                record["mailboxEventId"] = mailbox_event_id
-        except Exception as exc:
-            from agent.mailbox import SessionDeletedError
+        from agent.mailbox_runtime import mailbox_delivery_enabled
 
-            if isinstance(exc, SessionDeletedError):
-                record.update(
-                    status="cancelled",
-                    updatedAt=_now(),
-                    deliveryError=str(exc),
-                )
-                _save_job(record)
-                logger.info(
-                    "[ResearchJob] Cancelled delivery to deleted session %s",
-                    record["sessionId"],
-                )
-                return
-            try:
-                event_exists = _completion_event_exists(record)
-            except Exception:
-                logger.exception(
-                    "[ResearchJob] Failed to reconcile mailbox write for %s",
-                    record["jobId"],
-                )
+        publish = _publish_completion(record)
+        if publish.status == CompletionPublishStatus.CANCELLED:
+            record.update(
+                status="cancelled",
+                updatedAt=_now(),
+                deliveryError=publish.error,
+            )
+            _save_job(record)
+            logger.info(
+                "[ResearchJob] Cancelled delivery to fenced session %s",
+                record["sessionId"],
+            )
+            return
+        if publish.status == CompletionPublishStatus.DURABLE:
+            record["mailboxEventId"] = publish.event_id
+            record.pop("mailboxWriteError", None)
+        elif publish.status == CompletionPublishStatus.FAILED:
+            record.pop("mailboxEventId", None)
+            record["mailboxWriteError"] = publish.error
+            if mailbox_delivery_enabled():
                 record.update(
                     status="completed",
-                    deliveryError=str(exc),
-                    mailboxWriteError=str(exc),
+                    deliveryError=(
+                        "Mailbox delivery is enabled but completion enqueue failed"
+                    ),
                     updatedAt=_now(),
                 )
                 _save_job(record)
                 return
-            if event_exists:
-                # The enqueue response was ambiguous, but the strongly
-                # consistent mailbox read proves that delivery is durable.
-                logger.warning(
-                    "[ResearchJob] Recovered ambiguous mailbox write for %s",
-                    record["jobId"],
-                )
-            else:
-                record.pop("mailboxEventId", None)
-                record["mailboxWriteError"] = str(exc)
-                _save_job(record)
-                logger.exception(
-                    "[ResearchJob] Mailbox write failed for %s",
-                    record["jobId"],
-                )
+        elif publish.status == CompletionPublishStatus.DISABLED:
+            _save_job(record)
 
         try:
-            from agent.mailbox_runtime import mailbox_delivery_enabled
-
             if mailbox_delivery_enabled():
                 if not record.get("mailboxEventId"):
                     raise RuntimeError(
@@ -580,6 +747,14 @@ def start_research_job(
     """Persist and start one research job, returning its public start receipt."""
     job_id = uuid4().hex
     created_at = _now()
+    conversation_epoch = 0
+    if _mailbox_write_enabled():
+        from agent.mailbox import get_mailbox_repository
+
+        conversation_epoch = get_mailbox_repository().get_conversation_epoch(
+            user_id,
+            session_id,
+        )
     record: Dict[str, Any] = {
         "jobId": job_id,
         "sessionId": session_id,
@@ -591,6 +766,7 @@ def start_research_job(
         "updatedAt": created_at,
         "modelId": model_id or "",
         "requestType": request_type,
+        "conversationEpoch": conversation_epoch,
     }
     _save_job(record)
 

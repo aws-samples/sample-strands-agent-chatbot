@@ -117,6 +117,30 @@ describe('useChat message queue wiring', () => {
     expect(sentTexts()).toEqual([])
   })
 
+  it('keeps the foreground run active while a text stream is open', async () => {
+    let finishStream: () => void = () => {}
+    apiSendMessage.mockImplementationOnce(async (...args: SendArgs) => {
+      sendCalls.push(args)
+      await new Promise<void>(resolve => { finishStream = resolve })
+      args[2]?.()
+    })
+    const { result } = await mount()
+
+    let sendPromise: Promise<void>
+    act(() => {
+      sendPromise = result.current.sendMessage('stream a response')
+    })
+
+    await waitFor(() => expect(result.current.isForegroundRunActive).toBe(true))
+
+    await act(async () => {
+      finishStream()
+      await sendPromise!
+    })
+
+    expect(result.current.isForegroundRunActive).toBe(false)
+  })
+
   it('flushes the queue after a turn finishes normally', async () => {
     const { result } = await mount()
 
@@ -186,6 +210,95 @@ describe('useChat message queue wiring', () => {
     await act(async () => { await result.current.stopGeneration() })
 
     await waitFor(() => expect(result.current.queueHoldReason).toBe('stopped'))
+    expect(sentTexts()).toEqual([])
+  })
+
+  it('stops before sending the selected queued message', async () => {
+    const { result } = await mount()
+
+    act(() => { result.current.enqueueMessage('first queued') })
+    act(() => { result.current.enqueueMessage('send this now') })
+    const selectedId = result.current.queuedMessages[1].id
+
+    let interrupted = false
+    await act(async () => {
+      interrupted = await result.current.interruptWithQueuedMessage(selectedId)
+    })
+
+    expect(interrupted).toBe(true)
+    expect(sendStopSignal).toHaveBeenCalledTimes(1)
+    expect(sendStopSignal.mock.invocationCallOrder[0])
+      .toBeLessThan(apiSendMessage.mock.invocationCallOrder[0])
+    expect(sentTexts()[0]).toBe('send this now')
+    await waitFor(() => {
+      expect(sentTexts()).toEqual(['send this now', 'first queued'])
+    })
+    expect(result.current.queuedMessages).toEqual([])
+  })
+
+  it('keeps the selected message queued when the stop request fails', async () => {
+    sendStopSignal.mockResolvedValueOnce(false)
+    const { result } = await mount()
+
+    act(() => { result.current.enqueueMessage('first queued') })
+    act(() => { result.current.enqueueMessage('selected') })
+    const selectedId = result.current.queuedMessages[1].id
+
+    let interrupted = true
+    await act(async () => {
+      interrupted = await result.current.interruptWithQueuedMessage(selectedId)
+    })
+
+    expect(interrupted).toBe(false)
+    expect(sentTexts()).toEqual([])
+    expect(result.current.queuedMessages.map(m => m.text)).toEqual([
+      'first queued',
+      'selected',
+    ])
+    expect(result.current.queueHoldReason).toBeNull()
+  })
+
+  it('sends a selected queued message immediately while idle', async () => {
+    const { result } = await mount()
+
+    act(() => { result.current.enqueueMessage('first queued') })
+    act(() => { result.current.enqueueMessage('send this now') })
+    const selectedId = result.current.queuedMessages[1].id
+
+    let sent = false
+    await act(async () => {
+      sent = await result.current.sendQueuedMessageNow(selectedId)
+    })
+
+    expect(sent).toBe(true)
+    expect(sendStopSignal).not.toHaveBeenCalled()
+    expect(sentTexts()[0]).toBe('send this now')
+    await waitFor(() => {
+      expect(sentTexts()).toEqual(['send this now', 'first queued'])
+    })
+    expect(result.current.queuedMessages).toEqual([])
+  })
+
+  it('does not send the selected message after a session switch', async () => {
+    let acceptStop: (accepted: boolean) => void = () => {}
+    sendStopSignal.mockReturnValueOnce(
+      new Promise<boolean>(resolve => { acceptStop = resolve }),
+    )
+    const { result } = await mount()
+
+    act(() => { result.current.enqueueMessage('selected') })
+    const selectedId = result.current.queuedMessages[0].id
+
+    let interruptPromise: Promise<boolean>
+    act(() => {
+      interruptPromise = result.current.interruptWithQueuedMessage(selectedId)
+    })
+    await act(async () => {
+      await result.current.loadSession('different-session')
+      acceptStop(true)
+    })
+
+    await expect(interruptPromise!).resolves.toBe(false)
     expect(sentTexts()).toEqual([])
   })
 

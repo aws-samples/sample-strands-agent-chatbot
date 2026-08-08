@@ -14,6 +14,7 @@ import { getApiUrl } from '@/config/environment'
 import { generateSessionId } from '@/config/session'
 import { apiGet, apiPost } from '@/lib/api-client'
 import { groupChatMessages, type GroupedChatMessage } from '@/lib/chat-message-groups'
+import { deriveTurnControl, type TurnControlState } from '@/lib/turn-control'
 
 import { WorkspaceDocument } from './useStreamEvents'
 import { ExtractedDataInfo } from './useCanvasHandlers'
@@ -38,6 +39,10 @@ interface UseChatReturn {
   isConnected: boolean
   isTyping: boolean
   agentStatus: AgentStatus
+  /** A foreground chat request is still running and can receive a stop signal. */
+  isForegroundRunActive: boolean
+  /** Canonical user-action state shared by the composer and queued turns. */
+  turnControl: TurnControlState
   currentToolExecutions: ToolExecution[]
   currentReasoning: ReasoningState | null
   showProgressPanel: boolean
@@ -47,7 +52,7 @@ interface UseChatReturn {
     executionId: string,
     messageIdentity?: ReplayMessageIdentity,
   ) => Promise<boolean>
-  stopGeneration: () => Promise<void>
+  stopGeneration: () => Promise<boolean>
   // Queue for turns composed while the agent is busy
   queuedMessages: QueuedMessage[]
   queueHoldReason: QueueHoldReason | null
@@ -56,9 +61,14 @@ interface UseChatReturn {
   clearQueuedMessages: () => void
   /** User confirmed a held queue: resume and send the next message now. */
   releaseQueue: () => void
+  /** Stop the current turn and immediately dispatch the selected queued turn. */
+  interruptWithQueuedMessage: (id: string) => Promise<boolean>
+  /** Immediately dispatch the selected queued turn while the agent is idle. */
+  sendQueuedMessageNow: (id: string) => Promise<boolean>
   newChat: () => Promise<void>
   compactSession: () => Promise<void>
   truncateFromMessage: (message: Message) => Promise<void>
+  sessionEventRefreshVersion: number
   sessionId: string
   isLoadingMessages: boolean
   isCompacting: boolean
@@ -171,12 +181,18 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
       endToEndLatency: null
     }
   })
+  const [isForegroundRunActive, setIsForegroundRunActive] = useState(false)
+  const [sessionEventRefreshVersion, setSessionEventRefreshVersion] = useState(0)
 
   // ==================== REFS ====================
   const currentToolExecutionsRef = useRef<ToolExecution[]>([])
   const currentTurnIdRef = useRef<string | null>(null)
   const currentSessionIdRef = useRef<string | null>(null)
   const messagesRef = useRef<Message[]>([])
+  const sessionStateRef = useRef(sessionState)
+  sessionStateRef.current = sessionState
+  const uiStateRef = useRef(uiState)
+  uiStateRef.current = uiState
   // Set once the queue hook is initialized below; newChat and respondToInterrupt
   // are declared before it.
   const clearQueuedMessagesRef = useRef<() => void>(() => {})
@@ -255,6 +271,7 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
     replayExecution: apiReplayExecution,
     cleanup,
     sendStopSignal,
+    hasStoppableRun,
     loadSession: apiLoadSession,
     isReconnecting,
     reconnectAttempt,
@@ -340,6 +357,7 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
 
     // Stop any existing polling
     stopPolling()
+    setIsForegroundRunActive(false)
 
     // Set loading state for UI feedback
     setIsLoadingMessages(true)
@@ -442,6 +460,7 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
 
     const success = await apiNewChat()
     if (success) {
+      setIsForegroundRunActive(false)
       setSessionState({
         reasoning: null,
         streaming: null,
@@ -474,6 +493,7 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
 
     const agentStatus: 'thinking' | 'researching' = isResearchInterrupt ? 'researching' : 'thinking'
     setUIState(prev => ({ ...prev, isTyping: true, agentStatus }))
+    setIsForegroundRunActive(true)
 
     try {
       await apiSendMessage(
@@ -492,6 +512,8 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
       console.error('[Interrupt] Failed to respond to interrupt:', error)
       setTurnSettled({ outcome: 'error' })
       setUIState(prev => ({ ...prev, isTyping: false, agentStatus: 'idle' }))
+    } finally {
+      setIsForegroundRunActive(false)
     }
   }, [sessionState.interrupt, apiSendMessage])
 
@@ -560,27 +582,32 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
     // where flushing the next queued message can be safe. Whether it actually
     // is safe also depends on interrupt/OAuth state, which is checked in the
     // effect below once React has committed this turn's events.
-    await apiSendMessage(
-      messageToSend,
-      files,
-      () => { setTurnSettled({ outcome: 'finished' }) },
-      () => {
-        setTurnSettled({ outcome: 'error' })
-        setSessionState(prev => ({
-          reasoning: null,
-          streaming: null,
-          toolExecutions: [],
-          browserSession: prev.browserSession,
-          browserProgress: undefined,
-          researchProgress: undefined,
-          interrupt: null,
-          pendingOAuth: null
-        }))
-        setUIState(prev => ({ ...prev, agentStatus: 'idle', isTyping: false }))
-      },
-      systemPrompt,
-      selectedArtifactId
-    )
+    setIsForegroundRunActive(true)
+    try {
+      await apiSendMessage(
+        messageToSend,
+        files,
+        () => { setTurnSettled({ outcome: 'finished' }) },
+        () => {
+          setTurnSettled({ outcome: 'error' })
+          setSessionState(prev => ({
+            reasoning: null,
+            streaming: null,
+            toolExecutions: [],
+            browserSession: prev.browserSession,
+            browserProgress: undefined,
+            researchProgress: undefined,
+            interrupt: null,
+            pendingOAuth: null
+          }))
+          setUIState(prev => ({ ...prev, agentStatus: 'idle', isTyping: false }))
+        },
+        systemPrompt,
+        selectedArtifactId
+      )
+    } finally {
+      setIsForegroundRunActive(false)
+    }
   }, [apiSendMessage, setUIState])
 
   // ==================== MESSAGE QUEUE ====================
@@ -605,6 +632,7 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
     enqueue,
     remove: removeQueuedMessage,
     clear: clearQueuedMessages,
+    prioritize: prioritizeQueuedMessage,
     flushNext,
     hold: holdQueue,
     release: releaseHold,
@@ -698,6 +726,31 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
       hasPendingOAuth: !!sessionState.pendingOAuth,
     })
   }, [releaseHold, flushNext, sessionId, sessionState.interrupt, sessionState.pendingOAuth])
+
+  const sendQueuedMessageNow = useCallback(async (id: string): Promise<boolean> => {
+    const targetSessionId = sessionId
+    const latestState = sessionStateRef.current
+    if (
+      uiStateRef.current.agentStatus !== 'idle' ||
+      latestState.interrupt ||
+      latestState.pendingOAuth
+    ) {
+      return false
+    }
+    if (!prioritizeQueuedMessage(id, targetSessionId)) return false
+    if (currentSessionIdRef.current !== targetSessionId) return false
+
+    releaseHold()
+    return flushNext(targetSessionId, {
+      hasInterrupt: false,
+      hasPendingOAuth: false,
+    })
+  }, [
+    flushNext,
+    prioritizeQueuedMessage,
+    releaseHold,
+    sessionId,
+  ])
 
   // localStorage key for compact recovery across browser refresh
   const getCompactPendingKey = (sid: string) => `compact_pending_${sid}`
@@ -821,6 +874,7 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
 
     try {
       await apiTruncateSession(params)
+      setSessionEventRefreshVersion(version => version + 1)
       console.log('[truncate] Backend truncation complete')
     } catch (error) {
       console.error('[truncate] Error truncating session:', error)
@@ -845,28 +899,74 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId])
 
-  const stopGeneration = useCallback(async () => {
-    let previousStatus: AgentStatus = 'thinking'
-    setUIState(prev => {
-      previousStatus = prev.agentStatus
-      return { ...prev, agentStatus: 'stopping' }
-    })
+  const stopGeneration = useCallback(async (): Promise<boolean> => {
+    const stoppingSessionId = currentSessionIdRef.current
+    const previousStatus = uiState.agentStatus
+    setUIState(prev => ({ ...prev, agentStatus: 'stopping' }))
 
     const stopped = await sendStopSignal()
     if (stopped) {
+      // A session switch owns the UI now. The stop still succeeded for the old
+      // run, but must not reset or hold the newly selected session.
+      if (currentSessionIdRef.current !== stoppingSessionId) return true
+
       // The durable stop request has been accepted; the local stream can now close.
       resetStreamingState()
+      setIsForegroundRunActive(false)
       // Stopping is a deliberate interruption, so don't immediately send whatever
       // was queued — that would look like the stop was ignored.
       holdQueue('stopped')
-      return
+      return true
     }
 
-    setUIState(prev => ({
-      ...prev,
-      agentStatus: previousStatus === 'stopping' ? 'thinking' : previousStatus,
-    }))
-  }, [sendStopSignal, resetStreamingState, holdQueue])
+    if (currentSessionIdRef.current === stoppingSessionId) {
+      setUIState(prev => ({
+        ...prev,
+        agentStatus: previousStatus === 'stopping' ? 'thinking' : previousStatus,
+      }))
+    }
+    return false
+  }, [sendStopSignal, resetStreamingState, holdQueue, uiState.agentStatus])
+
+  const interruptWithQueuedMessage = useCallback(async (id: string): Promise<boolean> => {
+    const interruptSessionId = sessionId
+    const initialState = sessionStateRef.current
+    if (initialState.interrupt || initialState.pendingOAuth) return false
+    const previousHoldReason = queueHoldReason
+    holdQueue('stopped')
+
+    const stopped = await stopGeneration()
+    if (!stopped) {
+      if (previousHoldReason) {
+        holdQueue(previousHoldReason)
+      } else {
+        releaseHold()
+      }
+      return false
+    }
+    if (currentSessionIdRef.current !== interruptSessionId) return false
+    if (!prioritizeQueuedMessage(id, interruptSessionId)) return false
+
+    const latestState = sessionStateRef.current
+    if (latestState.interrupt || latestState.pendingOAuth) return false
+
+    // stopGeneration deliberately holds normal queued turns. This action is an
+    // explicit request to continue with the selected one, so release that hold
+    // and use the same guarded send path as every other queued turn.
+    releaseHold()
+    return flushNext(interruptSessionId, {
+      hasInterrupt: latestState.interrupt !== null,
+      hasPendingOAuth: !!latestState.pendingOAuth,
+    })
+  }, [
+    flushNext,
+    prioritizeQueuedMessage,
+    queueHoldReason,
+    releaseHold,
+    sessionId,
+    stopGeneration,
+    holdQueue,
+  ])
 
   const cancelOAuth = useCallback(() => {
     setSessionState(prev => ({ ...prev, pendingOAuth: null }))
@@ -875,6 +975,16 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
 
   // ==================== DERIVED STATE ====================
   const groupedMessages = useMemo(() => groupChatMessages(messages), [messages])
+  const isCurrentSessionCompacting =
+    compactingSessionId !== null && compactingSessionId === sessionId
+  const turnControl = deriveTurnControl({
+    agentStatus: uiState.agentStatus,
+    isForegroundRunActive,
+    hasStoppableRun,
+    isCompacting: isCurrentSessionCompacting,
+    interruptCount: sessionState.interrupt?.interrupts.length ?? 0,
+    hasPendingOAuth: Boolean(sessionState.pendingOAuth),
+  })
 
   // Update per-session model config (React state + global default via API)
   const updateModelConfig = useCallback((modelId: string, temperature?: number) => {
@@ -1098,6 +1208,8 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
     isConnected: uiState.isConnected,
     isTyping: uiState.isTyping,
     agentStatus: uiState.agentStatus,
+    isForegroundRunActive,
+    turnControl,
     currentToolExecutions: sessionState.toolExecutions,
     currentReasoning: sessionState.reasoning,
     showProgressPanel: uiState.showProgressPanel,
@@ -1111,12 +1223,15 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
     removeQueuedMessage,
     clearQueuedMessages,
     releaseQueue,
+    interruptWithQueuedMessage,
+    sendQueuedMessageNow,
     newChat,
     compactSession,
     truncateFromMessage,
+    sessionEventRefreshVersion,
     sessionId,
     isLoadingMessages,
-    isCompacting: compactingSessionId !== null && compactingSessionId === sessionId,
+    isCompacting: isCurrentSessionCompacting,
     loadSession: loadSessionWithPreferences,
     browserSession: sessionState.browserSession,
     browserProgress: sessionState.browserProgress,
