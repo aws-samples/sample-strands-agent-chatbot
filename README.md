@@ -12,25 +12,6 @@ It is intended as a realistic, extensible sample for teams exploring advanced ag
 
 ---
 
-## Demo
-
-https://github.com/user-attachments/assets/11b383c2-2e14-4135-833f-b0b2bce62953
-
-> **[Full demo (6 min)](https://drive.google.com/file/d/1Hk4hgiqqMntNRUN1xDkwcbJUA8MVEJEA/view?usp=sharing)**
-
-### Mobile App
-
-<table>
-  <tr>
-    <td align="center"><img src="docs/images/claude-code-agent.png" width="180"><br><sub>Coding Agent</sub></td>
-    <td align="center"><img src="docs/images/finance-analysis.png" width="180"><br><sub>Financial Analysis</sub></td>
-    <td align="center"><img src="docs/images/browser-automation.png" width="180"><br><sub>Browser Automation</sub></td>
-    <td align="center"><img src="docs/images/browser-automation-2.png" width="180"><br><sub>Web Search</sub></td>
-  </tr>
-</table>
-
----
-
 ## What this repository demonstrates
 
 - Multi-agent orchestration with **Strands Agents**
