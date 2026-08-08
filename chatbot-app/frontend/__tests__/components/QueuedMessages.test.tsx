@@ -81,9 +81,11 @@ describe('QueuedMessages', () => {
   it('interrupts with the queued message that was clicked', () => {
     const { onInterrupt } = setup([msg('first'), msg('second')], null, 'interrupt')
     const buttons = screen.getAllByRole('button', {
-      name: /interrupt with this message/i,
+      name: 'Interrupt and send now',
     })
-    expect(screen.getAllByText('Interrupt')).toHaveLength(2)
+    expect(screen.queryByText('Interrupt')).not.toBeInTheDocument()
+    expect(buttons).toHaveLength(2)
+    expect(buttons[0]).toHaveClass('h-7', 'w-7')
 
     fireEvent.click(buttons[1])
 
@@ -91,11 +93,24 @@ describe('QueuedMessages', () => {
     expect(onInterrupt).toHaveBeenCalledWith('id-second')
   })
 
+  it('explains the interrupt action on hover or keyboard focus', async () => {
+    setup([msg('queued')], null, 'interrupt')
+    const button = screen.getByRole('button', {
+      name: 'Interrupt and send now',
+    })
+
+    fireEvent.focus(button)
+
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(
+      'Interrupt and send now',
+    )
+  })
+
   it('hides interrupt controls when the current state cannot be stopped', () => {
     setup([msg('queued')])
 
     expect(screen.queryByRole('button', {
-      name: /interrupt with this message/i,
+      name: 'Interrupt and send now',
     })).not.toBeInTheDocument()
   })
 
@@ -106,9 +121,10 @@ describe('QueuedMessages', () => {
       'send',
     )
     const buttons = screen.getAllByRole('button', {
-      name: /send this message now/i,
+      name: 'Send now',
     })
-    expect(screen.getAllByText('Send now')).toHaveLength(2)
+    expect(screen.queryByText('Send now')).not.toBeInTheDocument()
+    expect(buttons).toHaveLength(2)
 
     fireEvent.click(buttons[1])
 

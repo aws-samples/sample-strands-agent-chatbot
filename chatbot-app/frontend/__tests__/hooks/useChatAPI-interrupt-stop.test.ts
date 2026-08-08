@@ -120,10 +120,12 @@ describe('useChatAPI — stopping a turn that parked at an interrupt', () => {
     const { hook } = setup()
     await runTurn(hook, [INTERRUPT])
 
+    expect(hook.result.current.hasStoppableRun).toBe(true)
     const { requested, accepted } = await tryStop(hook)
 
     expect(requested).toBe(true)
     expect(accepted).toBe(true)
+    expect(hook.result.current.hasStoppableRun).toBe(false)
   })
 
   it('targets the run that was interrupted', async () => {
@@ -147,6 +149,7 @@ describe('useChatAPI — stopping a turn that parked at an interrupt', () => {
     const { hook } = setup()
     await runTurn(hook, [RUN_FINISHED])
 
+    expect(hook.result.current.hasStoppableRun).toBe(false)
     const { requested, accepted } = await tryStop(hook)
 
     expect(requested).toBe(false)
@@ -210,6 +213,7 @@ describe('useChatAPI — background execution replay', () => {
       await Promise.resolve()
     })
     expect(replayed).toBe(false)
+    expect(hook.result.current.hasStoppableRun).toBe(false)
 
     await act(async () => {
       finishCleanup?.()

@@ -11,8 +11,14 @@
 
 import React from "react"
 import { motion } from "framer-motion"
-import { Clock3, SendHorizontal, X } from "lucide-react"
+import { Clock3, Send, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import type { QueuedMessage, QueueHoldReason } from "@/hooks/useMessageQueue"
 
 const HOLD_MESSAGE: Record<QueueHoldReason, string> = {
@@ -46,92 +52,113 @@ export function QueuedMessages({
   if (queue.length === 0) return null
 
   return (
-    <div className="mx-auto px-4 w-full md:max-w-4xl mb-2">
-      {holdReason && (
-        <div className="flex items-center justify-between gap-3 mb-2 px-3 py-2 rounded-lg border border-amber-500/40 bg-amber-500/5 text-sm">
-          <span className="text-muted-foreground">
-            {HOLD_MESSAGE[holdReason]}{" "}
-            {queue.length === 1 ? "1 message is" : `${queue.length} messages are`} still queued.
-          </span>
-          <div className="flex items-center gap-1 shrink-0">
-            <Button type="button" variant="ghost" size="sm" className="h-7 px-2" onClick={onSendNow}>
-              Send
-            </Button>
-            {/* Says how many it drops: "Discard" next to a list of chips does
-                not make clear whether it clears one or all of them. */}
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className="h-7 px-2 text-muted-foreground"
-              onClick={onDiscardAll}
-            >
-              {queue.length === 1 ? "Discard" : `Discard all ${queue.length}`}
-            </Button>
-          </div>
-        </div>
-      )}
-
-      <div className="flex flex-col gap-1.5">
-        {queue.map(message => {
-          const label = message.text || "attachments"
-          return (
-            <motion.div
-              key={message.id}
-              layout
-              initial={{ opacity: 0, y: 4 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 4 }}
-              className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-border/60 bg-muted/50 text-sm"
-            >
-              <Clock3 className="h-4 w-4 shrink-0 text-muted-foreground" />
-              <span className="min-w-0 flex-1 truncate text-foreground/80">
-                {message.text || `${message.files.length} attachment(s)`}
-              </span>
-              {message.files.length > 0 && message.text && (
-                <span className="shrink-0 text-xs text-muted-foreground">
-                  +{message.files.length}
-                </span>
-              )}
-              {actionMode && (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => {
-                    void (
-                      actionMode === "interrupt"
-                        ? onInterrupt(message.id)
-                        : onSendMessageNow(message.id)
-                    )
-                  }}
-                  aria-label={
-                    actionMode === "interrupt"
-                      ? `Interrupt with this message: ${label}`
-                      : `Send this message now: ${label}`
-                  }
-                  className="h-7 shrink-0 gap-1 rounded-md border border-border/60 bg-background px-2 text-xs font-normal text-muted-foreground hover:border-primary/40 hover:text-foreground"
-                >
-                  <SendHorizontal className="h-3.5 w-3.5" />
-                  {actionMode === "interrupt" ? "Interrupt" : "Send now"}
-                </Button>
-              )}
-              {/* Always visible: a hover-only control is unreachable on touch and
-                  reads as "no way to cancel this" everywhere else. Matches the
-                  attachment chips, which also keep their remove button on show. */}
-              <button
+    <TooltipProvider delayDuration={300}>
+      <div className="mx-auto px-4 w-full md:max-w-4xl mb-2">
+        {holdReason && (
+          <div className="flex items-center justify-between gap-3 mb-2 px-3 py-2 rounded-lg border border-amber-500/40 bg-amber-500/5 text-sm">
+            <span className="text-muted-foreground">
+              {HOLD_MESSAGE[holdReason]}{" "}
+              {queue.length === 1
+                ? "1 message is"
+                : `${queue.length} messages are`}{" "}
+              still queued.
+            </span>
+            <div className="flex items-center gap-1 shrink-0">
+              <Button
                 type="button"
-                onClick={() => onRemove(message.id)}
-                aria-label={`Remove queued message: ${label}`}
-                title="Remove from queue"
-                className="shrink-0 flex h-6 w-6 items-center justify-center rounded-full border border-border/60 bg-background text-muted-foreground hover:bg-destructive hover:text-destructive-foreground hover:border-destructive transition-colors"
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2"
+                onClick={onSendNow}
               >
-                <X className="h-3.5 w-3.5" />
-              </button>
-            </motion.div>
-          )
-        })}
+                Send
+              </Button>
+              {/* Says how many it drops: "Discard" next to a list of chips does
+                  not make clear whether it clears one or all of them. */}
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2 text-muted-foreground"
+                onClick={onDiscardAll}
+              >
+                {queue.length === 1
+                  ? "Discard"
+                  : `Discard all ${queue.length}`}
+              </Button>
+            </div>
+          </div>
+        )}
+
+        <div className="flex flex-col gap-1.5">
+          {queue.map(message => {
+            const label = message.text || "attachments"
+            return (
+              <motion.div
+                key={message.id}
+                layout
+                initial={{ opacity: 0, y: 4 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 4 }}
+                className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-border/60 bg-muted/50 text-sm"
+              >
+                <Clock3 className="h-4 w-4 shrink-0 text-muted-foreground" />
+                <span className="min-w-0 flex-1 truncate text-foreground/80">
+                  {message.text || `${message.files.length} attachment(s)`}
+                </span>
+                {message.files.length > 0 && message.text && (
+                  <span className="shrink-0 text-xs text-muted-foreground">
+                    +{message.files.length}
+                  </span>
+                )}
+                {actionMode && (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => {
+                          void (
+                            actionMode === "interrupt"
+                              ? onInterrupt(message.id)
+                              : onSendMessageNow(message.id)
+                          )
+                        }}
+                        aria-label={
+                          actionMode === "interrupt"
+                            ? "Interrupt and send now"
+                            : "Send now"
+                        }
+                        className="h-7 w-7 shrink-0 rounded-md border border-border/60 bg-background text-muted-foreground hover:border-primary/40 hover:text-foreground"
+                      >
+                        <Send className="h-3.5 w-3.5" aria-hidden="true" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="top">
+                      {actionMode === "interrupt"
+                        ? "Interrupt and send now"
+                        : "Send now"}
+                    </TooltipContent>
+                  </Tooltip>
+                )}
+                {/* Always visible: a hover-only control is unreachable on touch and
+                    reads as "no way to cancel this" everywhere else. Matches the
+                    attachment chips, which also keep their remove button on show. */}
+                <button
+                  type="button"
+                  onClick={() => onRemove(message.id)}
+                  aria-label={`Remove queued message: ${label}`}
+                  title="Remove from queue"
+                  className="shrink-0 flex h-6 w-6 items-center justify-center rounded-full border border-border/60 bg-background text-muted-foreground hover:bg-destructive hover:text-destructive-foreground hover:border-destructive transition-colors"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </motion.div>
+            )
+          })}
+        </div>
       </div>
-    </div>
+    </TooltipProvider>
   )
 }

@@ -252,8 +252,8 @@ describe('useChat message queue wiring', () => {
     expect(interrupted).toBe(false)
     expect(sentTexts()).toEqual([])
     expect(result.current.queuedMessages.map(m => m.text)).toEqual([
-      'selected',
       'first queued',
+      'selected',
     ])
     expect(result.current.queueHoldReason).toBeNull()
   })

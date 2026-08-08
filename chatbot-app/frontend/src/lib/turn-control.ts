@@ -9,6 +9,7 @@ export interface TurnControlState {
 interface DeriveTurnControlOptions {
   agentStatus: AgentStatus
   isForegroundRunActive: boolean
+  hasStoppableRun: boolean
   isCompacting: boolean
   interruptCount: number
   hasPendingOAuth: boolean
@@ -21,6 +22,7 @@ interface DeriveTurnControlOptions {
 export function deriveTurnControl({
   agentStatus,
   isForegroundRunActive,
+  hasStoppableRun,
   isCompacting,
   interruptCount,
   hasPendingOAuth,
@@ -36,7 +38,7 @@ export function deriveTurnControl({
     isBusy,
     isBlocked,
     canInterrupt:
-      isBusy &&
+      hasStoppableRun &&
       !isBlocked &&
       !isCompacting &&
       agentStatus !== 'stopping' &&

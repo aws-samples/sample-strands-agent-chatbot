@@ -6,6 +6,7 @@ import type { AgentStatus } from '@/types/events'
 const base = {
   agentStatus: 'idle' as AgentStatus,
   isForegroundRunActive: false,
+  hasStoppableRun: false,
   isCompacting: false,
   interruptCount: 0,
   hasPendingOAuth: false,
@@ -17,8 +18,12 @@ describe('deriveTurnControl', () => {
     'responding',
     'researching',
     'swarm',
-  ])('makes %s activity interruptible without a foreground flag', agentStatus => {
-    expect(deriveTurnControl({ ...base, agentStatus })).toEqual({
+  ])('makes %s activity interruptible when an active run can be stopped', agentStatus => {
+    expect(deriveTurnControl({
+      ...base,
+      agentStatus,
+      hasStoppableRun: true,
+    })).toEqual({
       isBusy: true,
       isBlocked: false,
       canInterrupt: true,
@@ -29,6 +34,7 @@ describe('deriveTurnControl', () => {
     expect(deriveTurnControl({
       ...base,
       agentStatus: 'responding',
+      hasStoppableRun: true,
       interruptCount: 0,
     }).canInterrupt).toBe(true)
   })
@@ -40,6 +46,7 @@ describe('deriveTurnControl', () => {
     expect(deriveTurnControl({
       ...base,
       agentStatus: 'responding',
+      hasStoppableRun: true,
       ...blocked,
     })).toEqual({
       isBusy: true,
@@ -58,4 +65,16 @@ describe('deriveTurnControl', () => {
       })
     },
   )
+
+  it('keeps replay-only activity busy without offering a no-op interrupt', () => {
+    expect(deriveTurnControl({
+      ...base,
+      agentStatus: 'thinking',
+      hasStoppableRun: false,
+    })).toEqual({
+      isBusy: true,
+      isBlocked: false,
+      canInterrupt: false,
+    })
+  })
 })

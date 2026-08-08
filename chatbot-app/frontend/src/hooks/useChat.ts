@@ -271,6 +271,7 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
     replayExecution: apiReplayExecution,
     cleanup,
     sendStopSignal,
+    hasStoppableRun,
     loadSession: apiLoadSession,
     isReconnecting,
     reconnectAttempt,
@@ -931,10 +932,20 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
     const interruptSessionId = sessionId
     const initialState = sessionStateRef.current
     if (initialState.interrupt || initialState.pendingOAuth) return false
-    if (!prioritizeQueuedMessage(id, interruptSessionId)) return false
+    const previousHoldReason = queueHoldReason
+    holdQueue('stopped')
 
     const stopped = await stopGeneration()
-    if (!stopped || currentSessionIdRef.current !== interruptSessionId) return false
+    if (!stopped) {
+      if (previousHoldReason) {
+        holdQueue(previousHoldReason)
+      } else {
+        releaseHold()
+      }
+      return false
+    }
+    if (currentSessionIdRef.current !== interruptSessionId) return false
+    if (!prioritizeQueuedMessage(id, interruptSessionId)) return false
 
     const latestState = sessionStateRef.current
     if (latestState.interrupt || latestState.pendingOAuth) return false
@@ -950,9 +961,11 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
   }, [
     flushNext,
     prioritizeQueuedMessage,
+    queueHoldReason,
     releaseHold,
     sessionId,
     stopGeneration,
+    holdQueue,
   ])
 
   const cancelOAuth = useCallback(() => {
@@ -967,6 +980,7 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
   const turnControl = deriveTurnControl({
     agentStatus: uiState.agentStatus,
     isForegroundRunActive,
+    hasStoppableRun,
     isCompacting: isCurrentSessionCompacting,
     interruptCount: sessionState.interrupt?.interrupts.length ?? 0,
     hasPendingOAuth: Boolean(sessionState.pendingOAuth),

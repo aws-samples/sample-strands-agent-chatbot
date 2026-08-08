@@ -336,7 +336,7 @@ describe('ChatInterface', () => {
 
       render(<ChatInterface />)
       fireEvent.click(screen.getByRole('button', {
-        name: /interrupt with this message/i,
+        name: 'Interrupt and send now',
       }))
 
       expect(mockUseChat.interruptWithQueuedMessage).toHaveBeenCalledWith('queued-2')
@@ -360,9 +360,9 @@ describe('ChatInterface', () => {
       render(<ChatInterface />)
 
       const action = screen.getByRole('button', {
-        name: /interrupt with this message/i,
+        name: 'Interrupt and send now',
       })
-      expect(action).toHaveTextContent('Interrupt')
+      expect(action).toHaveTextContent('')
       fireEvent.click(action)
       expect(mockUseChat.interruptWithQueuedMessage)
         .toHaveBeenCalledWith('queued-stream')
@@ -386,8 +386,8 @@ describe('ChatInterface', () => {
       render(<ChatInterface />)
 
       expect(screen.getByRole('button', {
-        name: /interrupt with this message/i,
-      })).toHaveTextContent('Interrupt')
+        name: 'Interrupt and send now',
+      })).toHaveTextContent('')
     })
 
     it('offers immediate send for a queued message while idle', () => {
@@ -401,7 +401,7 @@ describe('ChatInterface', () => {
 
       render(<ChatInterface />)
       fireEvent.click(screen.getByRole('button', {
-        name: /send this message now/i,
+        name: 'Send now',
       }))
 
       expect(mockUseChat.sendQueuedMessageNow).toHaveBeenCalledWith('queued-1')
