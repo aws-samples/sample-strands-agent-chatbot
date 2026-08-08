@@ -263,16 +263,16 @@ if (!messages || messages.length === 0) {
         {/* Single Avatar for the entire turn - hidden when part of Swarm response */}
         {!hideAvatar && (
           messages.some(m => m.isVoiceMessage) ? (
-            <div className="h-9 w-9 flex-shrink-0 mt-2 flex items-center justify-center rounded-full text-white bg-gradient-to-br from-fuchsia-500 to-purple-600">
+            <div className="h-8 w-8 flex-shrink-0 mt-2 flex items-center justify-center rounded-md bg-muted text-primary">
               <AudioWaveform className="h-4 w-4" />
             </div>
           ) : (
-            <AIIcon size={36} isAnimating={messages.some(m => m.isStreaming)} className="mt-2" />
+            <AIIcon size={32} isAnimating={messages.some(m => m.isStreaming)} className="mt-2" />
           )
         )}
 
         {/* Turn Content - add left margin when avatar is hidden to align with SwarmProgress content */}
-        <div className={`flex-1 space-y-4 pt-1 min-w-0 ${hideAvatar ? 'ml-[52px]' : ''}`}>
+        <div className={`flex-1 space-y-4 pt-1 min-w-0 ${hideAvatar ? 'ml-12' : ''}`}>
           {/* Render messages in chronological order — merge consecutive tool items */}
           {groupedContent.map((item, index) => {
             if (item.type === 'tool') {

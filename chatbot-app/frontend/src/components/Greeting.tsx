@@ -68,9 +68,9 @@ export const PROMPT_CATEGORIES = [
 export function Greeting() {
   return (
     <div className="w-full flex flex-col justify-center items-center animate-fade-in">
-      <h1 className="text-4xl md:text-5xl font-bold text-center tracking-tight">
-        <span className="bg-gradient-to-r from-primary via-secondary to-accent bg-clip-text text-transparent">
-          What can I help you build?
+      <h1 className="text-[28px] md:text-[34px] leading-tight font-semibold text-center text-foreground">
+        <span>
+          What are we working on?
         </span>
       </h1>
     </div>
@@ -97,16 +97,16 @@ export function PromptSuggestions({ onSelectPrompt }: PromptSuggestionsProps) {
 
   return (
     <div className="w-full flex flex-col items-center gap-3">
-      {/* Category chips */}
+      {/* Task categories */}
       <div className="flex flex-wrap justify-center gap-2">
         {PROMPT_CATEGORIES.map(({ id, label, icon: Icon }) => (
           <button
             key={id}
             onClick={() => handleCategoryClick(id)}
-            className={`flex items-center gap-1.5 px-4 py-2 rounded-full text-sm font-medium border transition-all
+            className={`flex items-center gap-1.5 px-3 py-2 rounded-md text-sm font-medium border transition-colors
               ${activeCategory === id
-                ? "bg-primary text-primary-foreground border-primary"
-                : "bg-background text-foreground border-border hover:border-primary/60 hover:bg-muted"
+                ? "bg-accent text-accent-foreground border-primary/20"
+                : "bg-card text-muted-foreground border-border hover:bg-muted hover:text-foreground"
               }`}
           >
             <Icon className="w-3.5 h-3.5" />
@@ -117,7 +117,7 @@ export function PromptSuggestions({ onSelectPrompt }: PromptSuggestionsProps) {
 
       {/* Example prompts panel — expands downward */}
       {active && (
-        <div className="w-full max-w-lg rounded-2xl border border-border bg-card shadow-xs animate-fade-in">
+        <div className="w-full max-w-xl rounded-lg border border-border bg-card shadow-xs animate-fade-in overflow-hidden">
           <div className="flex items-center justify-between px-4 py-3 border-b border-border">
             <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
               <active.icon className="w-4 h-4" />
@@ -137,7 +137,6 @@ export function PromptSuggestions({ onSelectPrompt }: PromptSuggestionsProps) {
                   onClick={() => handlePromptClick(prompt.text)}
                   className={`w-full text-left px-4 py-3 text-sm hover:bg-muted transition-colors flex items-center gap-3
                     ${i < active.prompts.length - 1 ? "border-b border-border" : ""}
-                    ${i === active.prompts.length - 1 ? "rounded-b-2xl" : ""}
                   `}
                 >
                   <img src={prompt.icon} alt="" className="w-4 h-4 shrink-0 object-contain" />

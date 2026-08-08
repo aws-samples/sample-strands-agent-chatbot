@@ -809,7 +809,7 @@ export function ChatInterface() {
 
         {/* Top Controls - Show when chat started */}
         {groupedMessages.length > 0 && (
-          <div className="sticky top-0 z-10 flex items-center justify-between p-4 bg-background/80 backdrop-blur-xl border-b border-border/20 shadow-[0_1px_3px_rgba(0,0,0,0.04),0_4px_12px_rgba(0,0,0,0.03)]">
+          <div className="sticky top-0 z-10 flex h-12 items-center justify-between px-4 bg-background/95 backdrop-blur-sm border-b border-border">
             <div className="flex items-center gap-3">
               <SidebarTrigger />
             </div>
@@ -989,7 +989,7 @@ export function ChatInterface() {
         {/* Greeting - Show when chat not started (not during loading) */}
         {groupedMessages.length === 0 && !isLoadingMessages && (
           <div className="mx-auto px-4 w-full md:max-w-4xl">
-            <div className="flex flex-col items-center justify-center mb-12 animate-fade-in">
+            <div className="flex flex-col items-center justify-center mb-8 animate-fade-in">
               <Greeting />
             </div>
           </div>

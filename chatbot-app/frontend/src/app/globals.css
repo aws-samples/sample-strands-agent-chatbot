@@ -179,7 +179,7 @@
 /* Prevent FOUC - Initial loading screen with smooth transition */
 @layer base {
   body {
-    @apply bg-white dark:bg-black;
+    @apply bg-background;
   }
 
   /* Hide content until React hydrates */
@@ -291,69 +291,69 @@ div[style*="position: fixed"][style*="top: 0"][style*="right: 0"][style*="z-inde
     --font-chart-cell: 0.95rem;   /* 13.3px - chart table cells */
     --font-citation: 0.785rem;    /* 11px - citation links */
 
-    --background: 0 0% 100%;
-    --foreground: 220 13% 29%;
-    --card: 220 14% 98%;
-    --card-foreground: 220 13% 29%;
+    --background: 0 0% 99%;
+    --foreground: 240 6% 10%;
+    --card: 0 0% 100%;
+    --card-foreground: 240 6% 10%;
     --popover: 0 0% 100%;
-    --popover-foreground: 220 13% 29%;
-    --primary: 188 91% 35%;
+    --popover-foreground: 240 6% 10%;
+    --primary: 184 74% 30%;
     --primary-foreground: 0 0% 100%;
-    --secondary: 214 95% 56%;
-    --secondary-foreground: 0 0% 100%;
-    --muted: 220 14% 98%;
-    --muted-foreground: 220 13% 29%;
-    --accent: 214 95% 56%;
-    --accent-foreground: 0 0% 100%;
+    --secondary: 240 5% 96%;
+    --secondary-foreground: 240 6% 16%;
+    --muted: 240 5% 96%;
+    --muted-foreground: 240 4% 46%;
+    --accent: 184 35% 94%;
+    --accent-foreground: 184 70% 22%;
     --destructive: 0 84% 60%;
     --destructive-foreground: 0 0% 98%;
-    --border: 220 13% 91%;
+    --border: 240 6% 90%;
     --input: 0 0% 100%;
-    --ring: 188 91% 35%;
+    --ring: 184 74% 30%;
     --radius: 0.5rem;
     --chart-1: 214 95% 56%;
     --chart-2: 159 64% 42%;
     --chart-3: 347 77% 50%;
     --chart-4: 280 87% 65%;
     --chart-5: 25 95% 53%;
-    --sidebar-background: 226 38% 94%;
-    --sidebar-foreground: 220 13% 29%;
-    --sidebar-primary: 0 0% 100%;
-    --sidebar-primary-foreground: 220 13% 29%;
-    --sidebar-accent: 214 95% 56%;
-    --sidebar-accent-foreground: 0 0% 100%;
-    --sidebar-border: 220 13% 88%;
-    --sidebar-ring: 214 95% 56%;
+    --sidebar-background: 240 5% 97%;
+    --sidebar-foreground: 240 6% 16%;
+    --sidebar-primary: 184 74% 30%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 240 5% 92%;
+    --sidebar-accent-foreground: 240 6% 12%;
+    --sidebar-border: 240 6% 90%;
+    --sidebar-ring: 184 74% 30%;
   }
 
   .dark {
-    --background: 0 0% 0%;
-    --foreground: 220 14% 96%;
-    --card: 0 0% 0%;
-    --card-foreground: 220 14% 96%;
-    --popover: 0 0% 7%;
-    --popover-foreground: 220 14% 96%;
-    --primary: 188 91% 35%;
-    --primary-foreground: 0 0% 100%;
-    --secondary: 214 95% 56%;
-    --secondary-foreground: 0 0% 100%;
-    --muted: 0 0% 13%;
-    --muted-foreground: 220 9% 64%;
-    --accent: 214 95% 56%;
-    --accent-foreground: 0 0% 100%;
+    --background: 240 4% 9%;
+    --foreground: 240 5% 96%;
+    --card: 240 4% 12%;
+    --card-foreground: 240 5% 96%;
+    --popover: 240 4% 12%;
+    --popover-foreground: 240 5% 96%;
+    --primary: 184 65% 48%;
+    --primary-foreground: 240 6% 8%;
+    --secondary: 240 4% 16%;
+    --secondary-foreground: 240 5% 96%;
+    --muted: 240 4% 15%;
+    --muted-foreground: 240 5% 65%;
+    --accent: 184 25% 18%;
+    --accent-foreground: 184 60% 72%;
     --destructive: 0 63% 31%;
     --destructive-foreground: 0 0% 98%;
-    --border: 0 0% 20%;
-    --input: 0 0% 13%;
-    --ring: 188 91% 35%;
-    --sidebar-background: 0 0% 13%;
-    --sidebar-foreground: 220 14% 96%;
-    --sidebar-primary: 214 95% 56%;
-    --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent: 0 0% 20%;
-    --sidebar-accent-foreground: 220 14% 96%;
-    --sidebar-border: 0 0% 20%;
-    --sidebar-ring: 214 95% 56%;
+    --border: 240 4% 21%;
+    --input: 240 4% 15%;
+    --ring: 184 65% 48%;
+    --sidebar-background: 240 4% 11%;
+    --sidebar-foreground: 240 5% 94%;
+    --sidebar-primary: 184 65% 48%;
+    --sidebar-primary-foreground: 240 6% 8%;
+    --sidebar-accent: 240 4% 17%;
+    --sidebar-accent-foreground: 240 5% 96%;
+    --sidebar-border: 240 4% 21%;
+    --sidebar-ring: 184 65% 48%;
     --chart-1: 220 70% 80%;
     --chart-2: 160 60% 75%;
     --chart-3: 30 80% 85%;
@@ -379,11 +379,10 @@ div[style*="position: fixed"][style*="top: 0"][style*="right: 0"][style*="z-inde
   }
 
   .chat-input-container:focus-within {
-    border-color: hsl(var(--primary) / 0.5);
+    border-color: hsl(var(--primary) / 0.45);
     box-shadow:
-      0 0 0 1px hsl(var(--primary) / 0.25),
-      0 4px 24px -4px hsl(var(--primary) / 0.2),
-      0 0 40px -8px hsl(var(--primary) / 0.1);
+      0 0 0 1px hsl(var(--primary) / 0.12),
+      0 8px 24px -16px hsl(var(--foreground) / 0.24);
   }
 
   .text-balance {
@@ -391,54 +390,46 @@ div[style*="position: fixed"][style*="top: 0"][style*="right: 0"][style*="z-inde
   }
 
   .animate-fade-in {
-    animation: fadeIn 0.8s ease-out forwards;
+    animation: fadeIn 0.24s ease-out forwards;
     opacity: 0;
-    transform: translateY(20px);
+    transform: translateY(4px);
   }
 
   .animate-fade-in-delay {
-    animation: fadeIn 0.8s ease-out 0.2s forwards;
+    animation: fadeIn 0.24s ease-out 0.08s forwards;
     opacity: 0;
-    transform: translateY(20px);
+    transform: translateY(4px);
   }
 
   .animate-fade-in-delay-2 {
-    animation: fadeIn 0.8s ease-out 0.4s forwards;
+    animation: fadeIn 0.24s ease-out 0.16s forwards;
     opacity: 0;
-    transform: translateY(20px);
+    transform: translateY(4px);
   }
 
-  /* Enhanced gradient utilities with better dark mode support */
+  /* Compatibility utilities kept intentionally flat for a quiet workspace. */
   .gradient-primary {
-    background: linear-gradient(135deg, hsl(var(--primary)) 0%, hsl(var(--secondary)) 100%);
+    background: hsl(var(--primary));
   }
 
   .gradient-subtle {
-    background: linear-gradient(135deg, 
-      hsl(var(--background)) 0%, 
-      hsl(var(--primary) / 0.06) 25%, 
-      hsl(var(--card)) 50%, 
-      hsl(var(--secondary) / 0.06) 75%, 
-      hsl(var(--muted)) 100%);
+    background: hsl(var(--background));
   }
 
   .gradient-card {
-    background: linear-gradient(135deg, hsl(var(--card)) 0%, hsl(var(--muted)) 100%);
+    background: hsl(var(--card));
   }
 
   .gradient-accent {
-    background: linear-gradient(135deg, hsl(var(--accent)) 0%, hsl(var(--primary)) 100%);
+    background: hsl(var(--accent));
   }
 
   .gradient-border {
-    background: linear-gradient(135deg, hsl(var(--border)) 0%, hsl(var(--accent) / 0.3) 100%);
+    background: hsl(var(--border));
   }
 
   .gradient-text {
-    background: linear-gradient(135deg, hsl(var(--primary)) 0%, hsl(var(--secondary)) 100%);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
+    color: hsl(var(--primary));
   }
 
   .gradient-hover {
@@ -461,38 +452,24 @@ div[style*="position: fixed"][style*="top: 0"][style*="right: 0"][style*="z-inde
     left: 100%;
   }
 
-  /* Enhanced dark mode gradient adjustments for better visual consistency */
   .dark .gradient-primary {
-    background: linear-gradient(135deg, hsl(var(--primary) / 0.8) 0%, hsl(var(--secondary) / 0.6) 100%);
+    background: hsl(var(--primary));
   }
 
   .dark .gradient-subtle {
-    background: linear-gradient(135deg, 
-      hsl(var(--background)) 0%, 
-      hsl(var(--primary) / 0.08) 25%, 
-      hsl(var(--card)) 50%, 
-      hsl(var(--secondary) / 0.08) 75%, 
-      hsl(var(--muted) / 0.2) 100%);
+    background: hsl(var(--background));
   }
 
   .dark .gradient-card {
-    background: linear-gradient(135deg, hsl(var(--card)) 0%, hsl(var(--muted) / 0.3) 100%);
+    background: hsl(var(--card));
   }
 
   .dark .gradient-border {
-    background: linear-gradient(135deg, hsl(var(--border)) 0%, hsl(var(--accent) / 0.2) 100%);
+    background: hsl(var(--border));
   }
 
   .dark .gradient-text {
-    background: linear-gradient(135deg, hsl(var(--primary)) 0%, hsl(var(--secondary)) 100%);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
-  }
-
-  /* Added smooth theme transition for better UX */
-  * {
-    transition: background-color 0.3s ease, border-color 0.3s ease, color 0.3s ease;
+    color: hsl(var(--primary));
   }
 
   /* Dark mode specific enhancements */

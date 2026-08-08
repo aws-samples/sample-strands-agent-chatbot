@@ -5,16 +5,16 @@ import { Greeting, PromptSuggestions } from '@/components/Greeting'
 describe('Greeting Component', () => {
   it('should render the greeting text', () => {
     render(<Greeting />)
-    expect(screen.getByText('What can I help you build?')).toBeInTheDocument()
+    expect(screen.getByText('What are we working on?')).toBeInTheDocument()
   })
 
-  it('should have proper styling classes', () => {
+  it('should use a restrained workspace heading', () => {
     render(<Greeting />)
 
-    const greetingElement = screen.getByText('What can I help you build?')
-    expect(greetingElement).toHaveClass('bg-gradient-to-r')
-    expect(greetingElement).toHaveClass('bg-clip-text')
-    expect(greetingElement).toHaveClass('text-transparent')
+    const greetingElement = screen.getByText('What are we working on?')
+    expect(greetingElement.parentElement).toHaveClass('text-foreground')
+    expect(greetingElement).not.toHaveClass('text-transparent')
+    expect(greetingElement.parentElement).toHaveClass('font-semibold')
   })
 
   it('should render within centered container', () => {

@@ -282,7 +282,7 @@ export function ChatInputArea({
 
       {/* Input Area */}
       <div className="mx-auto px-4 pb-4 md:pb-6 w-full md:max-w-4xl">
-        <div className={`chat-input-container bg-muted/40 dark:bg-zinc-900 rounded-2xl p-3 border border-border/50 shadow-xs ${
+        <div className={`chat-input-container bg-card rounded-xl p-3 border border-border shadow-[0_10px_30px_-24px_hsl(var(--foreground)/0.45)] ${
           ''
         }`}>
           <form
@@ -338,7 +338,7 @@ export function ChatInputArea({
                             if (!isVoiceActive) await onConnectVoice()
                             else onDisconnectVoice()
                           }}
-                          className={`h-9 w-9 p-0 rounded-xl transition-all duration-200 ${
+                          className={`h-9 w-9 p-0 rounded-lg transition-colors duration-150 ${
                             agentStatus === 'voice_listening'
                               ? 'bg-red-500 hover:bg-red-600 text-white'
                               : agentStatus === 'voice_speaking'
@@ -384,7 +384,7 @@ export function ChatInputArea({
                     onClick={onStopGeneration}
                     variant="ghost"
                     size="sm"
-                    className="h-9 w-9 p-0 rounded-xl hover:bg-muted-foreground/10 transition-all duration-200"
+                    className="h-9 w-9 p-0 rounded-lg hover:bg-muted transition-colors duration-150"
                     title={agentStatus === 'stopping' ? "Stopping..." : agentStatus === 'compacting' ? "Compacting..." : "Stop generation"}
                     disabled={agentStatus === 'stopping' || agentStatus === 'compacting'}
                   >
@@ -400,7 +400,7 @@ export function ChatInputArea({
                     disabled={!hasContent}
                     size="sm"
                     title={isBusy ? "Queue this message" : "Send"}
-                    className="h-9 w-9 p-0 gradient-primary hover:opacity-90 text-primary-foreground rounded-xl transition-all duration-200 disabled:opacity-40"
+                    className="h-9 w-9 p-0 bg-primary hover:bg-primary/90 text-primary-foreground rounded-lg transition-colors duration-150 disabled:opacity-40"
                   >
                     {isBusy ? <CornerDownLeft className="w-4 h-4" /> : <Send className="w-4 h-4" />}
                   </Button>
@@ -415,7 +415,7 @@ export function ChatInputArea({
           </form>
 
           {/* Bottom Options Bar */}
-          <div className="flex items-center justify-between mt-2 pt-2 border-t border-border/30">
+          <div className="flex items-center justify-between mt-1 pt-1.5 border-t border-border/70">
             <TooltipProvider delayDuration={300}>
               <div className="flex items-center gap-1">
                 <Tooltip>
@@ -426,7 +426,7 @@ export function ChatInputArea({
                       size="sm"
                       onClick={() => document.getElementById("file-upload")?.click()}
                       disabled={isVoiceActive}
-                      className="h-9 w-9 p-0 hover:bg-muted-foreground/10 transition-all duration-200 disabled:opacity-40 text-muted-foreground"
+                      className="h-9 w-9 p-0 hover:bg-muted transition-colors duration-150 disabled:opacity-40 text-muted-foreground"
                     >
                       <Upload className="w-4 h-4" />
                     </Button>
@@ -449,7 +449,7 @@ export function ChatInputArea({
                       disabled={isVoiceActive}
                       aria-pressed={conciseMode}
                       aria-label="Concise replies"
-                      className={`h-9 w-9 p-0 rounded-md transition-all duration-200 disabled:opacity-40 ${
+                      className={`h-9 w-9 p-0 rounded-md transition-colors duration-150 disabled:opacity-40 ${
                         conciseMode
                           ? 'bg-primary/10 text-primary hover:bg-primary/15'
                           : 'hover:bg-muted-foreground/10 text-muted-foreground'

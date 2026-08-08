@@ -274,7 +274,7 @@ export function Canvas({
 
   return (
     <div
-      className={`fixed top-0 right-0 h-screen w-full md:w-[950px] md:max-w-[80vw] bg-sidebar-background border-l border-sidebar-border text-sidebar-foreground flex flex-col z-40 shadow-2xl transition-transform duration-300 ${
+      className={`fixed top-0 right-0 h-screen w-full md:w-[950px] md:max-w-[80vw] bg-card border-l border-border text-card-foreground flex flex-col z-40 shadow-xl transition-transform duration-200 ${
         isOpen ? 'translate-x-0' : 'translate-x-full'
       }`}
     >

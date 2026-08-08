@@ -112,7 +112,7 @@ export function ChatSessionList({
         {dateGroups.map((group) => (
           <div key={group.label} className="mb-3">
             <div className="px-3 py-2">
-              <span className="text-[11px] font-medium text-sidebar-foreground/40 uppercase tracking-wider">
+              <span className="text-[11px] font-medium text-sidebar-foreground/45">
                 {group.label}
               </span>
             </div>
@@ -123,8 +123,8 @@ export function ChatSessionList({
 
                 const row = (
                   <div
-                    className={`group/session flex items-center gap-2 py-2.5 px-3 rounded-lg hover:bg-sidebar-accent/60 transition-colors cursor-pointer ${
-                      isCurrentSession ? 'bg-sidebar-accent' : ''
+                    className={`group/session flex items-center gap-2 py-2.5 px-3 rounded-md hover:bg-sidebar-accent/70 transition-colors cursor-pointer ${
+                      isCurrentSession ? 'bg-sidebar-accent text-sidebar-accent-foreground' : ''
                     }`}
                     onClick={() => {
                       if (onLoadSession) {

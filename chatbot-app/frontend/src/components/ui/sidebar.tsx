@@ -10,7 +10,7 @@ import { Button } from '@/components/ui/button';
 
 const SIDEBAR_COOKIE_NAME = 'sidebar:state';
 const SIDEBAR_COOKIE_MAX_AGE = 60 * 60 * 24 * 7;
-const SIDEBAR_WIDTH = '24rem';
+const SIDEBAR_WIDTH = '20rem';
 const SIDEBAR_WIDTH_MOBILE = '18rem';
 const SIDEBAR_WIDTH_ICON = '3rem';
 const SIDEBAR_KEYBOARD_SHORTCUT = 'b';
@@ -225,14 +225,13 @@ const Sidebar = React.forwardRef<
         />
         <div
           className={cn(
-            'duration-200 fixed inset-y-0 z-10 hidden h-svh w-[--sidebar-width] transition-[left,right,width] ease-linear md:flex',
-            side === 'left'
-              ? state === 'collapsed' 
-                ? 'left-[calc(var(--sidebar-width)*-1)]'
-                : 'left-0'
-              : state === 'collapsed'
-                ? 'right-[calc(var(--sidebar-width)*-1)]'
-                : 'right-0',
+            'duration-200 fixed inset-y-0 z-10 hidden h-svh w-[--sidebar-width] transition-transform ease-linear md:flex',
+            side === 'left' ? 'left-0' : 'right-0',
+            state === 'collapsed'
+              ? side === 'left'
+                ? '-translate-x-full'
+                : 'translate-x-full'
+              : 'translate-x-0',
             'border-r border-sidebar-border',
             className,
           )}

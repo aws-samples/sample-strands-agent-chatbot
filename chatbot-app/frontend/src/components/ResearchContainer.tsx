@@ -1,7 +1,7 @@
 "use client"
 
 import React from 'react'
-import { FlaskConical, Loader2, Check, ArrowRight, Sparkles, Library } from 'lucide-react'
+import { FlaskConical, Loader2, Check, ArrowRight, Sparkles } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 
 interface ResearchContainerProps {
@@ -61,73 +61,65 @@ export function ResearchContainer({
     <div
       onClick={isComplete ? onClick : undefined}
       className={`
-        group relative rounded-2xl border bg-card transition-all duration-300
-        ${isComplete ? 'cursor-pointer hover:shadow-lg hover:border-primary/50' : ''}
-        ${isError ? 'border-red-200 dark:border-red-800' : isDeclined ? 'border-gray-200 dark:border-gray-800' : 'border-border/50 hover:border-border'}
+        group rounded-lg border bg-card transition-colors
+        ${isComplete ? 'cursor-pointer hover:bg-muted/35 hover:border-primary/30' : ''}
+        ${isError ? 'border-destructive/30' : 'border-border'}
       `}
     >
-      <div className="p-5">
-        <div className="flex items-start gap-4">
+      <div className="p-3.5">
+        <div className="flex items-start gap-3">
           {/* Icon */}
           <div className={`
-            relative flex-shrink-0 rounded-xl p-3 transition-all duration-300
-            ${isComplete
-              ? 'bg-gradient-to-br from-blue-500/10 to-purple-500/10 group-hover:from-blue-500/20 group-hover:to-purple-500/20'
-              : isDeclined
-              ? 'bg-gray-50 dark:bg-gray-950/20'
-              : isError
-              ? 'bg-red-50 dark:bg-red-950/20'
-              : 'bg-gradient-to-br from-blue-500/10 to-cyan-500/10'
-            }
+            relative flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-md
+            ${isError ? 'bg-destructive/10 text-destructive' : 'bg-muted text-muted-foreground'}
           `}>
             {isComplete ? (
-              <Sparkles className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+              <Sparkles className="w-4 h-4 text-primary" />
             ) : (
-              <FlaskConical className={`w-5 h-5 ${
-                isDeclined
-                  ? 'text-gray-600 dark:text-gray-400'
-                  : isError
-                  ? 'text-red-600 dark:text-red-400'
-                  : 'text-blue-600 dark:text-blue-400'
-              }`} />
+              <FlaskConical className="w-4 h-4" />
             )}
             {isComplete && (
-              <div className="absolute -top-1 -right-1 rounded-full bg-green-500 p-0.5">
-                <Check className="w-3 h-3 text-white" strokeWidth={3} />
+              <div className="absolute -top-1 -right-1 rounded-full bg-primary p-0.5">
+                <Check className="w-2.5 h-2.5 text-primary-foreground" strokeWidth={3} />
               </div>
             )}
             {isLoading && !isComplete && (
               <div className="absolute -top-1 -right-1">
-                <Loader2 className="w-4 h-4 animate-spin text-blue-600 dark:text-blue-400" />
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />
               </div>
             )}
           </div>
 
           {/* Content */}
           <div className="flex-1 min-w-0">
-            <div className="flex items-center justify-between mb-2">
-              <h4 className="font-semibold text-body text-foreground">
-                {agentName}
-              </h4>
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <h4 className="font-medium text-body text-foreground">
+                  {agentName}
+                </h4>
+                <p className="text-label text-muted-foreground mt-0.5 line-clamp-2 leading-relaxed">
+                  {query}
+                </p>
+              </div>
               {showOpenButton && (
                 showCanvasButton && onCanvasClick ? (
                   <Button
-                    variant="default"
+                    variant="outline"
                     size="sm"
-                    className="h-8 px-4 gap-1.5 rounded-full bg-gradient-to-r from-blue-600 to-indigo-500 hover:from-blue-500 hover:to-indigo-400 transition-all duration-200"
+                    className="h-8 shrink-0 px-3 gap-1.5 rounded-md"
                     onClick={(e) => {
                       e.stopPropagation()
                       onCanvasClick()
                     }}
                   >
                     <Sparkles className="w-3.5 h-3.5" />
-                    View in Canvas
+                    Canvas
                   </Button>
                 ) : (
                   <Button
-                    variant="default"
+                    variant="ghost"
                     size="sm"
-                    className="h-8 px-4 gap-1.5 rounded-full bg-primary hover:bg-primary/90 transition-all duration-200"
+                    className="h-8 shrink-0 px-2.5 gap-1 rounded-md text-muted-foreground"
                     onClick={(e) => {
                       e.stopPropagation()
                       onClick()
@@ -140,36 +132,26 @@ export function ResearchContainer({
               )}
             </div>
 
-            <p className="text-label text-muted-foreground mb-3 line-clamp-2 leading-relaxed">
-              {query}
-            </p>
-
-            <div className="flex items-center gap-2">
-              <div className={`
-                inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-caption font-medium
-                ${isComplete
-                  ? 'bg-green-100 text-green-700 dark:bg-green-950/30 dark:text-green-400'
+            <div className="flex items-center gap-1.5 mt-2 text-caption">
+              {isLoading && !isComplete && (
+                <Loader2 className="w-3 h-3 animate-spin text-primary" />
+              )}
+              {isComplete && <Check className="w-3 h-3 text-primary" />}
+              <span className={
+                isError
+                  ? 'text-destructive'
                   : isDeclined
-                  ? 'bg-gray-100 text-gray-700 dark:bg-gray-950/30 dark:text-gray-400'
-                  : isError
-                  ? 'bg-red-100 text-red-700 dark:bg-red-950/30 dark:text-red-400'
-                  : 'bg-blue-100 text-blue-700 dark:bg-blue-950/30 dark:text-blue-400'
-                }
-              `}>
-                {isLoading && !isComplete && (
-                  <Loader2 className="w-3 h-3 animate-spin" />
-                )}
+                    ? 'text-muted-foreground'
+                    : isComplete
+                      ? 'text-primary'
+                      : 'text-muted-foreground'
+              }>
                 {getStatusText()}
-              </div>
+              </span>
             </div>
           </div>
         </div>
       </div>
-
-      {/* Hover gradient effect */}
-      {isComplete && (
-        <div className="absolute inset-0 rounded-2xl bg-gradient-to-r from-blue-500/5 to-purple-500/5 opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none" />
-      )}
     </div>
   )
 }

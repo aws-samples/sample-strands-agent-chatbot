@@ -43,9 +43,9 @@ const ArtifactNotification = ({ title, wordCount }: { title: string; wordCount: 
     <div className="flex justify-start mb-4">
       <button
         onClick={handleClick}
-        className="flex items-center gap-3 py-2 px-4 rounded-lg border border-violet-200 dark:border-violet-800 bg-violet-50/50 dark:bg-violet-950/20 hover:bg-violet-100/50 dark:hover:bg-violet-900/30 transition-colors text-left"
+        className="flex items-center gap-3 py-2.5 px-3 rounded-lg border border-border bg-card hover:bg-muted/45 transition-colors text-left"
       >
-        <Sparkles className="w-4 h-4 text-violet-500 flex-shrink-0" />
+        <Sparkles className="w-4 h-4 text-primary flex-shrink-0" />
         <span className="text-label font-medium text-foreground">{title}</span>
         <span className="text-caption text-muted-foreground">{wordCount.toLocaleString()} words</span>
       </button>
@@ -71,7 +71,7 @@ const CollapsibleUserMessage = ({ text }: { text: string }) => {
     return { lines: allLines, isLong, truncatedText }
   }, [text])
 
-  const textClass = "text-[17px] leading-[1.8] font-[450] tracking-[-0.005em] whitespace-pre-wrap break-all"
+  const textClass = "text-[15px] leading-7 font-normal tracking-normal whitespace-pre-wrap break-words"
 
   if (!isLong) {
     return <p className={textClass}>{text}</p>
@@ -171,13 +171,13 @@ export const ChatMessage = React.memo<ChatMessageProps>(({ message, sessionId, o
               >
                 {copied ? <Check className="w-4 h-4 text-green-500" /> : <Copy className="w-4 h-4" />}
               </button>
-              <div className={`rounded-2xl rounded-tr-md px-5 py-3.5 shadow-xs ${
+              <div className={`rounded-xl rounded-tr-sm px-4 py-3 ${
                 message.isVoiceMessage
-                  ? 'bg-gradient-to-r from-fuchsia-100 to-purple-100 dark:from-fuchsia-900/30 dark:to-purple-900/30 text-fuchsia-800 dark:text-fuchsia-200'
-                  : 'bg-primary/10 text-foreground'
+                  ? 'bg-muted text-foreground'
+                  : 'bg-accent/75 text-foreground'
               }`}>
                 {message.isVoiceMessage && (
-                  <div className="flex items-center gap-1.5 mb-1 text-fuchsia-600 dark:text-fuchsia-300">
+                  <div className="flex items-center gap-1.5 mb-1 text-primary">
                     <Mic className="w-3 h-3" />
                     <span className="text-[10px] font-medium">Voice</span>
                   </div>
@@ -230,7 +230,7 @@ export const ChatMessage = React.memo<ChatMessageProps>(({ message, sessionId, o
           {message.toolExecutions && message.toolExecutions.length > 0 && !message.isToolMessage && (
             <div className="mb-4">
               <div className="text-caption font-medium text-muted-foreground mb-2 flex items-center gap-2">
-                <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
+                <div className="w-2 h-2 bg-primary rounded-full"></div>
                 Tools Used ({message.toolExecutions.length})
               </div>
               <ToolExecutionContainer toolExecutions={message.toolExecutions} compact={true} sessionId={sessionId} />

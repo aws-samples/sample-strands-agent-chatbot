@@ -757,22 +757,17 @@ export const ToolExecutionContainer = React.memo<ToolExecutionContainerProps>(({
     </div>
   )
 
-  // Status indicator: green check or blue dots
-  const StatusIndicator = ({ id, isComplete }: { id: string; isComplete: boolean }) => isComplete ? (
-    <svg className="h-3.5 w-3.5 shrink-0" viewBox="0 0 16 16" fill="none">
-      <circle cx="8" cy="8" r="7" fill={`url(#checkGrad-${id})`} />
-      <path d="M5 8l2 2 4-4" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-      <defs>
-        <linearGradient id={`checkGrad-${id}`} x1="0" y1="0" x2="16" y2="16" gradientUnits="userSpaceOnUse">
-          <stop offset="0%" stopColor="#10b981" /><stop offset="100%" stopColor="#059669" />
-        </linearGradient>
-      </defs>
+  // Compact status indicator shared by every tool activity row.
+  const StatusIndicator = ({ isComplete }: { isComplete: boolean }) => isComplete ? (
+    <svg className="h-3.5 w-3.5 shrink-0 text-primary" viewBox="0 0 16 16" fill="none" aria-label="Complete">
+      <circle cx="8" cy="8" r="7" fill="currentColor" />
+      <path d="M5 8l2 2 4-4" stroke="hsl(var(--primary-foreground))" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   ) : (
     <span className="flex gap-0.5 shrink-0">
-      <span className="w-1 h-1 bg-blue-500 rounded-full animate-pulse" />
-      <span className="w-1 h-1 bg-blue-500 rounded-full animate-pulse" style={{ animationDelay: '150ms' }} />
-      <span className="w-1 h-1 bg-blue-500 rounded-full animate-pulse" style={{ animationDelay: '300ms' }} />
+      <span className="w-1 h-1 bg-primary rounded-full animate-pulse" />
+      <span className="w-1 h-1 bg-primary rounded-full animate-pulse" style={{ animationDelay: '150ms' }} />
+      <span className="w-1 h-1 bg-primary rounded-full animate-pulse" style={{ animationDelay: '300ms' }} />
     </span>
   )
 
@@ -830,7 +825,7 @@ export const ToolExecutionContainer = React.memo<ToolExecutionContainerProps>(({
 
   return (
     <>
-      <div className="space-y-0.5">
+      <div className="space-y-1.5">
         {renderItems.map((item) => {
           // ── Visualization / map result ──
           if (item.kind === 'viz') {
@@ -853,11 +848,11 @@ export const ToolExecutionContainer = React.memo<ToolExecutionContainerProps>(({
 
           return (
             <React.Fragment key={key}>
-              <div>
+              <div className="rounded-lg border border-border bg-card overflow-hidden">
                 {/* Collapsed row */}
                 <div
                   onClick={() => toggleToolExpansion(key)}
-                  className="flex items-center gap-2 py-1.5 px-2 -mx-2 rounded-md hover:bg-muted/50 transition-colors w-full text-left group cursor-pointer"
+                  className="flex min-h-10 items-center gap-2 px-3 py-2 hover:bg-muted/45 transition-colors w-full text-left group cursor-pointer"
                 >
                   {/* Tool icon */}
                   {imageSrc ? (
@@ -878,13 +873,13 @@ export const ToolExecutionContainer = React.memo<ToolExecutionContainerProps>(({
 
                   {/* Count badge — only when count > 1 */}
                   {count > 1 && (
-                    <span className="text-[11px] text-muted-foreground bg-muted px-1.5 py-0.5 rounded-full tabular-nums">
+                    <span className="text-[11px] text-muted-foreground bg-muted px-1.5 py-0.5 rounded-md tabular-nums">
                       {allDone ? `×${count}` : `${completedCount}/${count}`}
                     </span>
                   )}
 
                   {/* Status indicator */}
-                  <StatusIndicator id={key} isComplete={allDone} />
+                  <StatusIndicator isComplete={allDone} />
 
                   {/* Action buttons from last completed execution */}
                   {lastCompleteExec && renderActionButtons(lastCompleteExec)}
@@ -892,7 +887,7 @@ export const ToolExecutionContainer = React.memo<ToolExecutionContainerProps>(({
 
                 {/* Expanded: individual call details */}
                 {isExpanded && (
-                  <div className="ml-4 mt-1 mb-2 border-l-2 border-muted pl-3 space-y-3 animate-fade-in">
+                  <div className="border-t border-border bg-muted/20 px-3 py-3 space-y-3 animate-fade-in">
                     {executions.map((exec, i) => (
                       <div key={exec.id}>
                         {count > 1 && (

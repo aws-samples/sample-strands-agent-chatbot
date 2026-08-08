@@ -94,7 +94,7 @@ export function ChatSidebar({
   return (
     <Sidebar
       side="left"
-      className="group-data-[side=left]:border-r-0 bg-sidebar-background border-sidebar-border text-sidebar-foreground flex flex-col h-full"
+      className="bg-sidebar-background border-sidebar-border text-sidebar-foreground flex flex-col h-full"
     >
       {/* Header - Hamburger menu & Theme toggle */}
       <SidebarHeader className="flex-shrink-0 px-3 py-3 border-b-0">
@@ -152,7 +152,7 @@ export function ChatSidebar({
       ) : (
         <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
           <div className="px-4 pb-2 flex-shrink-0 flex items-center justify-between">
-            <span className="text-[13px] font-medium text-sidebar-foreground/60 uppercase tracking-wide">Chats</span>
+            <span className="text-[12px] font-medium text-sidebar-foreground/55">Chats</span>
             {chatSessions.length > 0 && (
               <button
                 onClick={() => setIsConfirmDialogOpen(true)}
@@ -181,7 +181,7 @@ export function ChatSidebar({
           <PopoverTrigger asChild>
             <Button
               variant="ghost"
-              className="w-full justify-end gap-2 h-10 px-3 hover:bg-sidebar-accent text-sidebar-foreground/70"
+              className="w-full justify-start gap-3 h-10 px-3 hover:bg-sidebar-accent text-sidebar-foreground/70"
             >
               <span className="text-[13px]">Settings</span>
               <Settings className="h-4 w-4" />
