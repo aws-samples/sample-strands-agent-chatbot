@@ -1,30 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3'
-import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
-import { extractUserFromRequest, getSessionId } from '@/lib/auth-utils'
+import { extractUserFromRequest } from '@/lib/auth-utils'
+import {
+  resolveWorkspaceS3Location,
+  WorkspacePathError,
+} from '@/lib/workspace/s3-repository'
 
 const region = process.env.AWS_REGION || 'us-west-2'
-
-const NAMESPACE_MAP: [string, string][] = [
-  ['code-agent', 'code-agent-workspace/{userId}/{sessionId}/'],
-  ['code-interpreter', 'code-interpreter-workspace/{userId}/{sessionId}/'],
-  ['documents', 'documents/{userId}/{sessionId}/'],
-]
-
-function toS3Key(userId: string, sessionId: string, path: string): string {
-  const cleanPath = path.replace(/^\//, '')
-  for (const [prefix, template] of NAMESPACE_MAP) {
-    if (cleanPath.startsWith(prefix)) {
-      const suffix = cleanPath.slice(prefix.length).replace(/^\//, '')
-      const base = template
-        .replace('{userId}', userId)
-        .replace('{sessionId}', sessionId)
-      return base + suffix
-    }
-  }
-  return `documents/${userId}/${sessionId}/${cleanPath}`
-}
 
 /**
  * POST /api/workspace/download
@@ -41,7 +24,9 @@ function toS3Key(userId: string, sessionId: string, path: string): string {
  */
 export async function POST(request: NextRequest) {
   try {
-    const { path, sessionId } = await request.json()
+    const body = await request.json()
+    const path = body.path
+    const sessionId = request.headers.get('X-Session-ID') || body.sessionId
 
     if (!path || !sessionId) {
       return NextResponse.json(
@@ -52,26 +37,11 @@ export async function POST(request: NextRequest) {
 
     const user = await extractUserFromRequest(request)
     const userId = user.userId
-
-    let bucket = process.env.ARTIFACT_BUCKET
-    if (!bucket) {
-      const ssmClient = new SSMClient({ region })
-      const projectName = process.env.PROJECT_NAME || 'strands-agent-chatbot'
-      const environment = process.env.ENVIRONMENT || 'dev'
-      const paramName = `/${projectName}/${environment}/agentcore/artifact-bucket`
-      const paramResponse = await ssmClient.send(
-        new GetParameterCommand({ Name: paramName })
-      )
-      bucket = paramResponse.Parameter?.Value
-      if (!bucket) {
-        return NextResponse.json(
-          { error: 'Artifact bucket not configured' },
-          { status: 500 }
-        )
-      }
-    }
-
-    const s3Key = toS3Key(userId, sessionId, path)
+    const { bucket, key: s3Key } = await resolveWorkspaceS3Location(
+      userId,
+      sessionId,
+      path,
+    )
     const filename = path.split('/').pop() || 'download'
 
     const s3Client = new S3Client({ region })
@@ -85,6 +55,9 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ url, filename })
   } catch (error) {
+    if (error instanceof WorkspacePathError) {
+      return NextResponse.json({ error: error.message }, { status: 400 })
+    }
     console.error('[WorkspaceDownload] Error:', error)
     return NextResponse.json(
       { error: 'Failed to generate download URL' },
