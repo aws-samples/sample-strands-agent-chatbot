@@ -23,7 +23,7 @@ import { SidebarTrigger, SidebarInset, useSidebar } from "@/components/ui/sideba
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { Skeleton } from "@/components/ui/skeleton"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { ArrowDown, Loader2, PanelRightClose, PanelRightOpen } from "lucide-react"
+import { ArrowDown, Files, FolderTree, Loader2 } from "lucide-react"
 import { ModelConfigDialog } from "@/components/ModelConfigDialog"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog"
 import { buildArtifactContext } from "@/lib/artifactContext"
@@ -229,6 +229,7 @@ export function ChatInterface() {
     reloadFromStorage,
     justUpdated: artifactJustUpdated,
   } = useArtifacts(sessionId)
+  const [rightSidebarView, setRightSidebarView] = useState<'artifacts' | 'workspace'>('artifacts')
 
   const researchInvocationCount = useMemo(() => {
     const invocationIds = new Set<string>()
@@ -356,6 +357,7 @@ export function ChatInterface() {
     // Opening canvas - close left sidebar
     setOpen(false)
     setOpenMobile(false)
+    setRightSidebarView('artifacts')
     openArtifactBase(id)
   }, [openArtifactBase, setOpen, setOpenMobile])
 
@@ -379,7 +381,10 @@ export function ChatInterface() {
   }, [addArtifact])
 
   useEffect(() => {
-    openCanvasRef.current = openCanvasBase
+    openCanvasRef.current = () => {
+      setRightSidebarView('artifacts')
+      openCanvasBase()
+    }
   }, [openCanvasBase])
 
   useEffect(() => {
@@ -387,14 +392,23 @@ export function ChatInterface() {
   }, [setBrowserArtifactId])
 
   // Wrapper functions to ensure mutual exclusivity between left sidebar and canvas
-  const toggleCanvas = useCallback(() => {
-    if (!isCanvasOpen) {
-      // Opening canvas - close left sidebar
-      setOpen(false)
-      setOpenMobile(false)
+  const toggleRightSidebar = useCallback((view: 'artifacts' | 'workspace') => {
+    if (isCanvasOpen && rightSidebarView === view) {
+      toggleCanvasBase()
+      return
     }
-    toggleCanvasBase()
-  }, [isCanvasOpen, toggleCanvasBase, setOpen, setOpenMobile])
+    setOpen(false)
+    setOpenMobile(false)
+    setRightSidebarView(view)
+    openCanvasBase()
+  }, [
+    isCanvasOpen,
+    openCanvasBase,
+    rightSidebarView,
+    setOpen,
+    setOpenMobile,
+    toggleCanvasBase,
+  ])
 
   const closeCanvas = useCallback(() => {
     closeCanvasBase()
@@ -404,6 +418,7 @@ export function ChatInterface() {
     // Opening canvas - close left sidebar
     setOpen(false)
     setOpenMobile(false)
+    setRightSidebarView('artifacts')
     openCanvasBase()
   }, [openCanvasBase, setOpen, setOpenMobile])
 
@@ -744,41 +759,73 @@ export function ChatInterface() {
     return hasActiveSwarmProgress && lastGroup?.type === 'assistant_turn';
   }, [swarmProgress, groupedMessages])
 
-  // Reusable artifact sidebar toggle (large variant for empty state, small for chat header)
-  const renderCanvasToggle = (large = false) => (
-    <TooltipProvider delayDuration={300}>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={toggleCanvas}
-            className={`${large ? 'h-9 w-9' : 'h-8 w-8'} relative p-0 hover:bg-muted/60 ${isCanvasOpen ? 'bg-muted text-foreground' : 'text-muted-foreground'}`}
-            aria-label={isCanvasOpen ? 'Close artifacts sidebar' : 'Open artifacts sidebar'}
-          >
-            {isCanvasOpen ? (
-              <PanelRightClose className={large ? 'h-5 w-5' : 'h-4 w-4'} />
-            ) : (
-              <PanelRightOpen className={large ? 'h-5 w-5' : 'h-4 w-4'} />
-            )}
-            {artifacts.length > 0 && (
-              <span className="absolute -top-1 -right-1 h-4 w-4 bg-primary text-primary-foreground text-[10px] font-bold rounded-full flex items-center justify-center">
-                {artifacts.length}
-              </span>
-            )}
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent>
-          <p>
-            {artifacts.length > 0
-              ? `${isCanvasOpen ? 'Close' : 'Open'} artifacts (${artifacts.length})`
-              : 'Open artifacts sidebar'
-            }
-          </p>
-        </TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
-  )
+  const renderRightSidebarToggles = (large = false) => {
+    const buttonSize = large ? 'h-9 w-9' : 'h-8 w-8'
+    const iconSize = large ? 'h-5 w-5' : 'h-4 w-4'
+    const activeView = isCanvasOpen ? rightSidebarView : null
+
+    return (
+      <TooltipProvider delayDuration={300}>
+        <div className="flex items-center gap-1">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => toggleRightSidebar('artifacts')}
+                className={`${buttonSize} relative p-0 hover:bg-muted/60 ${
+                  activeView === 'artifacts'
+                    ? 'bg-muted text-foreground'
+                    : 'text-muted-foreground'
+                }`}
+                aria-label={
+                  activeView === 'artifacts'
+                    ? 'Close artifacts sidebar'
+                    : 'Open artifacts sidebar'
+                }
+                aria-pressed={activeView === 'artifacts'}
+              >
+                <Files className={iconSize} />
+                {artifacts.length > 0 && (
+                  <span className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-primary text-[10px] font-bold text-primary-foreground">
+                    {artifacts.length}
+                  </span>
+                )}
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>
+              <p>{activeView === 'artifacts' ? 'Close artifacts' : 'Open artifacts'}</p>
+            </TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => toggleRightSidebar('workspace')}
+                className={`${buttonSize} p-0 hover:bg-muted/60 ${
+                  activeView === 'workspace'
+                    ? 'bg-muted text-foreground'
+                    : 'text-muted-foreground'
+                }`}
+                aria-label={
+                  activeView === 'workspace'
+                    ? 'Close workspace sidebar'
+                    : 'Open workspace sidebar'
+                }
+                aria-pressed={activeView === 'workspace'}
+              >
+                <FolderTree className={iconSize} />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>
+              <p>{activeView === 'workspace' ? 'Close workspace' : 'Open workspace'}</p>
+            </TooltipContent>
+          </Tooltip>
+        </div>
+      </TooltipProvider>
+    )
+  }
 
   return (
     <>
@@ -805,7 +852,7 @@ export function ChatInterface() {
         {/* Artifact sidebar toggle - shown in top-right when no chat has started */}
         {groupedMessages.length === 0 && mounted && !isMobileView && (
           <div className={`absolute top-4 right-4 z-20`}>
-            {renderCanvasToggle(true)}
+            {renderRightSidebarToggles(true)}
           </div>
         )}
 
@@ -818,7 +865,7 @@ export function ChatInterface() {
 
             <div className="flex items-center gap-2">
               {/* Artifact sidebar toggle - hidden on mobile */}
-              {!isMobileView && renderCanvasToggle()}
+              {!isMobileView && renderRightSidebarToggles()}
             </div>
           </div>
         )}
@@ -1108,6 +1155,8 @@ export function ChatInterface() {
           } : undefined
         })()}
         sessionId={sessionId || undefined}
+        activeView={rightSidebarView}
+        onActiveViewChange={setRightSidebarView}
       />
     </>
   )
