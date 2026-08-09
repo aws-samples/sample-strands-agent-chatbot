@@ -5,7 +5,6 @@ import { Message } from '@/types/chat'
 import { Markdown } from '@/components/ui/Markdown'
 import { ToolExecutionContainer } from './ToolExecutionContainer'
 import { LazyImage } from '@/components/ui/LazyImage'
-import { AIIcon } from '@/components/ui/AIIcon'
 import { SentFilePreview } from '@/components/ui/file-preview'
 
 // Check if this is a compose request JSON (user message to hide)
@@ -210,11 +209,8 @@ export const ChatMessage = React.memo<ChatMessageProps>(({ message, sessionId, o
   if (message.isToolMessage && message.toolExecutions && message.toolExecutions.length > 0) {
     return (
       <div className="flex justify-start mb-4">
-        <div className="flex items-start space-x-3 max-w-5xl w-full min-w-0">
-          <AIIcon size={32} isAnimating={message.isStreaming} className="mt-1" />
-          <div className="flex-1 min-w-0">
-            <ToolExecutionContainer toolExecutions={message.toolExecutions} sessionId={sessionId} />
-          </div>
+        <div className="w-full max-w-5xl min-w-0">
+          <ToolExecutionContainer toolExecutions={message.toolExecutions} sessionId={sessionId} />
         </div>
       </div>
     )
@@ -223,9 +219,7 @@ export const ChatMessage = React.memo<ChatMessageProps>(({ message, sessionId, o
   // Regular bot message - No background box
   return (
     <div className="flex justify-start mb-4">
-      <div className="flex items-start space-x-3 max-w-5xl w-full min-w-0">
-        <AIIcon size={32} isAnimating={message.isStreaming} className="mt-1" />
-        <div className="flex-1 min-w-0">
+      <div className="w-full max-w-5xl min-w-0">
           {/* Tool Executions Section - Only show if not a separate tool message */}
           {message.toolExecutions && message.toolExecutions.length > 0 && !message.isToolMessage && (
             <div className="mb-4">
@@ -277,7 +271,6 @@ export const ChatMessage = React.memo<ChatMessageProps>(({ message, sessionId, o
             )}
 
           </div>
-        </div>
       </div>
     </div>
   )

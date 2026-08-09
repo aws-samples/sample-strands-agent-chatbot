@@ -2,7 +2,6 @@
 
 import React, { useState, useEffect } from 'react';
 import { ChevronDown, Wrench, Sparkles, ArrowRight, FileText, FileSpreadsheet, Presentation, Download, BarChart2, Image } from 'lucide-react';
-import { AIIcon } from '@/components/ui/AIIcon';
 import { SwarmProgress as SwarmProgressType, SWARM_AGENT_DISPLAY_NAMES, SwarmAgentStep } from '@/types/events';
 import { Markdown } from '@/components/ui/Markdown';
 import { cn } from '@/lib/utils';
@@ -311,12 +310,7 @@ export function SwarmProgress({ progress, className, historyMode, historyAgents,
 
   return (
     <div className={cn("flex justify-start mb-4 group", className)}>
-      <div className="flex items-start space-x-4 max-w-4xl w-full min-w-0">
-        {/* AI Avatar */}
-        <AIIcon size={36} isAnimating={!isComplete} className="mt-1" />
-
-        {/* Content */}
-        <div className="flex-1 pt-0.5 min-w-0 space-y-3">
+      <div className="w-full max-w-4xl min-w-0 space-y-3 pt-0.5">
           {/* Agents section - collapsible */}
           {(hasAgentContent || !isComplete) && (
             <div className="mb-2">
@@ -353,7 +347,6 @@ export function SwarmProgress({ progress, className, historyMode, historyAgents,
           )}
 
           {/* Note: Responder's content is rendered via normal message flow, not here */}
-        </div>
       </div>
     </div>
   );

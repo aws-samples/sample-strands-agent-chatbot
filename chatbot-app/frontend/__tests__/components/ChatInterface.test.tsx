@@ -316,8 +316,7 @@ describe('ChatInterface', () => {
 
       render(<ChatInterface />)
 
-      // Component should render without errors when agent is thinking
-      expect(document.body).toBeInTheDocument()
+      expect(screen.getByRole('status', { name: 'AI is thinking' })).toBeInTheDocument()
     })
 
     it('offers a queued message as an interrupt while the agent is running', () => {
