@@ -23,8 +23,7 @@ import { SidebarTrigger, SidebarInset, useSidebar } from "@/components/ui/sideba
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { Skeleton } from "@/components/ui/skeleton"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { ArrowDown, Sparkles, Loader2 } from "lucide-react"
-import { AIIcon } from "@/components/ui/AIIcon"
+import { ArrowDown, Loader2, PanelRightClose, PanelRightOpen } from "lucide-react"
 import { ModelConfigDialog } from "@/components/ModelConfigDialog"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog"
 import { buildArtifactContext } from "@/lib/artifactContext"
@@ -745,7 +744,7 @@ export function ChatInterface() {
     return hasActiveSwarmProgress && lastGroup?.type === 'assistant_turn';
   }, [swarmProgress, groupedMessages])
 
-  // Reusable Canvas toggle button (large variant for empty state, small for chat header)
+  // Reusable artifact sidebar toggle (large variant for empty state, small for chat header)
   const renderCanvasToggle = (large = false) => (
     <TooltipProvider delayDuration={300}>
       <Tooltip>
@@ -754,10 +753,14 @@ export function ChatInterface() {
             variant="ghost"
             size="sm"
             onClick={toggleCanvas}
-            className={`${large ? 'h-9 w-9' : 'h-8 w-8'} p-0 hover:bg-muted/60 relative ${isCanvasOpen ? 'bg-muted' : ''}`}
-            title="Canvas"
+            className={`${large ? 'h-9 w-9' : 'h-8 w-8'} relative p-0 hover:bg-muted/60 ${isCanvasOpen ? 'bg-muted text-foreground' : 'text-muted-foreground'}`}
+            aria-label={isCanvasOpen ? 'Close artifacts sidebar' : 'Open artifacts sidebar'}
           >
-            <Sparkles className={large ? 'h-5 w-5' : 'h-4 w-4'} />
+            {isCanvasOpen ? (
+              <PanelRightClose className={large ? 'h-5 w-5' : 'h-4 w-4'} />
+            ) : (
+              <PanelRightOpen className={large ? 'h-5 w-5' : 'h-4 w-4'} />
+            )}
             {artifacts.length > 0 && (
               <span className="absolute -top-1 -right-1 h-4 w-4 bg-primary text-primary-foreground text-[10px] font-bold rounded-full flex items-center justify-center">
                 {artifacts.length}
@@ -768,8 +771,8 @@ export function ChatInterface() {
         <TooltipContent>
           <p>
             {artifacts.length > 0
-              ? `View Canvas (${artifacts.length})`
-              : 'No artifacts yet'
+              ? `${isCanvasOpen ? 'Close' : 'Open'} artifacts (${artifacts.length})`
+              : 'Open artifacts sidebar'
             }
           </p>
         </TooltipContent>
@@ -790,8 +793,7 @@ export function ChatInterface() {
 
       {/* Main Chat Area - unified layout for both modes */}
       <SidebarInset
-        className={`h-screen flex flex-col overflow-hidden ${groupedMessages.length === 0 ? 'justify-center items-center' : ''} transition-all duration-300 ease-in-out relative`}
-        style={{ marginRight: isCanvasOpen && !isMobileView ? '950px' : '0' }}
+        className={`h-screen min-w-0 flex flex-col overflow-hidden ${groupedMessages.length === 0 ? 'justify-center items-center' : ''} relative`}
       >
         {/* Sidebar trigger - Always visible in top-left */}
         {groupedMessages.length === 0 && (
@@ -800,7 +802,7 @@ export function ChatInterface() {
           </div>
         )}
 
-        {/* Canvas toggle button - shown in top-right when no chat has started */}
+        {/* Artifact sidebar toggle - shown in top-right when no chat has started */}
         {groupedMessages.length === 0 && mounted && !isMobileView && (
           <div className={`absolute top-4 right-4 z-20`}>
             {renderCanvasToggle(true)}
@@ -815,7 +817,7 @@ export function ChatInterface() {
             </div>
 
             <div className="flex items-center gap-2">
-              {/* Canvas Toggle - Hidden on mobile */}
+              {/* Artifact sidebar toggle - hidden on mobile */}
               {!isMobileView && renderCanvasToggle()}
             </div>
           </div>
@@ -903,17 +905,12 @@ export function ChatInterface() {
                       {/* History Swarm Progress - show collapsed agent list with shared context */}
                       {hasHistorySwarm && (
                         <div className="flex justify-start mb-4">
-                          <div className="flex items-start space-x-4 max-w-4xl w-full min-w-0">
-                            <AIIcon size={36} isAnimating={false} className="mt-1" />
-                            <div className="flex-1 pt-0.5 min-w-0">
-                              <SwarmProgress
-                                historyMode={true}
-                                historyAgents={historySwarmContext.agentsUsed}
-                                historySharedContext={historySwarmContext.sharedContext}
-                                sessionId={stableSessionId}
-                              />
-                            </div>
-                          </div>
+                          <SwarmProgress
+                            historyMode={true}
+                            historyAgents={historySwarmContext.agentsUsed}
+                            historySharedContext={historySwarmContext.sharedContext}
+                            sessionId={stableSessionId}
+                          />
                         </div>
                       )}
                       {/* Active Swarm Progress - render before responder's messages */}
@@ -933,7 +930,6 @@ export function ChatInterface() {
                         researchProgress={researchProgress}
                         researchJobs={researchJobs}
                         codeProgress={codeProgress}
-                        hideAvatar={isSwarmFinalResponse || hasHistorySwarm}
                       />
                     </>
                   )}
@@ -952,8 +948,14 @@ export function ChatInterface() {
 
           {/* Thinking Animation - Show only when agent is thinking (not in swarm mode) */}
           {agentStatus === 'thinking' && !swarmProgress?.isActive && (
-            <div className={`mx-auto w-full max-w-4xl px-4 min-w-0 animate-fade-in`}>
-              <AIIcon size={40} isAnimating={true} />
+            <div
+              className="mx-auto flex w-full max-w-4xl min-w-0 items-center gap-1 px-4 py-2 animate-fade-in"
+              role="status"
+              aria-label="AI is thinking"
+            >
+              <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/60 animate-pulse" />
+              <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/60 animate-pulse [animation-delay:150ms]" />
+              <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/60 animate-pulse [animation-delay:300ms]" />
             </div>
           )}
 
@@ -1085,7 +1087,7 @@ export function ChatInterface() {
         />
       )}
 
-      {/* Canvas */}
+      {/* Docked artifact sidebar */}
       <Canvas
         isOpen={isCanvasOpen}
         onClose={closeCanvas}

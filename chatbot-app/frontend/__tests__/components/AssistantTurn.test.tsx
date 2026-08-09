@@ -366,6 +366,43 @@ describe('AssistantTurn', () => {
       expect(container.innerHTML).toContain('Used Web Search')
     })
 
+    it('renders tool activity inline without a bordered card wrapper', () => {
+      const messages: Message[] = [
+        createMessage({
+          text: '',
+          toolExecutions: [
+            {
+              id: 'tool-inline',
+              toolName: 'web_search',
+              toolInput: { query: 'minimal tool activity' },
+              reasoning: [],
+              isComplete: true,
+              isExpanded: false,
+              toolResult: 'Search results',
+            },
+          ],
+        }),
+      ]
+
+      render(<AssistantTurn messages={messages} sessionId="test-session" />)
+
+      const activity = screen.getByTestId('tool-activity-group')
+      expect(activity).not.toHaveClass('border', 'bg-card', 'rounded-lg')
+    })
+
+    it('uses the full content column without an assistant avatar gutter', () => {
+      render(
+        <AssistantTurn
+          messages={[createMessage({ text: 'A direct response' })]}
+          sessionId="test-session"
+        />,
+      )
+
+      const content = screen.getByTestId('assistant-turn-content')
+      expect(content.parentElement).toHaveClass('w-full', 'max-w-4xl')
+      expect(content.parentElement).not.toHaveClass('space-x-4')
+    })
+
     it('should render interleaved text and tool in correct order', () => {
       // Scenario: Text1 -> Tool1 -> Text2 -> Tool2
       const messages: Message[] = [

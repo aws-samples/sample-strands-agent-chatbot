@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { X, FileText, Image as ImageIcon, Code, FileDown, Sparkles, Printer, Clock, Tag, GripHorizontal, Monitor, Database, Layers } from 'lucide-react'
+import { FileText, Image as ImageIcon, Code, FileDown, Sparkles, Printer, Clock, Tag, GripHorizontal, GripVertical, Monitor, Database, Layers, Files, PanelRightClose } from 'lucide-react'
 import { Empty, EmptyHeader, EmptyMedia, EmptyTitle, EmptyDescription } from '@/components/ui/empty'
 import { Artifact } from '@/types/artifact'
 import { ResearchArtifact } from './ResearchArtifact'
@@ -34,6 +34,24 @@ interface CanvasProps {
   justUpdated?: boolean // Flash effect trigger when artifact is updated
   sessionId?: string
 }
+
+const SIDEBAR_MIN_WIDTH = 360
+const SIDEBAR_MAX_WIDTH = 760
+const SIDEBAR_DEFAULT_WIDTH = 520
+const SIDEBAR_CHAT_MIN_WIDTH = 420
+const SIDEBAR_WIDTH_STORAGE_KEY = 'artifacts-sidebar:width'
+
+const getSidebarMaxWidth = () => {
+  if (typeof window === 'undefined') return SIDEBAR_MAX_WIDTH
+  return Math.max(
+    SIDEBAR_MIN_WIDTH,
+    Math.min(SIDEBAR_MAX_WIDTH, window.innerWidth - SIDEBAR_CHAT_MIN_WIDTH),
+  )
+}
+
+const clampSidebarWidth = (width: number) => (
+  Math.min(getSidebarMaxWidth(), Math.max(SIDEBAR_MIN_WIDTH, width))
+)
 
 const getArtifactIcon = (type: string) => {
   switch (type) {
@@ -125,8 +143,90 @@ export function Canvas({
   const selectedArtifact = awaitingResearchApproval ? undefined : selectedArtifactRaw
 
   const previewContentRef = useRef<HTMLDivElement>(null)
+  const sidebarRef = useRef<HTMLDivElement>(null)
+  const sidebarResizeStartX = useRef(0)
+  const sidebarResizeStartWidth = useRef(0)
+  const pendingSidebarWidth = useRef(SIDEBAR_DEFAULT_WIDTH)
+  const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT_WIDTH)
+  const [isSidebarResizing, setIsSidebarResizing] = useState(false)
 
   const displayArtifacts = artifacts
+
+  const commitSidebarWidth = useCallback((width: number) => {
+    const nextWidth = clampSidebarWidth(width)
+    pendingSidebarWidth.current = nextWidth
+    setSidebarWidth(nextWidth)
+    localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(nextWidth))
+  }, [])
+
+  useEffect(() => {
+    const storedWidth = Number(localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY))
+    const initialWidth = Number.isFinite(storedWidth) && storedWidth > 0
+      ? storedWidth
+      : SIDEBAR_DEFAULT_WIDTH
+    commitSidebarWidth(initialWidth)
+  }, [commitSidebarWidth])
+
+  useEffect(() => {
+    const handleViewportResize = () => {
+      const nextWidth = clampSidebarWidth(pendingSidebarWidth.current)
+      if (nextWidth !== pendingSidebarWidth.current) {
+        commitSidebarWidth(nextWidth)
+      }
+    }
+    window.addEventListener('resize', handleViewportResize)
+    return () => window.removeEventListener('resize', handleViewportResize)
+  }, [commitSidebarWidth])
+
+  const handleSidebarResizeStart = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    sidebarResizeStartX.current = event.clientX
+    sidebarResizeStartWidth.current = sidebarRef.current?.getBoundingClientRect().width || sidebarWidth
+    pendingSidebarWidth.current = sidebarResizeStartWidth.current
+    setIsSidebarResizing(true)
+    event.currentTarget.setPointerCapture?.(event.pointerId)
+  }, [sidebarWidth])
+
+  const handleSidebarResizeKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    let nextWidth: number | null = null
+    if (event.key === 'ArrowLeft') nextWidth = sidebarWidth + 24
+    if (event.key === 'ArrowRight') nextWidth = sidebarWidth - 24
+    if (event.key === 'Home') nextWidth = SIDEBAR_MIN_WIDTH
+    if (event.key === 'End') nextWidth = getSidebarMaxWidth()
+    if (nextWidth === null) return
+    event.preventDefault()
+    commitSidebarWidth(nextWidth)
+  }, [commitSidebarWidth, sidebarWidth])
+
+  useEffect(() => {
+    if (!isSidebarResizing) return
+
+    const handlePointerMove = (event: PointerEvent) => {
+      const deltaX = sidebarResizeStartX.current - event.clientX
+      const nextWidth = clampSidebarWidth(sidebarResizeStartWidth.current + deltaX)
+      pendingSidebarWidth.current = nextWidth
+      if (sidebarRef.current) {
+        sidebarRef.current.style.width = `${nextWidth}px`
+        sidebarRef.current.style.flexBasis = `${nextWidth}px`
+      }
+    }
+    const handlePointerUp = () => {
+      commitSidebarWidth(pendingSidebarWidth.current)
+      setIsSidebarResizing(false)
+    }
+
+    window.addEventListener('pointermove', handlePointerMove)
+    window.addEventListener('pointerup', handlePointerUp)
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove)
+      window.removeEventListener('pointerup', handlePointerUp)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+  }, [commitSidebarWidth, isSidebarResizing])
 
   // Handle close - if plan confirmation is showing, treat as cancel
   const handleClose = useCallback(() => {
@@ -274,18 +374,49 @@ export function Canvas({
 
   return (
     <div
-      className={`fixed top-0 right-0 h-screen w-full md:w-[950px] md:max-w-[80vw] bg-card border-l border-border text-card-foreground flex flex-col z-40 shadow-xl transition-transform duration-200 ${
-        isOpen ? 'translate-x-0' : 'translate-x-full'
+      ref={sidebarRef}
+      data-testid="artifacts-sidebar"
+      className={`relative hidden h-svh flex-none flex-col bg-sidebar text-sidebar-foreground md:flex ${
+        isOpen
+          ? 'overflow-visible border-l border-sidebar-border'
+          : 'pointer-events-none overflow-hidden'
       }`}
+      style={{
+        width: isOpen ? `${sidebarWidth}px` : '0px',
+        flexBasis: isOpen ? `${sidebarWidth}px` : '0px',
+      }}
     >
+      {isOpen && (
+        <div
+          role="separator"
+          aria-label="Resize artifacts sidebar"
+          aria-orientation="vertical"
+          aria-valuemin={SIDEBAR_MIN_WIDTH}
+          aria-valuemax={getSidebarMaxWidth()}
+          aria-valuenow={sidebarWidth}
+          tabIndex={0}
+          className={`group absolute inset-y-0 left-0 z-20 flex w-3 -translate-x-1/2 cursor-col-resize items-center justify-center outline-none ${
+            isSidebarResizing ? 'bg-primary/5' : ''
+          }`}
+          onPointerDown={handleSidebarResizeStart}
+          onKeyDown={handleSidebarResizeKeyDown}
+          title="Drag to resize artifacts sidebar"
+        >
+          <span className="h-full w-px bg-transparent group-hover:bg-primary/50 group-focus:bg-primary/50" />
+          <span className="absolute flex h-8 w-3 items-center justify-center rounded-sm border border-border bg-background opacity-0 shadow-xs group-hover:opacity-100 group-focus:opacity-100">
+            <GripVertical className="h-3 w-3 text-muted-foreground" />
+          </span>
+        </div>
+      )}
+
       {/* Header */}
-      <div className="flex-shrink-0 px-4 py-3 border-b border-sidebar-border/50">
+      <div className="flex-shrink-0 border-b border-sidebar-border px-4 py-2">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <Sparkles className="h-5 w-5 text-sidebar-foreground" />
-            <span className="text-heading font-semibold text-sidebar-foreground">Canvas</span>
+            <Files className="h-4 w-4 text-muted-foreground" />
+            <span className="text-sm font-medium text-sidebar-foreground">Artifacts</span>
             {displayArtifacts.length > 0 && (
-              <span className="text-label text-sidebar-foreground/60">({displayArtifacts.length})</span>
+              <span className="text-xs text-muted-foreground">{displayArtifacts.length}</span>
             )}
           </div>
           <Button
@@ -293,9 +424,10 @@ export function Canvas({
             size="sm"
             onClick={handleClose}
             className="h-8 w-8 p-0"
-            title="Close panel"
+            title="Close artifacts sidebar"
+            aria-label="Close artifacts sidebar"
           >
-            <X className="h-4 w-4" />
+            <PanelRightClose className="h-4 w-4" />
           </Button>
         </div>
       </div>
@@ -466,7 +598,7 @@ export function Canvas({
 
           <div className="px-4 py-3 flex-1 flex flex-col min-h-0">
             <div className="text-caption font-medium text-sidebar-foreground/60 uppercase tracking-wide mb-3">
-              Canvas Library ({displayArtifacts.length})
+              Library ({displayArtifacts.length})
             </div>
             <div className="overflow-x-auto overflow-y-hidden flex-1">
               <div className="flex gap-4 pb-2 min-w-min h-full">

@@ -1,9 +1,7 @@
 import React, { useState, useMemo } from 'react'
-import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Copy, ThumbsUp, ThumbsDown, Check, AudioWaveform, Sparkles } from 'lucide-react'
-import { AIIcon } from '@/components/ui/AIIcon'
+import { Copy, ThumbsUp, ThumbsDown, Check, Sparkles } from 'lucide-react'
 import { Message } from '@/types/chat'
 import { ReasoningState } from '@/types/events'
 import { Markdown } from '@/components/ui/Markdown'
@@ -66,10 +64,9 @@ interface AssistantTurnProps {
     stepNumber: number
     content: string
   }>
-  hideAvatar?: boolean
 }
 
-export const AssistantTurn = React.memo<AssistantTurnProps>(({ messages, currentReasoning, sessionId, onOpenResearchArtifact, onOpenWordArtifact, onOpenExcelArtifact, onOpenPptArtifact, onOpenExtractedDataArtifact, onOpenExcalidrawArtifact, researchProgress, researchJobs, codeProgress, hideAvatar = false }) => {
+export const AssistantTurn = React.memo<AssistantTurnProps>(({ messages, currentReasoning, sessionId, onOpenResearchArtifact, onOpenWordArtifact, onOpenExcelArtifact, onOpenPptArtifact, onOpenExtractedDataArtifact, onOpenExcalidrawArtifact, researchProgress, researchJobs, codeProgress }) => {
   // Get initial feedback state from first message
   const initialFeedback = messages[0]?.feedback || null
 
@@ -259,20 +256,8 @@ if (!messages || messages.length === 0) {
 
   return (
     <div className="flex justify-start mb-8 group">
-      <div className={`flex items-start max-w-4xl w-full min-w-0 ${hideAvatar ? '' : 'space-x-4'}`}>
-        {/* Single Avatar for the entire turn - hidden when part of Swarm response */}
-        {!hideAvatar && (
-          messages.some(m => m.isVoiceMessage) ? (
-            <div className="h-8 w-8 flex-shrink-0 mt-2 flex items-center justify-center rounded-md bg-muted text-primary">
-              <AudioWaveform className="h-4 w-4" />
-            </div>
-          ) : (
-            <AIIcon size={32} isAnimating={messages.some(m => m.isStreaming)} className="mt-2" />
-          )
-        )}
-
-        {/* Turn Content - add left margin when avatar is hidden to align with SwarmProgress content */}
-        <div className={`flex-1 space-y-4 pt-1 min-w-0 ${hideAvatar ? 'ml-12' : ''}`}>
+      <div className="w-full max-w-4xl min-w-0">
+        <div data-testid="assistant-turn-content" className="min-w-0 space-y-4 pt-1">
           {/* Render messages in chronological order — merge consecutive tool items */}
           {groupedContent.map((item, index) => {
             if (item.type === 'tool') {
@@ -526,6 +511,5 @@ if (!messages || messages.length === 0) {
   // Compare codeProgress for real-time code agent status
   const codeProgressEqual = (prevProps.codeProgress?.length ?? 0) === (nextProps.codeProgress?.length ?? 0)
 
-  const hideAvatarEqual = prevProps.hideAvatar === nextProps.hideAvatar
-  return messagesEqual && reasoningEqual && prevProps.sessionId === nextProps.sessionId && callbackEqual && researchProgressEqual && codeProgressEqual && hideAvatarEqual
+  return messagesEqual && reasoningEqual && prevProps.sessionId === nextProps.sessionId && callbackEqual && researchProgressEqual && codeProgressEqual
 })

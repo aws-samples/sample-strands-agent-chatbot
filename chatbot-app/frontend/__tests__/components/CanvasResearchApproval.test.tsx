@@ -6,8 +6,8 @@
  * artifact and auto-selects it, so from the second run onward the next approval
  * was invisible — no accept/decline anywhere, and the turn could not proceed.
  */
-import { describe, it, expect, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { beforeEach, describe, it, expect, vi } from 'vitest'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { Canvas } from '@/components/canvas/Canvas'
 import type { Artifact } from '@/types/artifact'
 
@@ -55,6 +55,10 @@ const pendingApproval = {
   onCancel: vi.fn(),
   sessionId: 'session-1',
 }
+
+beforeEach(() => {
+  localStorage.removeItem('artifacts-sidebar:width')
+})
 
 describe('Canvas — pending research approval', () => {
   it('shows the approval even when an earlier artifact is selected', () => {
@@ -120,5 +124,43 @@ describe('Canvas — pending research approval', () => {
       expect(onCancel).toHaveBeenCalled()
       expect(onClose).not.toHaveBeenCalled()
     }
+  })
+})
+
+describe('Canvas — docked artifact sidebar', () => {
+  it('participates in the workspace layout instead of rendering as a fixed overlay', () => {
+    renderCanvas()
+
+    const sidebar = screen.getByTestId('artifacts-sidebar')
+    expect(sidebar).toHaveClass('relative', 'flex-none')
+    expect(sidebar).not.toHaveClass('fixed', 'shadow-xl')
+    expect(sidebar).toHaveStyle({ width: '520px', flexBasis: '520px' })
+  })
+
+  it('supports keyboard resizing within the configured range', () => {
+    renderCanvas()
+
+    const sidebar = screen.getByTestId('artifacts-sidebar')
+    const resizeHandle = screen.getByRole('separator', { name: /resize artifacts sidebar/i })
+
+    fireEvent.keyDown(resizeHandle, { key: 'ArrowRight' })
+    expect(sidebar).toHaveStyle({ width: '496px', flexBasis: '496px' })
+
+    fireEvent.keyDown(resizeHandle, { key: 'Home' })
+    expect(sidebar).toHaveStyle({ width: '360px', flexBasis: '360px' })
+  })
+
+  it('resizes from the left edge without turning the panel into an overlay', () => {
+    renderCanvas()
+
+    const sidebar = screen.getByTestId('artifacts-sidebar')
+    const resizeHandle = screen.getByRole('separator', { name: /resize artifacts sidebar/i })
+
+    fireEvent.pointerDown(resizeHandle, { clientX: 500, pointerId: 1 })
+    fireEvent.pointerMove(window, { clientX: 450, pointerId: 1 })
+    expect(sidebar).toHaveStyle({ width: '570px', flexBasis: '570px' })
+
+    fireEvent.pointerUp(window, { pointerId: 1 })
+    expect(localStorage.setItem).toHaveBeenLastCalledWith('artifacts-sidebar:width', '570')
   })
 })

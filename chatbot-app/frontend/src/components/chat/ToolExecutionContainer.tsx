@@ -825,7 +825,7 @@ export const ToolExecutionContainer = React.memo<ToolExecutionContainerProps>(({
 
   return (
     <>
-      <div className="space-y-1.5">
+      <div className="space-y-0.5">
         {renderItems.map((item) => {
           // ── Visualization / map result ──
           if (item.kind === 'viz') {
@@ -848,11 +848,11 @@ export const ToolExecutionContainer = React.memo<ToolExecutionContainerProps>(({
 
           return (
             <React.Fragment key={key}>
-              <div className="rounded-lg border border-border bg-card overflow-hidden">
+              <div data-testid="tool-activity-group">
                 {/* Collapsed row */}
                 <div
                   onClick={() => toggleToolExpansion(key)}
-                  className="flex min-h-10 items-center gap-2 px-3 py-2 hover:bg-muted/45 transition-colors w-full text-left group cursor-pointer"
+                  className="flex items-center gap-2 py-1.5 px-2 -mx-2 rounded-md hover:bg-muted/50 transition-colors w-full text-left group cursor-pointer"
                 >
                   {/* Tool icon */}
                   {imageSrc ? (
@@ -873,7 +873,7 @@ export const ToolExecutionContainer = React.memo<ToolExecutionContainerProps>(({
 
                   {/* Count badge — only when count > 1 */}
                   {count > 1 && (
-                    <span className="text-[11px] text-muted-foreground bg-muted px-1.5 py-0.5 rounded-md tabular-nums">
+                    <span className="text-[11px] text-muted-foreground bg-muted px-1.5 py-0.5 rounded-full tabular-nums">
                       {allDone ? `×${count}` : `${completedCount}/${count}`}
                     </span>
                   )}
@@ -887,7 +887,7 @@ export const ToolExecutionContainer = React.memo<ToolExecutionContainerProps>(({
 
                 {/* Expanded: individual call details */}
                 {isExpanded && (
-                  <div className="border-t border-border bg-muted/20 px-3 py-3 space-y-3 animate-fade-in">
+                  <div className="ml-4 mt-1 mb-2 border-l-2 border-muted pl-3 space-y-3 animate-fade-in">
                     {executions.map((exec, i) => (
                       <div key={exec.id}>
                         {count > 1 && (
