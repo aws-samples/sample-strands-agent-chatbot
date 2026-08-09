@@ -77,7 +77,12 @@ export function normalizeWorkspacePath(path = ''): string {
     throw new WorkspacePathError('Invalid workspace path')
   }
 
-  const clean = path.replace(/^\/+|\/+$/g, '')
+  let start = 0
+  let end = path.length
+  while (start < end && path.charCodeAt(start) === 47) start += 1
+  while (end > start && path.charCodeAt(end - 1) === 47) end -= 1
+
+  const clean = path.slice(start, end)
   if (!clean) return ''
 
   const segments = clean.split('/')

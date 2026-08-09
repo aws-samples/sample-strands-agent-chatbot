@@ -120,6 +120,16 @@ describe('S3WorkspaceRepository', () => {
     ).rejects.toThrow(WorkspacePathError)
   })
 
+  it('normalizes long boundary slash sequences without accepting empty segments', () => {
+    const slashes = '/'.repeat(20_000)
+    expect(normalizeWorkspacePath(`${slashes}documents/report.md${slashes}`)).toBe(
+      'documents/report.md',
+    )
+    expect(() => normalizeWorkspacePath('documents//report.md')).toThrow(
+      WorkspacePathError,
+    )
+  })
+
   it('classifies common preview formats', () => {
     expect(getWorkspacePreviewKind('file.csv')).toBe('text')
     expect(getWorkspacePreviewKind('file.pdf')).toBe('pdf')
