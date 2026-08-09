@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { FileText, Image as ImageIcon, Code, FileDown, Sparkles, Printer, Clock, Tag, GripHorizontal, GripVertical, Monitor, Database, Layers, Files, PanelRightClose } from 'lucide-react'
+import { FileText, Image as ImageIcon, Code, FileDown, Sparkles, Printer, Clock, Tag, GripHorizontal, GripVertical, Monitor, Database, Layers, Files, FolderTree, PanelRightClose } from 'lucide-react'
 import { Empty, EmptyHeader, EmptyMedia, EmptyTitle, EmptyDescription } from '@/components/ui/empty'
 import { Artifact } from '@/types/artifact'
 import { ResearchArtifact } from './ResearchArtifact'
@@ -13,6 +13,7 @@ import { ExcalidrawRenderer } from './ExcalidrawRenderer'
 import { marked } from 'marked'
 import { citationPrintCSS } from '@/components/ui/CitationLink'
 import { Markdown } from '@/components/ui/Markdown'
+import { WorkspaceBrowser } from './WorkspaceBrowser'
 
 interface BrowserState {
   sessionId: string
@@ -33,6 +34,8 @@ interface CanvasProps {
   browserState?: BrowserState // Live browser state
   justUpdated?: boolean // Flash effect trigger when artifact is updated
   sessionId?: string
+  activeView?: SidebarMode
+  onActiveViewChange?: (view: SidebarMode) => void
 }
 
 const SIDEBAR_MIN_WIDTH = 360
@@ -40,6 +43,7 @@ const SIDEBAR_MAX_WIDTH = 760
 const SIDEBAR_DEFAULT_WIDTH = 520
 const SIDEBAR_CHAT_MIN_WIDTH = 420
 const SIDEBAR_WIDTH_STORAGE_KEY = 'artifacts-sidebar:width'
+type SidebarMode = 'artifacts' | 'workspace'
 
 const getSidebarMaxWidth = () => {
   if (typeof window === 'undefined') return SIDEBAR_MAX_WIDTH
@@ -131,6 +135,8 @@ export function Canvas({
   browserState,
   justUpdated = false,
   sessionId,
+  activeView,
+  onActiveViewChange,
 }: CanvasProps) {
   const selectedArtifactRaw = artifacts.find(a => a.id === selectedArtifactId)
 
@@ -149,6 +155,12 @@ export function Canvas({
   const pendingSidebarWidth = useRef(SIDEBAR_DEFAULT_WIDTH)
   const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT_WIDTH)
   const [isSidebarResizing, setIsSidebarResizing] = useState(false)
+  const [internalSidebarMode, setInternalSidebarMode] = useState<SidebarMode>('artifacts')
+  const sidebarMode = activeView ?? internalSidebarMode
+  const setSidebarMode = useCallback((view: SidebarMode) => {
+    setInternalSidebarMode(view)
+    onActiveViewChange?.(view)
+  }, [onActiveViewChange])
 
   const displayArtifacts = artifacts
 
@@ -389,7 +401,7 @@ export function Canvas({
       {isOpen && (
         <div
           role="separator"
-          aria-label="Resize artifacts sidebar"
+          aria-label="Resize right sidebar"
           aria-orientation="vertical"
           aria-valuemin={SIDEBAR_MIN_WIDTH}
           aria-valuemax={getSidebarMaxWidth()}
@@ -400,7 +412,7 @@ export function Canvas({
           }`}
           onPointerDown={handleSidebarResizeStart}
           onKeyDown={handleSidebarResizeKeyDown}
-          title="Drag to resize artifacts sidebar"
+          title="Drag to resize right sidebar"
         >
           <span className="h-full w-px bg-transparent group-hover:bg-primary/50 group-focus:bg-primary/50" />
           <span className="absolute flex h-8 w-3 items-center justify-center rounded-sm border border-border bg-background opacity-0 shadow-xs group-hover:opacity-100 group-focus:opacity-100">
@@ -412,26 +424,63 @@ export function Canvas({
       {/* Header */}
       <div className="flex-shrink-0 border-b border-sidebar-border px-4 py-2">
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Files className="h-4 w-4 text-muted-foreground" />
-            <span className="text-sm font-medium text-sidebar-foreground">Artifacts</span>
-            {displayArtifacts.length > 0 && (
-              <span className="text-xs text-muted-foreground">{displayArtifacts.length}</span>
-            )}
+          <div
+            className="flex items-center rounded-md bg-sidebar-accent/70 p-0.5"
+            role="group"
+            aria-label="Right sidebar view"
+          >
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setSidebarMode('artifacts')}
+              className={`h-7 gap-1.5 px-2 text-xs ${
+                sidebarMode === 'artifacts'
+                  ? 'bg-sidebar text-sidebar-foreground shadow-xs'
+                  : 'text-muted-foreground hover:text-sidebar-foreground'
+              }`}
+              aria-label="Show artifacts"
+              aria-pressed={sidebarMode === 'artifacts'}
+            >
+              <Files className="h-3.5 w-3.5" />
+              Artifacts
+              {displayArtifacts.length > 0 && (
+                <span className="text-[11px] text-muted-foreground">
+                  {displayArtifacts.length}
+                </span>
+              )}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setSidebarMode('workspace')}
+              className={`h-7 gap-1.5 px-2 text-xs ${
+                sidebarMode === 'workspace'
+                  ? 'bg-sidebar text-sidebar-foreground shadow-xs'
+                  : 'text-muted-foreground hover:text-sidebar-foreground'
+              }`}
+              aria-label="Show workspace"
+              aria-pressed={sidebarMode === 'workspace'}
+            >
+              <FolderTree className="h-3.5 w-3.5" />
+              Workspace
+            </Button>
           </div>
           <Button
             variant="ghost"
             size="sm"
             onClick={handleClose}
             className="h-8 w-8 p-0"
-            title="Close artifacts sidebar"
-            aria-label="Close artifacts sidebar"
+            title="Close right sidebar"
+            aria-label="Close right sidebar"
           >
             <PanelRightClose className="h-4 w-4" />
           </Button>
         </div>
       </div>
 
+      {sidebarMode === 'workspace' ? (
+        <WorkspaceBrowser sessionId={sessionId} />
+      ) : (
       <div className="flex-1 min-h-0 flex flex-col">
         {/* Preview Area */}
         <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
@@ -642,6 +691,7 @@ export function Canvas({
           </div>
         </div>
       </div>
+      )}
     </div>
   )
 }

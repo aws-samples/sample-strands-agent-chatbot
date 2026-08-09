@@ -4,14 +4,15 @@ import React, { useState, useEffect } from 'react'
 import { Loader2, AlertCircle } from 'lucide-react'
 
 interface OfficeViewerProps {
-  s3Url: string  // s3://bucket/path/file.docx
+  s3Url?: string  // s3://bucket/path/file.docx
+  previewUrl?: string
   filename: string
 }
 
 /**
  * Office document viewer using Microsoft Office Online.
  */
-export function OfficeViewer({ s3Url, filename }: OfficeViewerProps) {
+export function OfficeViewer({ s3Url, previewUrl, filename }: OfficeViewerProps) {
   const [viewerUrl, setViewerUrl] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -22,7 +23,13 @@ export function OfficeViewer({ s3Url, filename }: OfficeViewerProps) {
       setError(null)
 
       try {
-        if (!s3Url || !s3Url.startsWith('s3://')) {
+        if (previewUrl) {
+          const officeViewerUrl = `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(previewUrl)}`
+          setViewerUrl(officeViewerUrl)
+          return
+        }
+
+        if (!s3Url?.startsWith('s3://')) {
           throw new Error(`Invalid S3 URL format: ${s3Url}`)
         }
 
@@ -60,10 +67,10 @@ export function OfficeViewer({ s3Url, filename }: OfficeViewerProps) {
       }
     }
 
-    if (s3Url) {
+    if (s3Url || previewUrl) {
       loadDocument()
     }
-  }, [s3Url])
+  }, [previewUrl, s3Url])
 
   if (loading) {
     return (

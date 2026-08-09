@@ -24,6 +24,12 @@ vi.mock('@/components/canvas/ResearchArtifact', () => ({
   ),
 }))
 
+vi.mock('@/components/canvas/WorkspaceBrowser', () => ({
+  WorkspaceBrowser: ({ sessionId }: { sessionId?: string }) => (
+    <div data-testid="workspace-browser">{sessionId}</div>
+  ),
+}))
+
 const artifact: Artifact = {
   id: 'research-previous',
   type: 'research' as any,
@@ -141,7 +147,7 @@ describe('Canvas — docked artifact sidebar', () => {
     renderCanvas()
 
     const sidebar = screen.getByTestId('artifacts-sidebar')
-    const resizeHandle = screen.getByRole('separator', { name: /resize artifacts sidebar/i })
+    const resizeHandle = screen.getByRole('separator', { name: /resize right sidebar/i })
 
     fireEvent.keyDown(resizeHandle, { key: 'ArrowRight' })
     expect(sidebar).toHaveStyle({ width: '496px', flexBasis: '496px' })
@@ -154,7 +160,7 @@ describe('Canvas — docked artifact sidebar', () => {
     renderCanvas()
 
     const sidebar = screen.getByTestId('artifacts-sidebar')
-    const resizeHandle = screen.getByRole('separator', { name: /resize artifacts sidebar/i })
+    const resizeHandle = screen.getByRole('separator', { name: /resize right sidebar/i })
 
     fireEvent.pointerDown(resizeHandle, { clientX: 500, pointerId: 1 })
     fireEvent.pointerMove(window, { clientX: 450, pointerId: 1 })
@@ -162,5 +168,21 @@ describe('Canvas — docked artifact sidebar', () => {
 
     fireEvent.pointerUp(window, { pointerId: 1 })
     expect(localStorage.setItem).toHaveBeenLastCalledWith('artifacts-sidebar:width', '570')
+  })
+
+  it('switches between conversational artifacts and session workspace files', () => {
+    renderCanvas()
+
+    expect(screen.getByRole('button', { name: /show artifacts/i })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+    fireEvent.click(screen.getByRole('button', { name: /show workspace/i }))
+
+    expect(screen.getByTestId('workspace-browser')).toHaveTextContent('session-1')
+    expect(screen.getByRole('button', { name: /show workspace/i })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
   })
 })
