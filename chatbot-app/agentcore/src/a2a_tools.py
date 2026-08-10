@@ -7,7 +7,6 @@ Uses A2A SDK to communicate with agents deployed on AgentCore Runtime.
 Based on: amazon-bedrock-agentcore-samples orchestrator pattern
 """
 
-import boto3
 import logging
 import os
 import asyncio
@@ -32,39 +31,6 @@ _cache = {
 }
 
 
-def _list_session_s3_files(user_id: Optional[str], session_id: Optional[str]) -> list:
-    """
-    List files uploaded by the user in the current session from the S3 workspace bucket.
-
-    Returns a list of {"s3_uri": "s3://bucket/key", "filename": "name"} dicts
-    suitable for passing as metadata["s3_files"] to the code-agent.
-    """
-    if not user_id or not session_id:
-        return []
-
-    try:
-        from workspace.config import get_workspace_bucket
-        bucket = get_workspace_bucket()
-        prefix = f"documents/{user_id}/{session_id}/"
-
-        s3 = boto3.client('s3', region_name=os.environ.get('AWS_REGION', 'us-west-2'))
-        paginator = s3.get_paginator('list_objects_v2')
-        files = []
-        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
-            for obj in page.get('Contents', []):
-                key = obj['Key']
-                filename = key.split('/')[-1]
-                if filename:
-                    files.append({"s3_uri": f"s3://{bucket}/{key}", "filename": filename})
-
-        if files:
-            logger.info(f"[code-agent] Found {len(files)} S3 file(s) for session {session_id}")
-        return files
-
-    except Exception as e:
-        logger.warning(f"[code-agent] Failed to list S3 files: {e}")
-        return []
-
 DEFAULT_TIMEOUT = 2400  # 40 minutes for complex coding tasks
 AGENT_TIMEOUT = 2400    # 2400s (40 minutes) per agent call
 
@@ -76,6 +42,11 @@ AGENT_TIMEOUT = 2400    # 2400s (40 minutes) per agent call
 def get_cached_agent_url(agent_id: str) -> Optional[str]:
     """Get and cache A2A agent invocation URL from Registry."""
     if agent_id not in _cache['agent_urls']:
+        if agent_id == "agentcore_general-subagent":
+            url = os.environ.get("GENERAL_SUBAGENT_RUNTIME_URL")
+            if url:
+                _cache['agent_urls'][agent_id] = url
+                return url
         from registry.client import get_registry_client
         client = get_registry_client()
         if not client:
@@ -215,6 +186,7 @@ async def send_a2a_message(
         sent_code_steps = set()
         sent_code_todos = set()
         sent_research_steps = set()
+        sent_delegation_steps = set()
 
         def _extract_text(parts):
             for p in (parts or []):
@@ -238,6 +210,15 @@ async def send_a2a_message(
                         return {"type": "research_step", "stepNumber": n, "content": text}
                 except (ValueError, IndexError):
                     pass
+            elif name.startswith('delegation_step_'):
+                step_id = name.removeprefix('delegation_step_')
+                if step_id not in sent_delegation_steps and text:
+                    sent_delegation_steps.add(step_id)
+                    return {
+                        "type": "delegation_step",
+                        "stepNumber": len(sent_delegation_steps),
+                        "content": text,
+                    }
             elif name.startswith('code_step_'):
                 try:
                     n = int(name.split('_')[-1])
@@ -285,6 +266,10 @@ async def send_a2a_message(
 
                     if current_task_id is None and hasattr(task, 'id'):
                         current_task_id = task.id
+                        yield {
+                            "type": "a2a_task_started",
+                            "taskId": current_task_id,
+                        }
 
                     task_status = task.status if hasattr(task, 'status') else task
                     state = str(getattr(task_status, 'state', 'unknown'))
@@ -445,9 +430,6 @@ def create_a2a_tool(agent_id: str):
             """
             session_id, user_id, model_id, _auth_token = extract_context(tool_context)
 
-            # Discover uploaded files from S3 workspace and forward to code-agent
-            s3_files = _list_session_s3_files(user_id, session_id)
-
             metadata = {
                 "session_id": session_id,
                 "user_id": user_id,
@@ -455,7 +437,6 @@ def create_a2a_tool(agent_id: str):
                 # Claude Agent SDK has its own provider-specific model setting.
                 # Keep the orchestrator model only for diagnostics.
                 "orchestrator_model_id": model_id,
-                "s3_files": s3_files,
                 "reset_session": reset_session,
                 "compact_session": compact_session,
             }

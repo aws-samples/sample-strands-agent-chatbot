@@ -86,13 +86,23 @@ see Code Interpreter outputs immediately instead of waiting for object export.
 Existing logical namespaces remain unchanged:
 
 ```text
+uploads/            S3 API, mapped to Code Interpreter inputs/
 documents/          S3 API
 code-interpreter/   S3 Files mount, with S3 API fallback
 code-agent/         S3 API
 ```
 
-Uploads are written to the existing documents prefix and copied once to the
-Code Interpreter workspace `inputs/` directory through the backing bucket.
+Workspace-panel uploads are written directly to the Code Interpreter workspace
+`inputs/` prefix. Chat attachments are stored by their document manager when
+applicable and copied once to the same `inputs/` prefix.
+Code Agent synchronizes that canonical prefix into its local `inputs/`
+directory before every delegated task; the orchestrator does not relay a
+separate file list or create another durable copy.
+Workspace uploads use session-scoped presigned PUT URLs, so file bytes do not
+pass through the frontend task. Dev currently accepts workspace uploads up to
+100 MB. JSON-family chat attachments are limited to 4 MB and represented in
+model context by at most 40,000 characters; the complete object remains in
+`inputs/` for Code Interpreter.
 S3 Files imports that prefix on first directory access. Code Interpreter output
 files are created directly in `/mnt/workspace`; the previous base64 preload and
 push path remains only as a rollout fallback.
@@ -135,6 +145,6 @@ remove the corresponding workspace root and access point.
 - Existing tools continue to work while the UI gains a unified file browser.
 - Storage migration does not require another frontend protocol change.
 - Artifacts and files remain separate concepts.
-- Real-time file change events and Workspace-panel upload, rename, and delete
-  remain follow-up phases. Chat attachment uploads are already imported into
-  the session workspace.
+- Workspace-panel and chat attachment uploads are imported into the session
+  workspace. Real-time file change events, rename, and delete remain follow-up
+  phases.

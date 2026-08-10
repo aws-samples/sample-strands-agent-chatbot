@@ -251,6 +251,10 @@ def auto_store_files(
             {'extensions': list(IMAGE_EXTENSIONS),            'manager_class': ImageManager},
         ]
         known_extensions = {ext for c in file_type_configs for ext in c['extensions']}
+        if os.getenv("S3_FILES_FILE_SYSTEM_ID"):
+            # Structured data is durably stored in the mounted workspace input
+            # prefix below, so avoid a second copy in documents/raw.
+            known_extensions.update({'.json', '.jsonl', '.ndjson'})
 
         # Step 1: Always save to S3 (no CI required)
         for config in file_type_configs:

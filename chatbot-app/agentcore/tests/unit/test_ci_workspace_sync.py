@@ -65,6 +65,15 @@ def test_mounted_python_code_is_not_rewritten():
     ) == "open('output.txt', 'w').write('ok')"
 
 
+def test_legacy_sync_includes_workspace_panel_uploads():
+    from builtin_tools.code_interpreter_tool import _get_workspace_s3_prefixes
+
+    assert (
+        "code-interpreter-workspace/user1/sess1/inputs/"
+        in _get_workspace_s3_prefixes("user1", "sess1")
+    )
+
+
 # ============================================================
 # ci_push_to_workspace Tests
 # ============================================================

@@ -1019,3 +1019,35 @@ class TestModelConfiguration:
 
         call_kwargs = mock_factory.call_args.kwargs
         assert call_kwargs['system_prompt'] == "You are a coding assistant."
+
+    @patch('routers.chat.create_agent')
+    def test_adds_valid_workspace_attachments_to_turn_context(
+        self, mock_factory, mock_agent
+    ):
+        """Workspace paths are validated before becoming agent context."""
+        mock_factory.return_value = mock_agent
+
+        from routers.chat import router
+        from fastapi import FastAPI
+
+        app = FastAPI()
+        app.include_router(router)
+        client = TestClient(app)
+
+        client.post(
+            "/invocations",
+            json=_agui_payload(
+                system_prompt="Existing context.",
+                workspace_paths=[
+                    "uploads/packets-pass-a.jsonl",
+                    "../not-allowed.jsonl",
+                    "uploads/nested/not-allowed.jsonl",
+                ],
+            ),
+        )
+
+        prompt = mock_factory.call_args.kwargs['system_prompt']
+        assert prompt.startswith("Existing context.")
+        assert "uploads/packets-pass-a.jsonl" in prompt
+        assert "../not-allowed.jsonl" not in prompt
+        assert "uploads/nested/not-allowed.jsonl" not in prompt
