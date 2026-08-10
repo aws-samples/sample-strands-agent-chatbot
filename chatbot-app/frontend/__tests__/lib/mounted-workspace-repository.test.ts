@@ -71,11 +71,11 @@ describe('mounted Code Interpreter workspace', () => {
     await writeFile(outside, 'secret')
     await symlink(outside, join(sessionRoot, 'escape.txt'))
     const {
-      resolveMountedWorkspaceFile,
+      openMountedWorkspaceFile,
       WorkspacePathError,
     } = await import('@/lib/workspace/s3-repository')
 
-    await expect(resolveMountedWorkspaceFile(
+    await expect(openMountedWorkspaceFile(
       'user-1',
       'session-1',
       'code-interpreter/escape.txt',
