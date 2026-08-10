@@ -91,16 +91,25 @@ def _validated_local_component(value: str, name: str) -> str:
     return value
 
 
+def _local_storage_key(value: str, name: str) -> str:
+    component = _validated_local_component(value, name)
+    return hashlib.sha256(component.encode("utf-8")).hexdigest()
+
+
 def _local_dir(session_id: str) -> Path:
     sessions_root = get_sessions_dir().resolve()
-    component = _validated_local_component(session_id, "session ID")
-    path = (
-        sessions_root
-        / f"session_{component}"
-        / "delegation_jobs"
-    ).resolve()
-    if not path.is_relative_to(sessions_root):
+    storage_root = (sessions_root / "delegation_jobs").resolve()
+    if not storage_root.is_relative_to(sessions_root):
         raise ValueError("Local delegation directory escapes the sessions root")
+    storage_root.mkdir(parents=True, exist_ok=True)
+
+    session_key = _local_storage_key(session_id, "session ID")
+    candidate = storage_root / session_key
+    if candidate.is_symlink():
+        raise ValueError("Local delegation session directory cannot be a symlink")
+    path = candidate.resolve()
+    if path.parent != storage_root:
+        raise ValueError("Local delegation directory escapes the storage root")
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -112,9 +121,9 @@ def _local_job_path(
     result: bool = False,
 ) -> Path:
     jobs_dir = _local_dir(session_id)
-    component = _validated_local_component(job_id, "job ID")
+    job_key = _local_storage_key(job_id, "job ID")
     suffix = ".result.json" if result else ".json"
-    path = (jobs_dir / f"{component}{suffix}").resolve()
+    path = (jobs_dir / f"{job_key}{suffix}").resolve()
     if path.parent != jobs_dir:
         raise ValueError("Local delegation file escapes the job directory")
     return path

@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import threading
 from decimal import Decimal
@@ -215,9 +216,15 @@ def test_local_storage_rejects_path_traversal():
 def test_local_storage_rejects_session_symlink_escape(tmp_path):
     outside = tmp_path.parent / f"{tmp_path.name}-outside"
     outside.mkdir()
-    (tmp_path / "session_s1").symlink_to(outside, target_is_directory=True)
+    storage_root = tmp_path / "delegation_jobs"
+    storage_root.mkdir()
+    session_key = hashlib.sha256(b"s1").hexdigest()
+    (storage_root / session_key).symlink_to(
+        outside,
+        target_is_directory=True,
+    )
 
-    with pytest.raises(ValueError, match="escapes the sessions root"):
+    with pytest.raises(ValueError, match="cannot be a symlink"):
         delegation_jobs.get_job("u1", "s1", "job1")
 
     assert not (outside / "delegation_jobs").exists()

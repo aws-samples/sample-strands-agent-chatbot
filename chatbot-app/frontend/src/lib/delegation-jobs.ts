@@ -1,5 +1,6 @@
 import fs from 'fs'
 import path from 'path'
+import { createHash } from 'crypto'
 import {
   DynamoDBClient,
   GetItemCommand,
@@ -70,17 +71,19 @@ function localJobsDir(sessionId: string): string | null {
     'agentcore',
     'sessions',
   )
+  const sessionKey = createHash('sha256').update(sessionId).digest('hex')
   const jobsDir = path.resolve(
     sessionsDir,
-    `session_${sessionId}`,
     'delegation_jobs',
+    sessionKey,
   )
   return jobsDir.startsWith(sessionsDir + path.sep) ? jobsDir : null
 }
 
 function localJobPath(jobsDir: string, jobId: string): string | null {
   if (!/^[a-f0-9]{32}$/i.test(jobId)) return null
-  const jobPath = path.resolve(jobsDir, `${jobId}.json`)
+  const jobKey = createHash('sha256').update(jobId).digest('hex')
+  const jobPath = path.resolve(jobsDir, `${jobKey}.json`)
   return path.dirname(jobPath) === jobsDir ? jobPath : null
 }
 
@@ -91,7 +94,7 @@ function readLocalJobs(
   const jobsDir = localJobsDir(sessionId)
   if (!jobsDir || !fs.existsSync(jobsDir)) return []
   return fs.readdirSync(jobsDir)
-    .filter(name => /^[a-f0-9]{32}\.json$/i.test(name))
+    .filter(name => /^[a-f0-9]{64}\.json$/i.test(name))
     .flatMap(name => {
       try {
         const job = JSON.parse(
@@ -193,7 +196,7 @@ export async function cancelDelegationJob(
   if (IS_LOCAL) {
     const jobsDir = localJobsDir(sessionId)
     if (!jobsDir) return null
-    const jobPath = localJobPath(jobsDir, jobId)
+    const jobPath = localJobPath(jobsDir, existing.jobId)
     if (!jobPath) return null
     const updated = {
       ...existing,
