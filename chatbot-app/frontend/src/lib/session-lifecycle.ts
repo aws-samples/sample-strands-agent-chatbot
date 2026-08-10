@@ -217,7 +217,7 @@ export async function advanceSessionConversationEpoch(
   sessionId: string,
   cutoff: string,
 ): Promise<number> {
-  if (IS_LOCAL || userId === 'anonymous') {
+  if (IS_LOCAL) {
     return advanceLocalConversationEpoch(userId, sessionId, cutoff)
   }
   if (!TABLE_NAME) {
@@ -335,7 +335,7 @@ export async function tombstoneSessionOrchestration(
   sessionId: string,
 ): Promise<void> {
   const deletedAt = new Date().toISOString()
-  if (IS_LOCAL || userId === 'anonymous') {
+  if (IS_LOCAL) {
     tombstoneLocalSession(userId, sessionId, deletedAt)
     return
   }

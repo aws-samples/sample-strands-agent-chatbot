@@ -55,26 +55,74 @@ All requests require `X-Session-ID`; authenticated identity determines the user
 scope. The frontend consumes `WorkspaceEntry` and `WorkspacePreview` objects
 defined in `src/lib/workspace/types.ts`.
 
-## Storage Evolution
+## S3 Files Integration
 
-The S3 repository is a compatibility implementation. A later phase will attach
-Amazon S3 Files to AgentCore Runtime and Code Interpreter and implement the same
-repository contract over the mounted filesystem.
+The artifact bucket remains the durable source of truth. Amazon S3 Files exposes
+the Code Interpreter namespace as a filesystem without changing the logical
+workspace API.
 
-Arbitrary-code environments must receive a session-rooted access point. A
-shared root access point must not be exposed to Code Interpreter or Code Agent.
-The intended mounted layout is:
+Code Interpreter receives a dynamically created access point rooted at:
 
 ```text
-/mnt/workspace
-├── uploads/
-├── projects/
-├── outputs/
-├── tools/
-└── .system/
+/code-interpreter-workspace/{userId}/{sessionId}
 ```
 
-The `.system` namespace is never shown in the user-facing browser.
+That access point is mounted at `/mnt/workspace`. The access point root is the
+security boundary; path validation or a working directory is not treated as an
+isolation mechanism. A Code Interpreter session cannot traverse to another
+user or chat session.
+
+The trusted frontend task mounts an access point rooted at
+`/code-interpreter-workspace` read-only. Workspace API authorization still
+scopes every request by authenticated user and explicit chat session. Mounted
+paths are resolved with `realpath`, and symlinks that escape the session root
+are rejected.
+
+This read-only mount is intentional. S3 Files can take up to its export
+inactivity window to synchronize a newly closed file back to the backing S3
+bucket. Reading the mount allows the Workspace sidebar and Canvas preview to
+see Code Interpreter outputs immediately instead of waiting for object export.
+
+Existing logical namespaces remain unchanged:
+
+```text
+documents/          S3 API
+code-interpreter/   S3 Files mount, with S3 API fallback
+code-agent/         S3 API
+```
+
+Uploads are written to the existing documents prefix and copied once to the
+Code Interpreter workspace `inputs/` directory through the backing bucket.
+S3 Files imports that prefix on first directory access. Code Interpreter output
+files are created directly in `/mnt/workspace`; the previous base64 preload and
+push path remains only as a rollout fallback.
+
+Access point metadata is stored under the hidden
+`.workspace-access-points/{userId}/{sessionId}.json` prefix. Session deletion
+removes the access point best-effort before removing this registry object. File
+data follows the existing workspace retention policy.
+
+The dev rollout is controlled by `enable_s3_files_workspace`. Disabling it
+removes S3 Files IAM permissions, mounts, and environment configuration and
+returns Code Interpreter to the legacy synchronization path.
+
+## Network Boundary
+
+S3 Files requires Code Interpreter VPC mode and mount targets in compatible
+subnets. `code_interpreter_supported_az_ids` identifies the stable availability
+zone IDs supported by the service. S3 Files mount targets remain available in
+every ECS subnet.
+
+Code Interpreter uses dedicated private subnets and a single public NAT Gateway
+for outbound HTTP, package installation, and external APIs. The NAT route is
+attached only to Code Interpreter subnets; the frontend and other runtimes keep
+their existing network paths.
+
+The single NAT is intentional for dev cost control. It creates a cross-AZ path
+for Code Interpreter sessions outside the NAT availability zone and is not an
+AZ-resilient production topology. A production environment should use one NAT
+per Code Interpreter availability zone or an approved centralized egress
+design.
 
 ## Retention
 
@@ -87,5 +135,6 @@ remove the corresponding workspace root and access point.
 - Existing tools continue to work while the UI gains a unified file browser.
 - Storage migration does not require another frontend protocol change.
 - Artifacts and files remain separate concepts.
-- Real-time file change events, upload, rename, delete, and S3 Files mounts are
-  follow-up phases rather than implicit behavior in the initial slice.
+- Real-time file change events and Workspace-panel upload, rename, and delete
+  remain follow-up phases. Chat attachment uploads are already imported into
+  the session workspace.

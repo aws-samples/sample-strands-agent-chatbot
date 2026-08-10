@@ -7,8 +7,7 @@ and the ci_pull_from_workspace tool were removed in a refactor that simplified
 the CI tools to use ci.invoke() directly.  These tests cover the current API.
 """
 import json
-import pytest
-from unittest.mock import patch, MagicMock, call
+from unittest.mock import MagicMock, patch
 
 
 def _make_context(user_id="user1", session_id="sess1"):
@@ -37,6 +36,33 @@ def _exec_code_invoke_response(stdout: str) -> dict:
             }
         }]
     }
+
+
+def test_mounted_javascript_runs_from_workspace(monkeypatch):
+    monkeypatch.setenv("S3_FILES_MOUNT_PATH", "/mnt/workspace")
+
+    from builtin_tools.code_interpreter_tool import (
+        _prepare_code_for_mounted_workspace,
+    )
+
+    prepared = _prepare_code_for_mounted_workspace(
+        "await Deno.writeTextFile('output.txt', 'ok')",
+        "javascript",
+    )
+
+    assert prepared.startswith('Deno.chdir("/mnt/workspace");\n')
+    assert prepared.endswith("await Deno.writeTextFile('output.txt', 'ok')")
+
+
+def test_mounted_python_code_is_not_rewritten():
+    from builtin_tools.code_interpreter_tool import (
+        _prepare_code_for_mounted_workspace,
+    )
+
+    assert _prepare_code_for_mounted_workspace(
+        "open('output.txt', 'w').write('ok')",
+        "python",
+    ) == "open('output.txt', 'w').write('ok')"
 
 
 # ============================================================

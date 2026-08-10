@@ -39,7 +39,7 @@ interface CanvasProps {
 }
 
 const SIDEBAR_MIN_WIDTH = 360
-const SIDEBAR_MAX_WIDTH = 760
+const SIDEBAR_MAX_WIDTH = 960
 const SIDEBAR_DEFAULT_WIDTH = 520
 const SIDEBAR_CHAT_MIN_WIDTH = 420
 const SIDEBAR_WIDTH_STORAGE_KEY = 'artifacts-sidebar:width'

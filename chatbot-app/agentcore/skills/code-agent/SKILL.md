@@ -21,8 +21,8 @@ Brief it like you'd brief a capable engineer: describe what you want to achieve,
 |---|---|---|
 | **Nature** | Autonomous agent (Claude Code) | Sandboxed execution environment |
 | **Best for** | Multi-file projects, refactoring, test suites | Quick scripts, data analysis, prototyping |
-| **File persistence** | All files auto-synced to S3, accessible via workspace tools | Only when `output_filename` is set |
-| **Session state** | Files + conversation persist across sessions | Variables persist within session only |
+| **File persistence** | All files auto-synced to S3, accessible via workspace tools | Files in `/mnt/workspace` persist across interpreter restarts |
+| **Session state** | Files + conversation persist across sessions | Variables persist within one interpreter session; workspace files persist for the chat session |
 | **Autonomy** | Plans, writes, runs, and iterates independently | You write the code it executes |
 | **Use when** | You need an engineer to solve a problem end-to-end | You need to run a specific piece of code |
 

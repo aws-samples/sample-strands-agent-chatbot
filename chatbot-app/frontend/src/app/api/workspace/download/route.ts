@@ -3,6 +3,7 @@ import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import { extractUserFromRequest } from '@/lib/auth-utils'
 import {
+  openMountedWorkspaceFile,
   resolveWorkspaceS3Location,
   WorkspacePathError,
 } from '@/lib/workspace/s3-repository'
@@ -37,12 +38,23 @@ export async function POST(request: NextRequest) {
 
     const user = await extractUserFromRequest(request)
     const userId = user.userId
+    const mounted = await openMountedWorkspaceFile(userId, sessionId, path)
+      .catch(error => {
+        if (error instanceof WorkspacePathError) throw error
+        return undefined
+      })
+    const filename = path.split('/').pop() || 'download'
+    if (mounted) {
+      await mounted.handle.close()
+      const url = `/api/workspace/content?sessionId=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(path)}&download=1`
+      return NextResponse.json({ url, filename })
+    }
+
     const { bucket, key: s3Key } = await resolveWorkspaceS3Location(
       userId,
       sessionId,
       path,
     )
-    const filename = path.split('/').pop() || 'download'
 
     const s3Client = new S3Client({ region })
     const command = new GetObjectCommand({

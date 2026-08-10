@@ -262,6 +262,15 @@ export async function DELETE(
       }
     }
 
+    try {
+      const { deleteSessionWorkspaceAccessPoint } = await import(
+        '@/lib/workspace/access-point-lifecycle'
+      )
+      await deleteSessionWorkspaceAccessPoint(userId, sessionId)
+    } catch (error) {
+      console.error('[API] Failed to remove workspace access point:', error)
+    }
+
     return NextResponse.json({
       success: true,
       message: 'Session deleted successfully',

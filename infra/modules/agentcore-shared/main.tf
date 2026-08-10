@@ -1,5 +1,10 @@
 locals {
   name_prefix = replace("${var.project_name}_${var.environment}", "-", "_")
+  code_interpreter_config_suffix = substr(sha1(jsonencode({
+    execution_role_arn = var.code_interpreter_execution_role_arn
+    subnet_ids         = sort(var.code_interpreter_subnet_ids)
+    security_group_ids = sort(var.code_interpreter_security_group_ids)
+  })), 0, 8)
 }
 
 # Dedicated role the Browser assumes for navigation logging / bot-auth.
@@ -34,11 +39,20 @@ resource "aws_iam_role_policy" "browser" {
 }
 
 resource "aws_bedrockagentcore_code_interpreter" "this" {
-  name        = "${local.name_prefix}_code_interpreter"
-  description = "Shared Code Interpreter for ${var.project_name} ${var.environment}"
+  name               = "${local.name_prefix}_ci_${local.code_interpreter_config_suffix}"
+  description        = "Shared Code Interpreter for ${var.project_name} ${var.environment}"
+  execution_role_arn = var.code_interpreter_execution_role_arn != "" ? var.code_interpreter_execution_role_arn : null
 
   network_configuration {
-    network_mode = "PUBLIC"
+    network_mode = length(var.code_interpreter_subnet_ids) > 0 ? "VPC" : "PUBLIC"
+
+    dynamic "vpc_config" {
+      for_each = length(var.code_interpreter_subnet_ids) > 0 ? [1] : []
+      content {
+        subnets         = var.code_interpreter_subnet_ids
+        security_groups = var.code_interpreter_security_group_ids
+      }
+    }
   }
 }
 

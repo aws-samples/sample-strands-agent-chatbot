@@ -21,6 +21,7 @@
     "@aws-sdk/client-bedrock-agentcore": "^3.1101.0",
     "@aws-sdk/client-dynamodb": "^3.1101.0",
     "@aws-sdk/client-s3": "^3.1101.0",
+    "@aws-sdk/client-s3files": "^3.1106.0",
     "@aws-sdk/client-ssm": "^3.1101.0",
     "@aws-sdk/credential-providers": "^3.1101.0",
     "@aws-sdk/s3-request-presigner": "^3.1101.0",

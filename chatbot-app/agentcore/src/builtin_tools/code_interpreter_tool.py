@@ -29,13 +29,14 @@ logger = logging.getLogger(__name__)
 # The actual session_id is stored in agent.state for cross-turn persistence.
 _ci_clients: Dict[str, Any] = {}
 
-# Tracks which S3 keys have been synced to each CI session to avoid re-downloading.
+# Tracks which S3 keys have been synced to legacy CI sessions to avoid re-downloading.
 # Key: session_key (user_id-session_id), Value: set of S3 object keys already loaded.
 _synced_s3_keys: Dict[str, set] = {}
 
 # agent.state keys for CI session persistence
 _STATE_CI_SESSION_ID = "ci_session_id"
 _STATE_CI_IDENTIFIER = "ci_identifier"
+_STATE_CI_MOUNTED_WORKSPACE = "ci_mounted_workspace"
 
 # Session timeout in seconds (1 hour; max is 28800 = 8 hours)
 _SESSION_TIMEOUT_SECONDS = 3600
@@ -124,7 +125,8 @@ def get_ci_session(tool_context: ToolContext) -> Optional[Any]:
         stored_id = ci.session_id
         stored_identifier = ci.identifier
         if stored_id and stored_identifier and _is_session_alive(ci, stored_identifier, stored_id):
-            _sync_new_workspace_files(ci, user_id, session_id)
+            if tool_context.agent.state.get(_STATE_CI_MOUNTED_WORKSPACE) is not True:
+                _sync_new_workspace_files(ci, user_id, session_id)
             return ci
         # Session expired — remove stale cache
         logger.info(f"Cached CI session expired: {session_key}")
@@ -142,7 +144,8 @@ def get_ci_session(tool_context: ToolContext) -> Optional[Any]:
         if _is_session_alive(ci, stored_identifier, stored_session_id):
             logger.info(f"Reattached to existing CI session: {stored_session_id}")
             _ci_clients[session_key] = ci
-            _sync_new_workspace_files(ci, user_id, session_id)
+            if agent_state.get(_STATE_CI_MOUNTED_WORKSPACE) is not True:
+                _sync_new_workspace_files(ci, user_id, session_id)
             return ci
         logger.info(f"Stored CI session expired ({stored_session_id}), creating new one")
 
@@ -152,20 +155,103 @@ def get_ci_session(tool_context: ToolContext) -> Optional[Any]:
         return None
 
     ci = CodeInterpreter(region)
-    ci.start(identifier=identifier, session_timeout_seconds=_SESSION_TIMEOUT_SECONDS)
+    mounted_workspace = False
+    try:
+        from workspace.s3_files import get_or_create_session_access_point
+
+        workspace = get_or_create_session_access_point(
+            agent_state,
+            user_id,
+            session_id,
+        )
+        if workspace:
+            response = ci.data_plane_client.start_code_interpreter_session(
+                codeInterpreterIdentifier=identifier,
+                name=f"workspace-{session_id[:32]}",
+                sessionTimeoutSeconds=_SESSION_TIMEOUT_SECONDS,
+                filesystemConfigurations=[{
+                    "s3FilesConfiguration": {
+                        "fileSystemArn": workspace["file_system_arn"],
+                        "accessPointArn": workspace["access_point_arn"],
+                        "mountPath": workspace["mount_path"],
+                    },
+                }],
+            )
+            ci.identifier = response["codeInterpreterIdentifier"]
+            ci.session_id = response["sessionId"]
+            mounted_workspace = True
+    except Exception as error:
+        logger.exception(
+            "Could not start Code Interpreter with S3 Files; using legacy sync: %s",
+            error,
+        )
+
+    if not mounted_workspace:
+        ci.start(
+            identifier=identifier,
+            session_timeout_seconds=_SESSION_TIMEOUT_SECONDS,
+        )
     logger.info(f"Created new CI session: {ci.session_id} (identifier: {identifier}, timeout: {_SESSION_TIMEOUT_SECONDS}s)")
 
     # Store in agent.state for cross-turn persistence
     agent_state.set(_STATE_CI_SESSION_ID, ci.session_id)
     agent_state.set(_STATE_CI_IDENTIFIER, identifier)
+    agent_state.set(_STATE_CI_MOUNTED_WORKSPACE, mounted_workspace)
 
     # Cache in-process
     _ci_clients[session_key] = ci
 
-    # Preload workspace files into the new sandbox
-    _preload_workspace_files(ci, user_id, session_id)
+    if mounted_workspace:
+        _prepare_mounted_workspace(ci)
+    else:
+        _preload_workspace_files(ci, user_id, session_id)
 
     return ci
+
+
+def _prepare_mounted_workspace(ci: Any) -> None:
+    """Set the Code Interpreter working directory and trigger input import."""
+    mount_path = os.getenv("S3_FILES_MOUNT_PATH", "/mnt/workspace")
+    code = (
+        "import os\n"
+        f"os.makedirs({mount_path!r}, exist_ok=True)\n"
+        f"os.chdir({mount_path!r})\n"
+        "_inputs = os.path.join(os.getcwd(), 'inputs')\n"
+        "if os.path.isdir(_inputs):\n"
+        "    list(os.scandir(_inputs))\n"
+    )
+    response = ci.invoke("executeCode", {
+        "code": code,
+        "language": "python",
+        "clearContext": False,
+    })
+    _, stderr, has_error = _parse_stream(response)
+    if has_error:
+        raise RuntimeError(f"Could not initialize mounted workspace: {stderr}")
+
+
+def _uses_mounted_workspace(tool_context: ToolContext) -> bool:
+    return tool_context.agent.state.get(_STATE_CI_MOUNTED_WORKSPACE) is True
+
+
+def _mounted_path(path: str) -> str:
+    mount_path = os.getenv("S3_FILES_MOUNT_PATH", "/mnt/workspace")
+    normalized = os.path.normpath(path)
+    if os.path.isabs(normalized):
+        if normalized != mount_path and not normalized.startswith(f"{mount_path}/"):
+            raise ValueError("Path must stay inside the session workspace")
+        return normalized
+    if normalized == ".." or normalized.startswith("../"):
+        raise ValueError("Path must stay inside the session workspace")
+    return os.path.join(mount_path, normalized)
+
+
+def _prepare_code_for_mounted_workspace(code: str, language: str) -> str:
+    """Run JavaScript and TypeScript from the mounted workspace."""
+    if language.lower() not in {"javascript", "typescript"}:
+        return code
+    mount_path = os.getenv("S3_FILES_MOUNT_PATH", "/mnt/workspace")
+    return f"Deno.chdir({json.dumps(mount_path)});\n{code}"
 
 
 def _get_ci_from_context(tool_context: ToolContext) -> Optional[Any]:
@@ -413,6 +499,10 @@ def execute_code(
         })
 
     try:
+        mounted = _uses_mounted_workspace(tool_context)
+        if mounted:
+            _prepare_mounted_workspace(ci)
+            code = _prepare_code_for_mounted_workspace(code, language)
         response = ci.invoke("executeCode", {
             "code": code,
             "language": language,
@@ -431,7 +521,8 @@ def execute_code(
             return stdout or "(no output)"
 
         # Download output file
-        download_response = ci.invoke("readFiles", {"paths": [output_filename]})
+        output_path = _mounted_path(output_filename) if mounted else output_filename
+        download_response = ci.invoke("readFiles", {"paths": [output_path]})
         for event in download_response.get("stream", []):
             result = event.get("result", {})
             for item in result.get("content", []):
@@ -439,9 +530,15 @@ def execute_code(
                     continue
                 blob = item.get("data") or item.get("resource", {}).get("blob")
                 if blob:
-                    _save_to_workspace(tool_context, output_filename, blob)
+                    if not mounted:
+                        _save_to_workspace(tool_context, output_filename, blob)
                     size_kb = len(blob) / 1024
-                    summary = f"Code executed. File saved: {output_filename} ({size_kb:.1f} KB)"
+                    workspace_path = (
+                        f"code-interpreter/{output_filename}"
+                        if mounted
+                        else output_filename
+                    )
+                    summary = f"Code executed. File saved: {workspace_path} ({size_kb:.1f} KB)"
                     if stdout:
                         summary += f"\n\nstdout:\n{stdout[:500]}"
 
@@ -498,6 +595,9 @@ def execute_command(
         })
 
     try:
+        if _uses_mounted_workspace(tool_context):
+            mount_path = os.getenv("S3_FILES_MOUNT_PATH", "/mnt/workspace")
+            command = f"cd {json.dumps(mount_path)} && {command}"
         response = ci.invoke("executeCommand", {"command": command})
         stdout, stderr, has_error = _parse_stream(response)
         if has_error:
@@ -545,7 +645,12 @@ def file_operations(
         if operation == "read":
             if not paths:
                 return json.dumps({"error": "paths required for read operation", "status": "error"})
-            download_response = ci.invoke("readFiles", {"paths": paths})
+            resolved_paths = (
+                [_mounted_path(path) for path in paths]
+                if _uses_mounted_workspace(tool_context)
+                else paths
+            )
+            download_response = ci.invoke("readFiles", {"paths": resolved_paths})
             parts = []
             for event in download_response.get("stream", []):
                 result = event.get("result", {})
@@ -562,9 +667,16 @@ def file_operations(
                 return json.dumps({"error": "content required for write operation", "status": "error"})
             results = []
             for entry in content:
-                path = entry["path"]
-                text = entry["text"].replace("'", "\\'")
-                code = f"with open('{path}', 'w') as _f:\n    _f.write('{text}')\nprint('Written: {path}')\n"
+                path = (
+                    _mounted_path(entry["path"])
+                    if _uses_mounted_workspace(tool_context)
+                    else entry["path"]
+                )
+                code = (
+                    f"with open({path!r}, 'w') as _f:\n"
+                    f"    _f.write({entry['text']!r})\n"
+                    f"print('Written: {path}')\n"
+                )
                 response = ci.invoke("executeCode", {"code": code, "language": "python", "clearContext": False})
                 stdout, stderr, has_error = _parse_stream(response)
                 if has_error:
@@ -574,10 +686,12 @@ def file_operations(
             return "\n".join(results)
 
         elif operation == "list":
-            list_path = (paths[0] if paths else ".").replace("'", "\\'")
+            list_path = paths[0] if paths else "."
+            if _uses_mounted_workspace(tool_context):
+                list_path = _mounted_path(list_path)
             code = (
                 "import os, json\n"
-                f"_p = '{list_path}'\n"
+                f"_p = {list_path!r}\n"
                 "_entries = []\n"
                 "for _n in sorted(os.listdir(_p)):\n"
                 "    _full = os.path.join(_p, _n)\n"
@@ -593,7 +707,12 @@ def file_operations(
         elif operation == "remove":
             if not paths:
                 return json.dumps({"error": "paths required for remove operation", "status": "error"})
-            escaped = json.dumps(paths)
+            resolved_paths = (
+                [_mounted_path(path) for path in paths]
+                if _uses_mounted_workspace(tool_context)
+                else paths
+            )
+            escaped = json.dumps(resolved_paths)
             code = (
                 f"import os\n"
                 f"for _p in {escaped}:\n"
@@ -626,10 +745,11 @@ def ci_push_to_workspace(
     paths: list = None,
     tool_context: ToolContext = None,
 ) -> str:
-    """Save files from the CI sandbox to the shared workspace (S3).
+    """Persist files for legacy Code Interpreter deployments.
 
-    Use this after code execution to persist output files so other skills
-    (or a future session) can access them via workspace_read / workspace_list.
+    Mounted workspace deployments persist files automatically. In that mode,
+    this helper only verifies that the requested files exist. It copies files
+    to S3 only when the session is using the legacy sandbox configuration.
 
     Args:
         paths: Sandbox file paths to save (e.g. ["chart.png", "results.json"]).
@@ -643,6 +763,50 @@ def ci_push_to_workspace(
         return json.dumps({"error": "Code Interpreter not available.", "status": "error"})
 
     try:
+        if _uses_mounted_workspace(tool_context):
+            if not paths:
+                code = (
+                    "import os, json\n"
+                    "_root = os.getcwd()\n"
+                    "print(json.dumps([name for name in os.listdir(_root) "
+                    "if os.path.isfile(os.path.join(_root, name))]))\n"
+                )
+                response = ci.invoke("executeCode", {
+                    "code": code,
+                    "language": "python",
+                    "clearContext": False,
+                })
+                stdout, _, _ = _parse_stream(response)
+                paths = json.loads(stdout.strip()) if stdout.strip() else []
+
+            saved = []
+            for path in paths or []:
+                resolved = _mounted_path(path)
+                code = (
+                    "import os\n"
+                    f"_p = {resolved!r}\n"
+                    "print('ok' if os.path.isfile(_p) else 'missing')\n"
+                )
+                response = ci.invoke("executeCode", {
+                    "code": code,
+                    "language": "python",
+                    "clearContext": False,
+                })
+                stdout, _, has_error = _parse_stream(response)
+                if not has_error and stdout.strip() == "ok":
+                    relative = os.path.relpath(resolved, os.getenv(
+                        "S3_FILES_MOUNT_PATH",
+                        "/mnt/workspace",
+                    ))
+                    saved.append(f"code-interpreter/{relative}")
+
+            return json.dumps({
+                "files_saved": saved,
+                "count": len(saved),
+                "status": "ok",
+                "storage": "mounted",
+            })
+
         # Discover files if no paths given
         if not paths:
             code = "import os, json; print(json.dumps([f for f in os.listdir('.') if os.path.isfile(f)]))\n"
