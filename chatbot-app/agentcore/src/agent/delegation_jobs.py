@@ -13,6 +13,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import tempfile
 import threading
 import uuid
@@ -38,6 +39,7 @@ _STALE_HEARTBEAT_SECONDS = 180
 _MAX_ATTEMPTS = 3
 _MAX_ACTIVE_PER_SESSION = 2
 _ALLOWED_PROFILES = frozenset({"analyst", "reviewer"})
+_LOCAL_COMPONENT_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 _TERMINAL_EXECUTION_STATES = frozenset(
     {"succeeded", "failed", "cancelled", "timed_out"}
 )
@@ -83,20 +85,38 @@ def _record_key(job_id: str) -> str:
     return f"JOB#{job_id}"
 
 
-def _safe_component(value: str) -> str:
-    return "".join(
-        char if char.isalnum() or char in "_-" else "_"
-        for char in value
-    ) or "unknown"
+def _validated_local_component(value: str, name: str) -> str:
+    if not _LOCAL_COMPONENT_PATTERN.fullmatch(value):
+        raise ValueError(f"Invalid local delegation {name}")
+    return value
 
 
 def _local_dir(session_id: str) -> Path:
+    sessions_root = get_sessions_dir().resolve()
+    component = _validated_local_component(session_id, "session ID")
     path = (
-        get_sessions_dir()
-        / f"session_{_safe_component(session_id)}"
+        sessions_root
+        / f"session_{component}"
         / "delegation_jobs"
-    )
+    ).resolve()
+    if not path.is_relative_to(sessions_root):
+        raise ValueError("Local delegation directory escapes the sessions root")
     path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _local_job_path(
+    session_id: str,
+    job_id: str,
+    *,
+    result: bool = False,
+) -> Path:
+    jobs_dir = _local_dir(session_id)
+    component = _validated_local_component(job_id, "job ID")
+    suffix = ".result.json" if result else ".json"
+    path = (jobs_dir / f"{component}{suffix}").resolve()
+    if path.parent != jobs_dir:
+        raise ValueError("Local delegation file escapes the job directory")
     return path
 
 
@@ -160,7 +180,7 @@ def _save(record: dict[str, Any]) -> None:
     if _is_cloud():
         _table().put_item(Item=record)
         return
-    path = _local_dir(record["sessionId"]) / f"{record['jobId']}.json"
+    path = _local_job_path(record["sessionId"], record["jobId"])
     _atomic_write(path, json.dumps(record, ensure_ascii=False, indent=2))
 
 
@@ -261,7 +281,7 @@ def _create(record: dict[str, Any]) -> tuple[dict[str, Any], bool]:
                 record["jobId"],
             )
     else:
-        path = _local_dir(record["sessionId"]) / f"{record['jobId']}.json"
+        path = _local_job_path(record["sessionId"], record["jobId"])
         if not path.exists():
             _atomic_write(path, json.dumps(record, ensure_ascii=False, indent=2))
             return record, True
@@ -294,7 +314,7 @@ def get_job(
             return item
         return None
 
-    path = _local_dir(session_id) / f"{_safe_component(job_id)}.json"
+    path = _local_job_path(session_id, job_id)
     if not path.exists():
         return None
     record = json.loads(path.read_text(encoding="utf-8"))
@@ -323,7 +343,13 @@ def list_jobs(user_id: str, session_id: str) -> list[dict[str, Any]]:
         ]
 
     records = []
-    for path in _local_dir(session_id).glob("*.json"):
+    jobs_dir = _local_dir(session_id)
+    for candidate in jobs_dir.glob("*.json"):
+        if candidate.is_symlink():
+            continue
+        path = candidate.resolve()
+        if path.parent != jobs_dir:
+            continue
         try:
             record = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -357,7 +383,11 @@ def _save_result(record: dict[str, Any], result: dict[str, Any]) -> dict[str, st
         )
         return {"resultBucket": bucket, "resultS3Key": key}
 
-    path = _local_dir(record["sessionId"]) / f"{record['jobId']}.result.json"
+    path = _local_job_path(
+        record["sessionId"],
+        record["jobId"],
+        result=True,
+    )
     _atomic_write(path, body.decode("utf-8"))
     return {"resultPath": str(path)}
 
@@ -372,10 +402,14 @@ def load_result(record: dict[str, Any]) -> dict[str, Any]:
             Key=record["resultS3Key"],
         )
         return json.loads(response["Body"].read())
-    path = record.get("resultPath")
-    if not path:
+    if not record.get("resultPath"):
         raise RuntimeError(f"Delegation result is missing for {record['jobId']}")
-    return json.loads(Path(path).read_text(encoding="utf-8"))
+    path = _local_job_path(
+        record["sessionId"],
+        record["jobId"],
+        result=True,
+    )
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _normalize_result(text: str) -> dict[str, Any]:

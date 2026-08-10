@@ -78,6 +78,12 @@ function localJobsDir(sessionId: string): string | null {
   return jobsDir.startsWith(sessionsDir + path.sep) ? jobsDir : null
 }
 
+function localJobPath(jobsDir: string, jobId: string): string | null {
+  if (!/^[a-f0-9]{32}$/i.test(jobId)) return null
+  const jobPath = path.resolve(jobsDir, `${jobId}.json`)
+  return path.dirname(jobPath) === jobsDir ? jobPath : null
+}
+
 function readLocalJobs(
   userId: string,
   sessionId: string,
@@ -187,6 +193,8 @@ export async function cancelDelegationJob(
   if (IS_LOCAL) {
     const jobsDir = localJobsDir(sessionId)
     if (!jobsDir) return null
+    const jobPath = localJobPath(jobsDir, jobId)
+    if (!jobPath) return null
     const updated = {
       ...existing,
       desiredState: 'cancelled' as const,
@@ -196,7 +204,7 @@ export async function cancelDelegationJob(
       completedAt: updatedAt,
     }
     fs.writeFileSync(
-      path.join(jobsDir, `${jobId}.json`),
+      jobPath,
       JSON.stringify(updated, null, 2),
     )
     return updated

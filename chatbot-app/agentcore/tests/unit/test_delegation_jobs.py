@@ -202,3 +202,35 @@ def test_unknown_profile_is_rejected():
             profile="general",
             request=_request(),
         )
+
+
+def test_local_storage_rejects_path_traversal():
+    with pytest.raises(ValueError, match="Invalid local delegation session ID"):
+        delegation_jobs.get_job("u1", "../outside", "job1")
+
+    with pytest.raises(ValueError, match="Invalid local delegation job ID"):
+        delegation_jobs.get_job("u1", "s1", "../outside")
+
+
+def test_local_storage_rejects_session_symlink_escape(tmp_path):
+    outside = tmp_path.parent / f"{tmp_path.name}-outside"
+    outside.mkdir()
+    (tmp_path / "session_s1").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="escapes the sessions root"):
+        delegation_jobs.get_job("u1", "s1", "job1")
+
+    assert not (outside / "delegation_jobs").exists()
+
+
+def test_list_jobs_ignores_symlinked_records(tmp_path):
+    outside = tmp_path.parent / f"{tmp_path.name}-record.json"
+    outside.write_text(json.dumps({
+        "recordType": "DELEGATION_JOB",
+        "userId": "u1",
+        "sessionId": "s1",
+    }))
+    jobs_dir = delegation_jobs._local_dir("s1")
+    (jobs_dir / "external.json").symlink_to(outside)
+
+    assert delegation_jobs.list_jobs("u1", "s1") == []

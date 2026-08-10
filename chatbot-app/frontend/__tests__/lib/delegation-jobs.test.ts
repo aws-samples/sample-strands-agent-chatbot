@@ -87,4 +87,17 @@ describe('delegation job lifecycle', () => {
     expect(update.input.UpdateExpression).toContain('completedAt = :updatedAt')
     expect(update.input.UpdateExpression).toContain('#ttl = :ttl')
   })
+
+  it('rejects an unsafe local job ID before writing a file', async () => {
+    vi.stubEnv('NEXT_PUBLIC_AGENTCORE_LOCAL', 'true')
+    const { cancelDelegationJob } = await import('@/lib/delegation-jobs')
+
+    const result = await cancelDelegationJob(
+      'user-1',
+      'session-1',
+      '../outside',
+    )
+
+    expect(result).toBeNull()
+  })
 })
