@@ -12,7 +12,7 @@ A general-purpose code execution environment powered by AWS Bedrock AgentCore Co
 - **execute_code(code, language, output_filename)**: Execute Python, JavaScript, or TypeScript code.
 - **execute_command(command)**: Execute shell commands.
 - **file_operations(operation, paths, content)**: Read, write, list, or remove files in the sandbox.
-- **ci_push_to_workspace(paths)**: Save sandbox files to the shared workspace (S3). Omit `paths` to save all files in the sandbox root.
+- **ci_push_to_workspace(paths)**: Compatibility helper for environments without a mounted workspace. Do not call it when `/mnt/workspace` is available.
 
 ## Tool Parameters
 
@@ -131,31 +131,37 @@ For production tasks (creating documents, charts, presentations), prefer special
 |---|---|---|
 | **Nature** | Sandboxed execution environment | Autonomous agent (Claude Code) |
 | **Best for** | Quick scripts, data analysis, prototyping | Multi-file projects, refactoring, test suites |
-| **File persistence** | Only when `output_filename` is set | All files auto-synced to S3 |
-| **Session state** | Variables persist within session | Files + conversation persist across sessions |
+| **File persistence** | Files in `/mnt/workspace` persist across interpreter restarts | All files auto-synced to S3 |
+| **Session state** | Variables persist within one interpreter session; workspace files persist for the chat session | Files + conversation persist across sessions |
 | **Autonomy** | You write the code | Agent plans, writes, runs, and iterates |
 | **Use when** | You need to run a specific piece of code | You need an engineer to solve a problem end-to-end |
 
 ## Workspace Integration
 
-All files go to the `code-interpreter/` namespace — a flat, session-isolated space separate from office documents.
+The chat session has a persistent filesystem mounted at `/mnt/workspace`.
+Relative file paths used by Code Interpreter tools resolve inside this directory.
+Files written there are immediately available in the Workspace panel under the
+`code-interpreter/` namespace and remain available when the interpreter session
+is restarted.
 
-**Sandbox → Workspace (save outputs):**
+**Create persistent files directly:**
 
 ```json
-// Save a specific file after execution
-{ "tool": "ci_push_to_workspace", "paths": ["chart.png", "results.json"] }
-
-// Save everything in the sandbox root
-{ "tool": "ci_push_to_workspace" }
-
-// Alternative: save a single file inline during execute_code
-{ "tool": "execute_code", "output_filename": "chart.png", "code": "..." }
+{
+  "tool": "execute_code",
+  "code": "from pathlib import Path\nPath('/mnt/workspace/results.json').write_text('{\"ok\": true}')"
+}
 ```
 
-**Uploaded files (auto-preloaded):**
+`output_filename` may still be used when a generated file should be surfaced as
+an explicit artifact. It is not required for persistence. Do not call
+`ci_push_to_workspace` when the mount is available; that tool remains only for
+legacy fallback deployments.
 
-Files uploaded by the user (e.g. ZIP archives) are automatically available in the sandbox — no manual loading needed. Just use them directly in `execute_code`.
+**Uploaded files:**
+
+Files uploaded by the user are available in the mounted workspace without
+manual loading or base64 transfer.
 
 **Read saved files via workspace skill:**
 ```
@@ -164,15 +170,15 @@ workspace_read("code-interpreter/results.json")
 workspace_list("code-interpreter/")
 ```
 
-> Text files (`.py`, `.csv`, `.json`, `.txt`, etc.) are transferred as-is.
-> Binary files (`.png`, `.pdf`, `.xlsx`, etc.) are handled via base64 encoding automatically.
+Text and binary files use the same mounted filesystem; no transfer step is
+required.
 
 ## Environment
 
 - **Languages:** Python (recommended, 200+ libraries), JavaScript, TypeScript
 - **Shell:** Full shell access via `execute_command`
-- **File system:** Persistent within session; use `file_operations` to manage files
-- **Session state:** Variables and files persist across multiple calls within the same session
+- **File system:** `/mnt/workspace` persists across Code Interpreter restarts for the chat session
+- **Session state:** Variables persist within one interpreter session; files persist in the mounted workspace
 - **Network:** Internet access available (can use `requests`, `urllib`, `curl`)
 
 ## Supported Languages

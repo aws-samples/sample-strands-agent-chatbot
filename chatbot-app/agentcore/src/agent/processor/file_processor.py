@@ -215,11 +215,11 @@ def auto_store_files(
     session_id: str,
 ) -> None:
     """
-    Store uploaded files to S3 workspace (always) and Code Interpreter (if configured).
+    Store uploaded files to the durable S3 workspace.
 
     S3 is the single source of truth — all workspace tools (word, excel, etc.) read
-    from S3. Code Interpreter sync is optional and only happens when CODE_INTERPRETER_ID
-    is available.
+    from S3. When S3 Files is enabled, a second object is written into the mounted
+    Code Interpreter input directory and imported on first filesystem access.
 
     Args:
         uploaded_files: List of dicts with 'filename', 'bytes', 'content_type'
@@ -277,6 +277,44 @@ def auto_store_files(
                     logger.debug(f"Saved to S3 (raw): {file_info['filename']}")
                 except Exception as e:
                     logger.error(f"Failed to save {file_info['filename']} to S3: {e}")
+
+        if os.getenv("S3_FILES_FILE_SYSTEM_ID"):
+            import boto3
+
+            from workspace.config import get_workspace_bucket
+
+            s3 = boto3.client(
+                "s3",
+                region_name=os.getenv(EnvVars.AWS_REGION, DEFAULT_AWS_REGION),
+            )
+            bucket = get_workspace_bucket()
+            for file_info in uploaded_files:
+                key = (
+                    f"code-interpreter-workspace/{user_id}/{session_id}/"
+                    f"inputs/{file_info['filename']}"
+                )
+                try:
+                    s3.put_object(
+                        Bucket=bucket,
+                        Key=key,
+                        Body=file_info["bytes"],
+                        ContentType=file_info.get(
+                            "content_type",
+                            "application/octet-stream",
+                        ),
+                        Metadata={
+                            "user_id": user_id,
+                            "session_id": session_id,
+                            "source": "chat_upload",
+                        },
+                    )
+                    logger.debug("Saved mounted CI input: %s", key)
+                except Exception as error:
+                    logger.error(
+                        "Failed to save mounted CI input %s: %s",
+                        file_info["filename"],
+                        error,
+                    )
 
     except Exception as e:
         logger.error(f"Failed to auto-store files: {e}")
