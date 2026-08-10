@@ -156,6 +156,30 @@ describe('Canvas — docked artifact sidebar', () => {
     expect(sidebar).toHaveStyle({ width: '360px', flexBasis: '360px' })
   })
 
+  it('allows a wider preview while preserving the minimum chat width', () => {
+    const originalWidth = window.innerWidth
+    Object.defineProperty(window, 'innerWidth', {
+      configurable: true,
+      value: 1440,
+    })
+
+    try {
+      renderCanvas()
+
+      const sidebar = screen.getByTestId('artifacts-sidebar')
+      const resizeHandle = screen.getByRole('separator', { name: /resize right sidebar/i })
+
+      fireEvent.keyDown(resizeHandle, { key: 'End' })
+      expect(sidebar).toHaveStyle({ width: '960px', flexBasis: '960px' })
+      expect(resizeHandle).toHaveAttribute('aria-valuemax', '960')
+    } finally {
+      Object.defineProperty(window, 'innerWidth', {
+        configurable: true,
+        value: originalWidth,
+      })
+    }
+  })
+
   it('resizes from the left edge without turning the panel into an overlay', () => {
     renderCanvas()
 
