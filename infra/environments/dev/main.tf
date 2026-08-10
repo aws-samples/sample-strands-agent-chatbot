@@ -251,6 +251,9 @@ module "runtime_code_agent" {
 
   artifact_bucket_arn  = aws_s3_bucket.artifacts.arn
   artifact_bucket_name = aws_s3_bucket.artifacts.id
+  secret_arns = var.enable_mantle_models ? [
+    data.aws_secretsmanager_secret.bedrock_api_key[0].arn
+  ] : []
   workspace_file_system_id = (
     var.enable_s3_files_workspace
     ? module.session_workspace[0].file_system_id
@@ -309,6 +312,65 @@ module "runtime_research_agent" {
   depends_on = [module.auth, aws_s3_bucket.artifacts, module.agentcore_shared]
 }
 
+module "runtime_general_subagent" {
+  source = "../../modules/runtime"
+
+  repo_root      = local.root_dir
+  project_name   = var.project_name
+  environment    = var.environment
+  aws_region     = var.aws_region
+  account_id     = local.account_id
+  component_name = "general-subagent"
+  runtime_type   = "a2a_agent"
+
+  source_dir      = "chatbot-app/agentcore"
+  build_context   = "chatbot-app/agentcore"
+  dockerfile_path = "Dockerfile.subagent"
+
+  cognito_issuer_url = module.auth.issuer_url
+  cognito_allowed_clients = [
+    module.auth.app_client_id,
+    module.auth.web_client_id,
+    module.auth.m2m_client_id,
+  ]
+
+  artifact_bucket_arn  = aws_s3_bucket.artifacts.arn
+  artifact_bucket_name = aws_s3_bucket.artifacts.id
+  secret_arns = var.enable_mantle_models ? [
+    data.aws_secretsmanager_secret.bedrock_api_key[0].arn
+  ] : []
+  workspace_file_system_id = (
+    var.enable_s3_files_workspace
+    ? module.session_workspace[0].file_system_id
+    : ""
+  )
+  workspace_file_system_arn = (
+    var.enable_s3_files_workspace
+    ? module.session_workspace[0].file_system_arn
+    : ""
+  )
+
+  extra_env_vars = merge(
+    {
+      CODE_INTERPRETER_ID      = module.agentcore_shared.code_interpreter_id
+      MODEL_ID                 = var.general_subagent_default_model_id
+      S3_FILES_FILE_SYSTEM_ID  = var.enable_s3_files_workspace ? module.session_workspace[0].file_system_id : ""
+      S3_FILES_FILE_SYSTEM_ARN = var.enable_s3_files_workspace ? module.session_workspace[0].file_system_arn : ""
+      S3_FILES_MOUNT_PATH      = "/mnt/workspace"
+    },
+    var.enable_mantle_models ? {
+      BEDROCK_API_KEY_SECRET_NAME = data.aws_secretsmanager_secret.bedrock_api_key[0].name
+    } : {},
+  )
+
+  depends_on = [
+    module.auth,
+    aws_s3_bucket.artifacts,
+    module.agentcore_shared,
+    module.session_workspace,
+  ]
+}
+
 # ============================================================
 # Orchestrator Runtime (chatbot-app/agentcore — Strands core)
 # ============================================================
@@ -365,6 +427,7 @@ module "runtime_orchestrator" {
       MEMORY_ARN                            = module.memory.memory_arn
       CODE_AGENT_RUNTIME_ARN                = module.runtime_code_agent.runtime_arn
       RESEARCH_AGENT_RUNTIME_ARN            = module.runtime_research_agent.runtime_arn
+      GENERAL_SUBAGENT_RUNTIME_URL          = module.runtime_general_subagent.runtime_invocation_url
       MCP_3LO_RUNTIME_ARN                   = module.runtime_mcp_3lo.runtime_arn
       CODE_INTERPRETER_ID                   = module.agentcore_shared.code_interpreter_id
       S3_FILES_FILE_SYSTEM_ID               = var.enable_s3_files_workspace ? module.session_workspace[0].file_system_id : ""
@@ -392,6 +455,7 @@ module "runtime_orchestrator" {
     module.data,
     module.runtime_code_agent,
     module.runtime_research_agent,
+    module.runtime_general_subagent,
     module.runtime_mcp_3lo,
     module.agentcore_shared,
     aws_s3_bucket.artifacts,

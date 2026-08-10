@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 _token: str | None = None
 _token_expires_at = 0.0
 _TERMINAL_TTL_DAYS = 30
+_DELEGATION_STALE_SECONDS = 180
 
 
 def _secret() -> dict[str, str]:
@@ -99,6 +100,37 @@ def _wake(
         )
 
 
+def _start_delegation(user_id: str, session_id: str, job_id: str) -> None:
+    payload = json.dumps({
+        "thread_id": session_id,
+        "run_id": f"delegation-dispatch-{job_id}",
+        "messages": [],
+        "tools": [],
+        "context": [],
+        "state": {
+            "action": "start_delegation",
+            "user_id": user_id,
+            "job_id": job_id,
+        },
+    }).encode()
+    request = urllib.request.Request(
+        os.environ["AGENTCORE_RUNTIME_URL"],
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {_access_token()}",
+            "Content-Type": "application/json",
+            "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": session_id,
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        result = json.loads(response.read())
+    if result.get("status") not in {"accepted", "ignored"}:
+        raise RuntimeError(
+            f"Delegation was not accepted for {user_id}/{session_id}: {result}"
+        )
+
+
 def _mailbox_target(record: dict[str, Any]) -> tuple[str, str, str] | None:
     if record.get("eventName") != "INSERT":
         return None
@@ -113,6 +145,24 @@ def _mailbox_target(record: dict[str, Any]) -> tuple[str, str, str] | None:
     if not user_id or not session_id or not mailbox_event_id:
         return None
     return user_id, session_id, mailbox_event_id
+
+
+def _delegation_target(record: dict[str, Any]) -> tuple[str, str, str] | None:
+    if record.get("eventName") not in {"INSERT", "MODIFY"}:
+        return None
+    image = record.get("dynamodb", {}).get("NewImage", {})
+    if image.get("recordType", {}).get("S") != "DELEGATION_JOB":
+        return None
+    if image.get("workStatus", {}).get("S") != "queued":
+        return None
+    if image.get("desiredState", {}).get("S") != "running":
+        return None
+    user_id = image.get("userId", {}).get("S")
+    session_id = image.get("sessionId", {}).get("S")
+    job_id = image.get("jobId", {}).get("S")
+    if not user_id or not session_id or not job_id:
+        return None
+    return user_id, session_id, job_id
 
 
 def _enqueue_wake(
@@ -133,6 +183,24 @@ def _enqueue_wake(
         MessageGroupId=hashlib.sha256(target).hexdigest(),
         MessageDeduplicationId=hashlib.sha256(
             target + b"\n" + deduplication
+        ).hexdigest(),
+    )
+
+
+def _enqueue_delegation(user_id: str, session_id: str, job_id: str) -> None:
+    body = json.dumps({
+        "kind": "delegation",
+        "userId": user_id,
+        "sessionId": session_id,
+        "jobId": job_id,
+    })
+    target = f"{user_id}\n{session_id}".encode()
+    boto3.client("sqs").send_message(
+        QueueUrl=os.environ["WAKE_QUEUE_URL"],
+        MessageBody=body,
+        MessageGroupId=hashlib.sha256(target).hexdigest(),
+        MessageDeduplicationId=hashlib.sha256(
+            target + b"\ndelegation\n" + job_id.encode()
         ).hexdigest(),
     )
 
@@ -203,6 +271,7 @@ def _handle_stream(event: dict[str, Any]) -> dict[str, Any]:
         tuple[str, str],
         dict[str, list[str]],
     ] = {}
+    delegation_records: list[tuple[str, str, str, str]] = []
     for record in event.get("Records", []):
         target = _mailbox_target(record)
         if target:
@@ -213,6 +282,12 @@ def _handle_stream(event: dict[str, Any]) -> dict[str, Any]:
             )
             grouped["mailbox_event_ids"].append(mailbox_event_id)
             grouped["stream_record_ids"].append(record.get("eventID", ""))
+            continue
+        delegation = _delegation_target(record)
+        if delegation:
+            delegation_records.append(
+                (*delegation, record.get("eventID", ""))
+            )
 
     failures = []
     for (user_id, session_id), grouped in records_by_target.items():
@@ -233,23 +308,41 @@ def _handle_stream(event: dict[str, Any]) -> dict[str, Any]:
                 for record_id in grouped["stream_record_ids"]
                 if record_id
             )
+    for user_id, session_id, job_id, record_id in delegation_records:
+        try:
+            _enqueue_delegation(user_id, session_id, job_id)
+        except Exception:
+            logger.exception(
+                "Failed to enqueue delegation %s for %s/%s",
+                job_id,
+                user_id,
+                session_id,
+            )
+            if record_id:
+                failures.append({"itemIdentifier": record_id})
 
     return {"batchItemFailures": failures}
 
 
 def _handle_sqs(event: dict[str, Any]) -> dict[str, Any]:
-    records_by_target: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    records_by_target: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
     invalid_records: list[dict[str, Any]] = []
     for record in event.get("Records", []):
         message_id = record.get("messageId", "")
         try:
             body = json.loads(record["body"])
-            target = (body["userId"], body["sessionId"])
+            kind = str(body.get("kind") or "mailbox")
+            if kind not in {"mailbox", "delegation"}:
+                raise ValueError(f"Unknown wake kind: {kind}")
+            target = (kind, body["userId"], body["sessionId"])
             record["_mailboxEventIds"] = [
                 str(event_id)
                 for event_id in body.get("eventIds", [])
                 if event_id
             ]
+            record["_delegationJobId"] = str(body.get("jobId") or "")
+            if kind == "delegation" and not record["_delegationJobId"]:
+                raise ValueError("Delegation wake requires jobId")
         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
             logger.exception("Invalid mailbox wake message %s", message_id)
             if message_id:
@@ -261,8 +354,14 @@ def _handle_sqs(event: dict[str, Any]) -> dict[str, Any]:
     for record in invalid_records:
         _defer_retry(record)
         failures.append({"itemIdentifier": record["messageId"]})
-    for (user_id, session_id), records in records_by_target.items():
+    for (kind, user_id, session_id), records in records_by_target.items():
         try:
+            if kind == "delegation":
+                for job_id in sorted({
+                    record["_delegationJobId"] for record in records
+                }):
+                    _start_delegation(user_id, session_id, job_id)
+                continue
             event_ids = sorted({
                 event_id
                 for record in records
@@ -286,6 +385,54 @@ def _handle_sqs(event: dict[str, Any]) -> dict[str, Any]:
                 if message_id:
                     failures.append({"itemIdentifier": message_id})
     return {"batchItemFailures": failures}
+
+
+def _handle_reconcile() -> dict[str, Any]:
+    """Re-enqueue queued and stale-running delegation jobs."""
+    client = boto3.client("dynamodb")
+    table_name = os.environ["ORCHESTRATION_TABLE_NAME"]
+    now = datetime.now(timezone.utc)
+    cutoffs = {
+        "queued": now.isoformat(),
+        "running": (
+            now - timedelta(seconds=_DELEGATION_STALE_SECONDS)
+        ).isoformat(),
+    }
+    enqueued = 0
+    for work_status, cutoff in cutoffs.items():
+        exclusive_start_key = None
+        while True:
+            parameters: dict[str, Any] = {
+                "TableName": table_name,
+                "IndexName": "DelegationWorkIndex",
+                "KeyConditionExpression": (
+                    "workStatus = :workStatus AND heartbeatAt <= :cutoff"
+                ),
+                "FilterExpression": (
+                    "recordType = :recordType AND desiredState = :running"
+                ),
+                "ExpressionAttributeValues": {
+                    ":workStatus": {"S": work_status},
+                    ":cutoff": {"S": cutoff},
+                    ":recordType": {"S": "DELEGATION_JOB"},
+                    ":running": {"S": "running"},
+                },
+                "ProjectionExpression": "userId, sessionId, jobId",
+            }
+            if exclusive_start_key:
+                parameters["ExclusiveStartKey"] = exclusive_start_key
+            response = client.query(**parameters)
+            for item in response.get("Items", []):
+                _enqueue_delegation(
+                    item["userId"]["S"],
+                    item["sessionId"]["S"],
+                    item["jobId"]["S"],
+                )
+                enqueued += 1
+            exclusive_start_key = response.get("LastEvaluatedKey")
+            if not exclusive_start_key:
+                break
+    return {"status": "reconciled", "enqueued": enqueued}
 
 
 def _defer_retry(record: dict[str, Any]) -> None:
@@ -313,6 +460,8 @@ def _defer_retry(record: dict[str, Any]) -> None:
 
 
 def lambda_handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
+    if event.get("source") == "aws.events":
+        return _handle_reconcile()
     records = event.get("Records", [])
     if records and records[0].get("eventSource") == "aws:sqs":
         return _handle_sqs(event)

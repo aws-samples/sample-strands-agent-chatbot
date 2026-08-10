@@ -66,6 +66,11 @@ resource "aws_iam_role_policy" "this" {
         Action   = ["sqs:SendMessage"]
         Resource = aws_sqs_queue.wake.arn
       },
+      {
+        Effect   = "Allow"
+        Action   = ["dynamodb:Query"]
+        Resource = "${var.orchestration_table_arn}/index/DelegationWorkIndex"
+      },
     ]
   })
 }
@@ -175,7 +180,8 @@ resource "aws_lambda_function" "this" {
 
   environment {
     variables = {
-      WAKE_QUEUE_URL = aws_sqs_queue.wake.url
+      ORCHESTRATION_TABLE_NAME = var.orchestration_table_name
+      WAKE_QUEUE_URL           = aws_sqs_queue.wake.url
     }
   }
 
@@ -234,4 +240,23 @@ resource "aws_lambda_event_source_mapping" "worker" {
   function_name           = aws_lambda_function.worker.arn
   batch_size              = 10
   function_response_types = ["ReportBatchItemFailures"]
+}
+
+resource "aws_cloudwatch_event_rule" "delegation_reconcile" {
+  name                = "${var.project_name}-${var.environment}-delegation-reconcile"
+  schedule_expression = "rate(2 minutes)"
+}
+
+resource "aws_cloudwatch_event_target" "delegation_reconcile" {
+  rule      = aws_cloudwatch_event_rule.delegation_reconcile.name
+  target_id = "delegation-reconcile"
+  arn       = aws_lambda_function.this.arn
+}
+
+resource "aws_lambda_permission" "delegation_reconcile" {
+  statement_id  = "AllowDelegationReconcile"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.this.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.delegation_reconcile.arn
 }

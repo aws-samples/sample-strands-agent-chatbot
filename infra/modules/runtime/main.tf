@@ -483,7 +483,7 @@ resource "aws_iam_role_policy" "orchestrator_artifacts" {
 }
 
 resource "aws_iam_role_policy" "orchestrator_workspace_access_points" {
-  count = var.runtime_type == "orchestrator" && var.workspace_file_system_id != "" ? 1 : 0
+  count = contains(["orchestrator", "a2a_agent"], var.runtime_type) && var.workspace_file_system_id != "" ? 1 : 0
   name  = "workspace-access-points"
   role  = aws_iam_role.execution.id
 
