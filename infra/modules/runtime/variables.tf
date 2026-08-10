@@ -126,6 +126,16 @@ variable "artifact_bucket_name" {
   default = ""
 }
 
+variable "workspace_file_system_id" {
+  type    = string
+  default = ""
+}
+
+variable "workspace_file_system_arn" {
+  type    = string
+  default = ""
+}
+
 variable "read_only_bucket_arns" {
   type    = list(string)
   default = []

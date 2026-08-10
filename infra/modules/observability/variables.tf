@@ -8,6 +8,12 @@ variable "resource_arn" {
   type        = string
 }
 
+variable "source_name_suffix" {
+  description = "Optional suffix used to rotate delivery sources when the resource ARN changes"
+  type        = string
+  default     = ""
+}
+
 variable "aws_region" {
   type = string
 }

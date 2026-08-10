@@ -37,6 +37,24 @@ variable "enable_mantle_models" {
   default     = false
 }
 
+variable "enable_s3_files_workspace" {
+  description = "Mount the artifact bucket through S3 Files for session Code Interpreter workspaces."
+  type        = bool
+  default     = true
+}
+
+variable "code_interpreter_supported_az_ids" {
+  description = "Stable availability zone IDs supported by AgentCore Code Interpreter VPC mode. Empty uses every subnet in the selected VPC."
+  type        = list(string)
+  default     = []
+}
+
+variable "code_interpreter_private_subnets" {
+  description = "Availability zone ID to private subnet CIDR mapping used by Code Interpreter for NAT egress."
+  type        = map(string)
+  default     = {}
+}
+
 variable "code_agent_model_id" {
   description = "Claude model used by the Claude Agent SDK based Code Agent."
   type        = string

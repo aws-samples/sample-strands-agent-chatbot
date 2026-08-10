@@ -1,7 +1,8 @@
 # AgentCore Observability — CloudWatch Vended Logs + X-Ray Traces
 
 locals {
-  prefix = "${var.project_name}-${var.environment}-${var.resource_name}"
+  prefix        = "${var.project_name}-${var.environment}-${var.resource_name}"
+  source_suffix = var.source_name_suffix != "" ? "-${var.source_name_suffix}" : ""
 }
 
 # ============================================================
@@ -18,15 +19,23 @@ resource "aws_cloudwatch_log_group" "logs" {
 # ============================================================
 
 resource "aws_cloudwatch_log_delivery_source" "logs" {
-  name         = "${local.prefix}-logs"
+  name         = "${local.prefix}-logs${local.source_suffix}"
   log_type     = "APPLICATION_LOGS"
   resource_arn = var.resource_arn
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 resource "aws_cloudwatch_log_delivery_source" "traces" {
-  name         = "${local.prefix}-traces"
+  name         = "${local.prefix}-traces${local.source_suffix}"
   log_type     = "TRACES"
   resource_arn = var.resource_arn
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 # ============================================================

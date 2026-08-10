@@ -482,6 +482,35 @@ resource "aws_iam_role_policy" "orchestrator_artifacts" {
   })
 }
 
+resource "aws_iam_role_policy" "orchestrator_workspace_access_points" {
+  count = var.runtime_type == "orchestrator" && var.workspace_file_system_id != "" ? 1 : 0
+  name  = "workspace-access-points"
+  role  = aws_iam_role.execution.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "s3files:CreateAccessPoint",
+          "s3files:ListAccessPoints",
+        ]
+        Resource = var.workspace_file_system_arn
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "s3files:DeleteAccessPoint",
+          "s3files:GetAccessPoint",
+          "s3files:ListTagsForResource",
+        ]
+        Resource = "${var.workspace_file_system_arn}/access-point/*"
+      },
+    ]
+  })
+}
+
 resource "aws_iam_role_policy" "a2a_agent_extra" {
   count = contains(["a2a_agent", "http_agent"], var.runtime_type) ? 1 : 0
   name  = "processing-agent-extra"

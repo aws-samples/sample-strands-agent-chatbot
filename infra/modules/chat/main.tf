@@ -286,85 +286,109 @@ resource "aws_iam_role_policy" "ecs_task" {
   role = aws_iam_role.ecs_task.id
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "bedrock-agentcore:InvokeAgentRuntime",
-          "bedrock-agentcore:InvokeAgentRuntimeForUser",
-          "bedrock-agentcore:*",
-        ]
-        Resource = [
-          "arn:aws:bedrock-agentcore:${var.aws_region}:${var.account_id}:runtime/*",
-          "arn:aws:bedrock-agentcore:${var.aws_region}:${var.account_id}:memory/*",
-          "arn:aws:bedrock-agentcore:${var.aws_region}:${var.account_id}:gateway/*",
-          "arn:aws:bedrock-agentcore:${var.aws_region}:${var.account_id}:browser/*",
-          "arn:aws:bedrock-agentcore:${var.aws_region}:${var.account_id}:browser-custom/*",
-          "arn:aws:bedrock-agentcore:${var.aws_region}:${var.account_id}:code-interpreter/*",
-          "arn:aws:bedrock-agentcore:${var.aws_region}:${var.account_id}:code-interpreter-custom/*",
-          "arn:aws:bedrock-agentcore:${var.aws_region}:${var.account_id}:workload-identity-directory/*",
-          "arn:aws:bedrock-agentcore:${var.aws_region}:${var.account_id}:token-vault/*",
-          "arn:aws:bedrock-agentcore:${var.aws_region}:${var.account_id}:registry/*",
-        ]
-      },
-      {
-        Effect = "Allow"
-        Action = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream", "bedrock:Converse", "bedrock:ConverseStream"]
-        Resource = [
-          "arn:aws:bedrock:*::foundation-model/*",
-          "arn:aws:bedrock:${var.aws_region}:${var.account_id}:*",
-        ]
-      },
-      {
-        Effect = "Allow"
-        Action = ["bedrock-agentcore:CompleteResourceTokenAuth"]
-        Resource = [
-          "arn:aws:bedrock-agentcore:${var.aws_region}:${var.account_id}:token-vault/*",
-          "arn:aws:bedrock-agentcore:${var.aws_region}:${var.account_id}:workload-identity-directory/*",
-        ]
-      },
-      {
-        Effect   = "Allow"
-        Action   = ["secretsmanager:GetSecretValue"]
-        Resource = "arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:secret:bedrock-agentcore-*"
-      },
-      {
-        Effect = "Allow"
-        Action = ["ssm:GetParameter", "ssm:GetParameters"]
-        Resource = [
-          "arn:aws:ssm:${var.aws_region}:${var.account_id}:parameter/${var.project_name}/${var.environment}/*",
-        ]
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem",
-          "dynamodb:DeleteItem", "dynamodb:Query", "dynamodb:Scan",
-          "dynamodb:BatchGetItem", "dynamodb:BatchWriteItem",
-        ]
-        Resource = [
-          var.users_table_arn,
-          var.sessions_table_arn,
-          "${var.sessions_table_arn}/index/*",
-          var.session_orchestration_table_arn,
-        ]
-      },
-      {
-        Effect   = "Allow"
-        Action   = ["bedrock-agentcore:InvokeGateway", "bedrock-agentcore:GetGateway", "bedrock-agentcore:ListGateways"]
-        Resource = "arn:aws:bedrock-agentcore:${var.aws_region}:${var.account_id}:gateway/*"
-      },
-      {
-        Effect   = "Allow"
-        Action   = ["s3:GetObject", "s3:PutObject", "s3:ListBucket"]
-        Resource = [var.artifact_bucket_arn, "${var.artifact_bucket_arn}/*"]
-      },
-      {
-        Effect   = "Allow"
-        Action   = ["logs:CreateLogStream", "logs:PutLogEvents", "cloudwatch:PutMetricData"]
-        Resource = "*"
-      },
-    ]
+    Statement = concat(
+      [
+        {
+          Effect = "Allow"
+          Action = [
+            "bedrock-agentcore:InvokeAgentRuntime",
+            "bedrock-agentcore:InvokeAgentRuntimeForUser",
+            "bedrock-agentcore:*",
+          ]
+          Resource = [
+            "arn:aws:bedrock-agentcore:${var.aws_region}:${var.account_id}:runtime/*",
+            "arn:aws:bedrock-agentcore:${var.aws_region}:${var.account_id}:memory/*",
+            "arn:aws:bedrock-agentcore:${var.aws_region}:${var.account_id}:gateway/*",
+            "arn:aws:bedrock-agentcore:${var.aws_region}:${var.account_id}:browser/*",
+            "arn:aws:bedrock-agentcore:${var.aws_region}:${var.account_id}:browser-custom/*",
+            "arn:aws:bedrock-agentcore:${var.aws_region}:${var.account_id}:code-interpreter/*",
+            "arn:aws:bedrock-agentcore:${var.aws_region}:${var.account_id}:code-interpreter-custom/*",
+            "arn:aws:bedrock-agentcore:${var.aws_region}:${var.account_id}:workload-identity-directory/*",
+            "arn:aws:bedrock-agentcore:${var.aws_region}:${var.account_id}:token-vault/*",
+            "arn:aws:bedrock-agentcore:${var.aws_region}:${var.account_id}:registry/*",
+          ]
+        },
+        {
+          Effect = "Allow"
+          Action = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream", "bedrock:Converse", "bedrock:ConverseStream"]
+          Resource = [
+            "arn:aws:bedrock:*::foundation-model/*",
+            "arn:aws:bedrock:${var.aws_region}:${var.account_id}:*",
+          ]
+        },
+        {
+          Effect = "Allow"
+          Action = ["bedrock-agentcore:CompleteResourceTokenAuth"]
+          Resource = [
+            "arn:aws:bedrock-agentcore:${var.aws_region}:${var.account_id}:token-vault/*",
+            "arn:aws:bedrock-agentcore:${var.aws_region}:${var.account_id}:workload-identity-directory/*",
+          ]
+        },
+        {
+          Effect   = "Allow"
+          Action   = ["secretsmanager:GetSecretValue"]
+          Resource = "arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:secret:bedrock-agentcore-*"
+        },
+        {
+          Effect = "Allow"
+          Action = ["ssm:GetParameter", "ssm:GetParameters"]
+          Resource = [
+            "arn:aws:ssm:${var.aws_region}:${var.account_id}:parameter/${var.project_name}/${var.environment}/*",
+          ]
+        },
+        {
+          Effect = "Allow"
+          Action = [
+            "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem",
+            "dynamodb:DeleteItem", "dynamodb:Query", "dynamodb:Scan",
+            "dynamodb:BatchGetItem", "dynamodb:BatchWriteItem",
+          ]
+          Resource = [
+            var.users_table_arn,
+            var.sessions_table_arn,
+            "${var.sessions_table_arn}/index/*",
+            var.session_orchestration_table_arn,
+          ]
+        },
+        {
+          Effect   = "Allow"
+          Action   = ["bedrock-agentcore:InvokeGateway", "bedrock-agentcore:GetGateway", "bedrock-agentcore:ListGateways"]
+          Resource = "arn:aws:bedrock-agentcore:${var.aws_region}:${var.account_id}:gateway/*"
+        },
+        {
+          Effect   = "Allow"
+          Action   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:ListBucket"]
+          Resource = [var.artifact_bucket_arn, "${var.artifact_bucket_arn}/*"]
+        },
+      ],
+      [
+        for statement in [
+          {
+            Effect   = "Allow"
+            Action   = ["s3files:ClientMount", "s3files:GetAccessPoint"]
+            Resource = var.workspace_file_system_arn
+            Condition = {
+              ArnEquals = {
+                "s3files:AccessPointArn" = var.workspace_access_point_arn
+              }
+            }
+          },
+          {
+            Effect   = "Allow"
+            Action   = ["s3files:DeleteAccessPoint", "s3files:GetAccessPoint"]
+            Resource = "${var.workspace_file_system_arn}/access-point/*"
+          },
+        ] : statement
+        if var.workspace_file_system_arn != "" && var.workspace_access_point_arn != ""
+      ],
+      [
+        {
+          Effect   = "Allow"
+          Action   = ["logs:CreateLogStream", "logs:PutLogEvents", "cloudwatch:PutMetricData"]
+          Resource = "*"
+        },
+      ],
+    )
   })
 }
 
@@ -395,6 +419,8 @@ resource "aws_ecs_task_definition" "frontend" {
       { name = "DYNAMODB_SESSIONS_TABLE", value = var.sessions_table_name },
       { name = "SESSION_ORCHESTRATION_TABLE", value = var.session_orchestration_table_name },
       { name = "ARTIFACT_BUCKET", value = var.artifact_bucket_name },
+      { name = "S3_FILES_MOUNT_PATH", value = var.workspace_file_system_arn != "" ? "/mnt/session-workspaces" : "" },
+      { name = "S3_FILES_FILE_SYSTEM_ID", value = var.workspace_file_system_arn != "" ? split("/", var.workspace_file_system_arn)[1] : "" },
       { name = "MEMORY_ID", value = var.memory_id },
       { name = "MCP_GATEWAY_URL", value = var.gateway_url },
       { name = "ORCHESTRATOR_RUNTIME_ARN", value = var.orchestrator_runtime_arn },
@@ -406,6 +432,11 @@ resource "aws_ecs_task_definition" "frontend" {
       name      = "AWS_BEARER_TOKEN_BEDROCK"
       valueFrom = var.bedrock_api_key_secret_arn
     }] : []
+    mountPoints = var.workspace_file_system_arn != "" ? [{
+      sourceVolume  = "session-workspace"
+      containerPath = "/mnt/session-workspaces"
+      readOnly      = true
+    }] : []
     logConfiguration = {
       logDriver = "awslogs"
       options = {
@@ -415,6 +446,18 @@ resource "aws_ecs_task_definition" "frontend" {
       }
     }
   }])
+
+  dynamic "volume" {
+    for_each = var.workspace_file_system_arn != "" ? [1] : []
+    content {
+      name = "session-workspace"
+
+      s3files_volume_configuration {
+        file_system_arn  = var.workspace_file_system_arn
+        access_point_arn = var.workspace_access_point_arn
+      }
+    }
+  }
 
   depends_on = [
     null_resource.codebuild_trigger,
