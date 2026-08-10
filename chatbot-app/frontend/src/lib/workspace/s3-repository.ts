@@ -5,6 +5,8 @@ import {
 } from '@aws-sdk/client-s3'
 import { GetParameterCommand, SSMClient } from '@aws-sdk/client-ssm'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
+import { lstat, open, readdir, realpath, stat } from 'node:fs/promises'
+import { join, resolve, sep } from 'node:path'
 import type {
   WorkspaceEntry,
   WorkspacePage,
@@ -15,6 +17,9 @@ import type {
 
 const region = process.env.AWS_REGION || 'us-west-2'
 const TEXT_PREVIEW_LIMIT = 1024 * 1024
+const PAGE_SIZE = 200
+const MOUNT_PATH = process.env.S3_FILES_MOUNT_PATH || ''
+const SAFE_ID = /^[A-Za-z0-9_-]+$/
 
 interface Namespace {
   logicalPath: string
@@ -171,6 +176,112 @@ function entryId(path: string): string {
   return Buffer.from(path, 'utf8').toString('base64url')
 }
 
+function mountedSessionRoot(userId: string, sessionId: string): string | undefined {
+  if (!MOUNT_PATH) return undefined
+  if (!SAFE_ID.test(userId) || !SAFE_ID.test(sessionId)) {
+    throw new WorkspacePathError('Invalid workspace identity')
+  }
+  return resolve(MOUNT_PATH, userId, sessionId)
+}
+
+async function resolveMountedPath(
+  userId: string,
+  sessionId: string,
+  logicalPath: string,
+): Promise<string | undefined> {
+  const path = normalizeWorkspacePath(logicalPath)
+  const { namespace, relativePath } = namespaceForPath(path)
+  if (namespace.logicalPath !== 'code-interpreter') return undefined
+  const root = mountedSessionRoot(userId, sessionId)
+  if (!root) return undefined
+
+  const candidate = resolve(root, relativePath)
+  if (candidate !== root && !candidate.startsWith(`${root}${sep}`)) {
+    throw new WorkspacePathError('Invalid mounted workspace path')
+  }
+
+  const resolvedRoot = await realpath(root).catch(() => root)
+  const resolvedCandidate = await realpath(candidate).catch(() => candidate)
+  if (
+    resolvedCandidate !== resolvedRoot
+    && !resolvedCandidate.startsWith(`${resolvedRoot}${sep}`)
+  ) {
+    throw new WorkspacePathError('Workspace symlink escapes the session root')
+  }
+  return resolvedCandidate
+}
+
+export async function resolveMountedWorkspaceFile(
+  userId: string,
+  sessionId: string,
+  logicalPath: string,
+): Promise<{ path: string; mimeType: string; name: string } | undefined> {
+  const path = await resolveMountedPath(userId, sessionId, logicalPath)
+  if (!path) return undefined
+  const metadata = await lstat(path)
+  if (!metadata.isFile() || metadata.isSymbolicLink()) {
+    throw new WorkspacePathError('Workspace path is not a regular file')
+  }
+  return {
+    path,
+    mimeType: getWorkspaceMimeType(logicalPath),
+    name: logicalPath.split('/').pop() || 'download',
+  }
+}
+
+async function listMountedWorkspace(
+  userId: string,
+  sessionId: string,
+  logicalPath: string,
+  cursor?: string,
+): Promise<WorkspacePage | undefined> {
+  const directory = await resolveMountedPath(userId, sessionId, logicalPath)
+  if (!directory) return undefined
+  const metadata = await stat(directory).catch(() => undefined)
+  if (!metadata) return { entries: [] }
+  if (!metadata.isDirectory()) throw new WorkspacePathError('Path is not a directory')
+
+  const offsetToken = decodeCursor(logicalPath, cursor)
+  const offset = offsetToken ? Number(offsetToken) : 0
+  if (!Number.isSafeInteger(offset) || offset < 0) {
+    throw new WorkspacePathError('Invalid workspace cursor')
+  }
+
+  const children = (await readdir(directory, { withFileTypes: true }))
+    .filter(child => !child.name.startsWith('.') && !child.isSymbolicLink())
+    .sort((left, right) => {
+      if (left.isDirectory() !== right.isDirectory()) {
+        return left.isDirectory() ? -1 : 1
+      }
+      return left.name.localeCompare(right.name, undefined, { sensitivity: 'base' })
+    })
+  const page = children.slice(offset, offset + PAGE_SIZE)
+  const entries = await Promise.all(page.map(async child => {
+    const childPath = `${logicalPath}/${child.name}`
+    if (child.isDirectory()) return directoryEntry(childPath, child.name)
+    const childStat = await stat(join(directory, child.name))
+    return {
+      id: entryId(childPath),
+      path: childPath,
+      parentPath: logicalPath,
+      name: child.name,
+      kind: 'file' as const,
+      size: childStat.size,
+      modifiedAt: childStat.mtime.toISOString(),
+      mimeType: getWorkspaceMimeType(childPath),
+      previewKind: getWorkspacePreviewKind(childPath),
+    }
+  }))
+
+  const nextOffset = offset + page.length
+  return {
+    entries,
+    nextCursor: nextOffset < children.length
+      ? encodeCursor(logicalPath, String(nextOffset))
+      : undefined,
+  }
+}
+
 function directoryEntry(path: string, name: string): WorkspaceEntry {
   const parentPath = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : ''
   return {
@@ -231,6 +342,16 @@ export class S3WorkspaceRepository implements WorkspaceRepository {
           directoryEntry(namespace.logicalPath, namespace.label)
         )),
       }
+    }
+
+    if (path === 'code-interpreter' || path.startsWith('code-interpreter/')) {
+      const mounted = await listMountedWorkspace(
+        userId,
+        sessionId,
+        path,
+        cursor,
+      )
+      if (mounted) return mounted
     }
 
     const { namespace, relativePath } = namespaceForPath(path)
@@ -294,6 +415,52 @@ export class S3WorkspaceRepository implements WorkspaceRepository {
     rawPath: string,
   ): Promise<WorkspacePreview> {
     const path = normalizeWorkspacePath(rawPath)
+    const mounted = await resolveMountedWorkspaceFile(userId, sessionId, path)
+      .catch(error => {
+        if (error instanceof WorkspacePathError) throw error
+        return undefined
+      })
+    if (mounted) {
+      const kind = getWorkspacePreviewKind(path)
+      const fileStat = await stat(mounted.path)
+      const entry: WorkspaceEntry = {
+        id: entryId(path),
+        path,
+        parentPath: path.slice(0, Math.max(0, path.lastIndexOf('/'))),
+        name: mounted.name,
+        kind: 'file',
+        size: fileStat.size,
+        modifiedAt: fileStat.mtime.toISOString(),
+        mimeType: mounted.mimeType,
+        previewKind: kind,
+      }
+      if (kind === 'text' || kind === 'markdown') {
+        const handle = await open(mounted.path, 'r')
+        try {
+          const bytesToRead = Math.min(fileStat.size, TEXT_PREVIEW_LIMIT)
+          const buffer = Buffer.alloc(bytesToRead)
+          await handle.read(buffer, 0, bytesToRead, 0)
+          return {
+            entry,
+            kind,
+            content: buffer.toString('utf8'),
+            truncated: fileStat.size > TEXT_PREVIEW_LIMIT,
+          }
+        } finally {
+          await handle.close()
+        }
+      }
+      if (kind !== 'office') {
+        return {
+          entry,
+          kind,
+          url: `/api/workspace/content?sessionId=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(path)}`,
+        }
+      }
+      // Office Online requires a public URL, so use the exported S3 object.
+      // The object may take up to a minute to appear after the final write.
+    }
+
     const { bucket, key } = await resolveWorkspaceS3Location(userId, sessionId, path)
     const name = path.split('/').pop() || path
     const parentPath = path.slice(0, Math.max(0, path.lastIndexOf('/')))
