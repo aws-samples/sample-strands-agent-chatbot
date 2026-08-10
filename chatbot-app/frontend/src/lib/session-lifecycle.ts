@@ -116,6 +116,36 @@ function advanceLocalConversationEpoch(
     }
   }
   writeLocalMailbox(targetPath, data)
+
+  const jobsDir = path.resolve(
+    process.cwd(),
+    '..',
+    'agentcore',
+    'sessions',
+    `session_${sessionId}`,
+    'delegation_jobs',
+  )
+  if (jobsDir.startsWith(path.resolve(
+    process.cwd(),
+    '..',
+    'agentcore',
+    'sessions',
+  ) + path.sep) && fs.existsSync(jobsDir)) {
+    for (const name of fs.readdirSync(jobsDir)) {
+      if (!/^[a-f0-9]{32}\.json$/i.test(name)) continue
+      const jobPath = path.join(jobsDir, name)
+      const job = JSON.parse(fs.readFileSync(jobPath, 'utf-8'))
+      if (
+        job.recordType === 'DELEGATION_JOB' &&
+        Number(job.conversationEpoch || 0) < nextEpoch &&
+        ['queued', 'running'].includes(job.executionStatus)
+      ) {
+        job.desiredState = 'cancelled'
+        job.updatedAt = updatedAt
+        writeLocalMailbox(jobPath, job)
+      }
+    }
+  }
   return nextEpoch
 }
 
@@ -301,11 +331,12 @@ export async function advanceSessionConversationEpoch(
     staleOutbox.map(({ key }) => key),
   )
 
-  const staleJobs = jobs.filter(({ value }) =>
+  const staleResearchJobs = jobs.filter(({ value }) =>
+    value.recordType !== 'DELEGATION_JOB' &&
     Date.parse(value.createdAt) >= cutoffMs &&
     !['cancelled', 'delivered', 'error'].includes(value.status),
   )
-  await inBatches(staleJobs, 10, ({ key }) =>
+  await inBatches(staleResearchJobs, 10, ({ key }) =>
     ignoreConditionalFailure(() => client.send(new UpdateItemCommand({
       TableName: TABLE_NAME,
       Key: key,
@@ -323,6 +354,32 @@ export async function advanceSessionConversationEpoch(
         ':running': 'running',
         ':completed': 'completed',
         ':delivering': 'delivering',
+      }),
+    }))),
+  )
+
+  const staleDelegations = jobs.filter(({ value }) =>
+    value.recordType === 'DELEGATION_JOB' &&
+    Number(value.conversationEpoch || 0) < nextEpoch &&
+    ['queued', 'running'].includes(value.executionStatus),
+  )
+  await inBatches(staleDelegations, 10, ({ key }) =>
+    ignoreConditionalFailure(() => client.send(new UpdateItemCommand({
+      TableName: TABLE_NAME,
+      Key: key,
+      UpdateExpression:
+        'SET desiredState = :cancelled, updatedAt = :updated, ' +
+        'cancellationReason = :reason',
+      ConditionExpression:
+        'recordType = :recordType AND ' +
+        '(executionStatus = :queued OR executionStatus = :running)',
+      ExpressionAttributeValues: marshall({
+        ':cancelled': 'cancelled',
+        ':updated': updatedAt,
+        ':reason': 'Conversation truncated',
+        ':recordType': 'DELEGATION_JOB',
+        ':queued': 'queued',
+        ':running': 'running',
       }),
     }))),
   )

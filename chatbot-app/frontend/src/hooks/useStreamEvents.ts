@@ -144,11 +144,16 @@ export const useStreamEvents = ({
       return
     }
     // Normal mode
+    setUIState(prev => ({
+      ...prev,
+      isTyping: true,
+      turnPhase: 'reasoning',
+    }))
     setSessionState(prev => ({
       ...prev,
       reasoning: { text: ev.text, isActive: true }
     }))
-  }, [setSessionState])
+  }, [setSessionState, setUIState])
 
   const handleTextMessageStartEvent = useCallback((event: TextMessageStartEvent) => {
     // Swarm mode: non-responder doesn't create chat messages
@@ -212,14 +217,12 @@ export const useStreamEvents = ({
     const ttft = metadataTracking.recordTTFT()
 
     setUIState(prevUI => {
-      // Don't change status if stopping or in A2A agent mode
-      if (prevUI.agentStatus === 'stopping' ||
-          prevUI.agentStatus === 'researching') {
-        return prevUI
-      }
+      const preserveStatus = prevUI.agentStatus === 'stopping'
+        || prevUI.agentStatus === 'researching'
       return {
         ...prevUI,
-        agentStatus: 'responding',
+        agentStatus: preserveStatus ? prevUI.agentStatus : 'responding',
+        turnPhase: 'streaming_response',
         latencyMetrics: { ...prevUI.latencyMetrics, timeToFirstToken: ttft ?? prevUI.latencyMetrics.timeToFirstToken ?? null }
       }
     })
@@ -324,7 +327,8 @@ export const useStreamEvents = ({
     setUIState(prev => ({
       ...prev,
       isTyping: true,
-      agentStatus
+      agentStatus,
+      turnPhase: 'preparing_tool',
     }))
 
     // Start polling for tool execution progress updates
@@ -467,7 +471,15 @@ export const useStreamEvents = ({
       toolInputRaw: accumulated,
       toolInputState: 'complete',
     }))
-  }, [toolInputAccumulatorRef, updateToolExecution])
+    const toolName = currentToolExecutionsRef.current.find(
+      tool => tool.id === event.toolCallId
+    )?.toolName
+    setUIState(prev => ({
+      ...prev,
+      isTyping: true,
+      turnPhase: 'running_tool',
+    }))
+  }, [currentToolExecutionsRef, setUIState, toolInputAccumulatorRef, updateToolExecution])
 
   const handleToolCallNameUpdateEvent = useCallback((event: CustomEvent) => {
     const value = (event as any).value
@@ -531,6 +543,13 @@ export const useStreamEvents = ({
     const toolExecution = currentToolExecutionsRef.current.find(tool => tool.id === event.toolCallId)
     const toolName = toolExecution?.toolName
     const isCancelled = toolStatus === 'error'
+
+    setUIState(prev => ({
+      ...prev,
+      isTyping: true,
+      agentStatus: prev.agentStatus === 'stopping' ? prev.agentStatus : 'thinking',
+      turnPhase: 'processing_tool_result',
+    }))
 
     // Track tool completion in swarm mode for expanded view
     if (swarmModeRef.current.isActive && swarmModeRef.current.agentSteps.length > 0) {
@@ -895,6 +914,7 @@ export const useStreamEvents = ({
         isTyping: false,
         showProgressPanel: false,
         agentStatus: 'idle',
+        turnPhase: 'idle',
         latencyMetrics: {
           ...prev.latencyMetrics,
           endToEndLatency: e2eValue ?? null
@@ -932,6 +952,7 @@ export const useStreamEvents = ({
           isTyping: false,
           showProgressPanel: false,
           agentStatus: 'idle',
+          turnPhase: 'idle',
           latencyMetrics: { ...prev.latencyMetrics, endToEndLatency: e2eLatency }
         }
       })
@@ -968,12 +989,12 @@ export const useStreamEvents = ({
       if (prev.latencyMetrics.requestStartTime) {
         metadataTracking.startTracking(prev.latencyMetrics.requestStartTime)
       }
-      if (prev.agentStatus !== 'idle') {
-        return prev
+      return {
+        ...prev,
+        isTyping: true,
+        agentStatus: prev.agentStatus === 'idle' ? 'thinking' : prev.agentStatus,
+        turnPhase: 'waiting_for_model',
       }
-
-      // Only transition to 'thinking' if starting a new turn (idle -> thinking)
-      return { ...prev, isTyping: true, agentStatus: 'thinking' }
     })
   }, [setUIState, metadataTracking])
 
@@ -1003,6 +1024,7 @@ export const useStreamEvents = ({
         ...prev,
         isTyping: false,
         agentStatus: 'idle',
+        turnPhase: 'idle',
         latencyMetrics: {
           ...prev.latencyMetrics,
           endToEndLatency: e2eLatency
@@ -1058,6 +1080,7 @@ export const useStreamEvents = ({
     setUIState(prev => ({
       ...prev,
       isTyping: false,
+      turnPhase: 'waiting_for_user',
       ...(isA2AInterrupt ? {} : { agentStatus: 'idle' })
     }))
   }, [setSessionState, setUIState, stopPollingRef])
@@ -1129,7 +1152,12 @@ export const useStreamEvents = ({
         elicitationId: ev.elicitationId,
       }
     }))
-  }, [setSessionState])
+    setUIState(prev => ({
+      ...prev,
+      isTyping: false,
+      turnPhase: 'waiting_for_user',
+    }))
+  }, [setSessionState, setUIState])
 
   // Backend settled the elicitation (completed or timed out) — dismiss the
   // dialog. The completion itself was signalled popup -> BFF -> DynamoDB, so
@@ -1141,7 +1169,12 @@ export const useStreamEvents = ({
       if (prev.pendingOAuth && prev.pendingOAuth.elicitationId !== ev.elicitationId) return prev
       return { ...prev, pendingOAuth: null }
     })
-  }, [setSessionState])
+    setUIState(prev => ({
+      ...prev,
+      isTyping: true,
+      turnPhase: 'waiting_for_model',
+    }))
+  }, [setSessionState, setUIState])
 
   // Swarm Mode event handlers
   const isCodeAgentExec = (t: ToolExecution) =>
@@ -1762,7 +1795,12 @@ export const useStreamEvents = ({
     }))
 
     // Reset UI — covers the case where stream was aborted without receiving RunFinishedEvent
-    setUIState(prev => ({ ...prev, agentStatus: 'idle', isTyping: false }))
+    setUIState(prev => ({
+      ...prev,
+      agentStatus: 'idle',
+      isTyping: false,
+      turnPhase: 'idle',
+    }))
   }, [setMessages, setSessionState, setUIState, metadataTracking, textBuffer])
 
   return { handleStreamEvent, resetStreamingState }

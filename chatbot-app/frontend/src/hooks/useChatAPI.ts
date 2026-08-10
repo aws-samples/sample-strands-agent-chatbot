@@ -1,5 +1,5 @@
 import { useCallback, useRef, useEffect, useState } from 'react'
-import { Message, ToolExecution } from '@/types/chat'
+import { Message, ToolExecution, WorkspaceAttachment } from '@/types/chat'
 import { AGUIStreamEvent, ChatUIState, AGUI_EVENT_TYPES } from '@/types/events'
 import { getApiUrl } from '@/config/environment'
 import logger from '@/utils/logger'
@@ -185,7 +185,15 @@ export interface ReplayMessageIdentity {
 
 interface UseChatAPIReturn {
   newChat: () => Promise<boolean>
-  sendMessage: (messageToSend: string, files?: File[], onSuccess?: () => void, onError?: (error: string) => void) => Promise<void>
+  sendMessage: (
+    messageToSend: string,
+    files?: File[],
+    onSuccess?: () => void,
+    onError?: (error: string) => void,
+    systemPrompt?: string,
+    selectedArtifactId?: string | null,
+    workspaceFiles?: WorkspaceAttachment[],
+  ) => Promise<void>
   replayExecution: (
     executionId: string,
     messageIdentity?: ReplayMessageIdentity,
@@ -470,7 +478,8 @@ export const useChatAPI = ({
     onSuccess?: () => void,
     onError?: (error: string) => void,
     systemPrompt?: string,
-    selectedArtifactId?: string | null
+    selectedArtifactId?: string | null,
+    workspaceFiles?: WorkspaceAttachment[],
   ) => {
     // Update last activity timestamp (for session timeout tracking)
     updateLastActivity()
@@ -541,6 +550,9 @@ export const useChatAPI = ({
             ...(conciseModeRef.current && { concise_mode: true }),
             ...(systemPrompt && { system_prompt: systemPrompt }),
             ...(selectedArtifactId && { selected_artifact_id: selectedArtifactId }),
+            ...(workspaceFiles && workspaceFiles.length > 0 && {
+              workspace_paths: workspaceFiles.map(file => file.path),
+            }),
           },
         })
 
@@ -757,7 +769,13 @@ export const useChatAPI = ({
           }
           return lastUserIdx >= 0 ? prev.slice(0, lastUserIdx + 1) : prev
         })
-        setUIState(prev => ({ ...prev, isTyping: true, isReconnecting: true, agentStatus: 'thinking' }))
+        setUIState(prev => ({
+          ...prev,
+          isTyping: true,
+          isReconnecting: true,
+          agentStatus: 'thinking',
+          turnPhase: 'reconnecting',
+        }))
         try {
           await reconnect.attemptReconnect(
             (event) => handleStreamEvent(event),
@@ -768,7 +786,14 @@ export const useChatAPI = ({
             },
             () => {
               // Resume failed — show error
-              setUIState(prev => ({ ...prev, isReconnecting: false, isConnected: false, isTyping: false }))
+              setUIState(prev => ({
+                ...prev,
+                isReconnecting: false,
+                isConnected: false,
+                isTyping: false,
+                agentStatus: 'idle',
+                turnPhase: 'idle',
+              }))
               setMessages(prev => [...prev, {
                 id: String(Date.now()),
                 text: 'Connection lost. The response may be incomplete.',
@@ -790,7 +815,13 @@ export const useChatAPI = ({
       }
 
       logger.error('Error sending message:', error)
-      setUIState(prev => ({ ...prev, isConnected: false, isTyping: false }))
+      setUIState(prev => ({
+        ...prev,
+        isConnected: false,
+        isTyping: false,
+        agentStatus: 'idle',
+        turnPhase: 'idle',
+      }))
 
       // Provide user-friendly error messages for common network issues
       let errorMessage: string
@@ -824,9 +855,55 @@ export const useChatAPI = ({
    * Remove file hints from user message text (added for agent's context)
    * These hints should not be displayed in the UI
    */
+  const stripTaggedBlocks = (
+    text: string,
+    startMarker: string,
+    endMarker: string,
+  ): string => {
+    let result = text
+    let searchFrom = 0
+    while (searchFrom < result.length) {
+      const start = result.indexOf(startMarker, searchFrom)
+      if (start < 0) break
+      const end = result.indexOf(endMarker, start + startMarker.length)
+      if (end < 0) break
+      result = result.slice(0, start) + result.slice(end + endMarker.length)
+      searchFrom = start
+    }
+    return result
+  }
+
+  const structuredDataFilenames = (text: string): string[] => {
+    const filenames: string[] = []
+    let searchFrom = 0
+    while (searchFrom < text.length) {
+      const start = text.indexOf('<structured_data', searchFrom)
+      if (start < 0) break
+      const headerEnd = text.indexOf('>', start)
+      if (headerEnd < 0) break
+      const header = text.slice(start, headerEnd + 1)
+      const nameStart = header.indexOf('name="')
+      if (nameStart >= 0) {
+        const valueStart = nameStart + 6
+        const valueEnd = header.indexOf('"', valueStart)
+        if (valueEnd > valueStart) filenames.push(header.slice(valueStart, valueEnd))
+      }
+      searchFrom = headerEnd + 1
+    }
+    return filenames
+  }
+
   const removeFileHints = (text: string): string => {
-    // Remove <uploaded_files>...</uploaded_files> blocks
-    return text.replace(/<uploaded_files>[\s\S]*?<\/uploaded_files>/g, '').trim()
+    const withoutUploads = stripTaggedBlocks(
+      text,
+      '<uploaded_files>',
+      '</uploaded_files>',
+    )
+    return stripTaggedBlocks(
+      withoutUploads,
+      '<structured_data',
+      '</structured_data>',
+    ).trim()
   }
 
   /**
@@ -978,6 +1055,18 @@ export const useChatAPI = ({
             msg.content.forEach((item: any) => {
               // Extract text content
               if (item.text) {
+                if (msg.role === 'user') {
+                  for (const filename of structuredDataFilenames(item.text)) {
+                    const lowerName = filename.toLowerCase()
+                    uploadedFiles.push({
+                      name: filename,
+                      type: lowerName.endsWith('.json')
+                        ? 'application/json'
+                        : 'application/x-ndjson',
+                      size: 0,
+                    })
+                  }
+                }
                 text += item.text
               }
 
@@ -1214,18 +1303,24 @@ export const useChatAPI = ({
           return prev
         })
 
-        setUIState(prev => ({ ...prev, isTyping: true, isReconnecting: true, agentStatus: 'thinking' }))
+        setUIState(prev => ({
+          ...prev,
+          isTyping: true,
+          isReconnecting: true,
+          agentStatus: 'thinking',
+          turnPhase: 'reconnecting',
+        }))
         reconnect.attemptReconnect(
           (event) => handleStreamEvent(event),
           () => {
             // Resume succeeded
             logger.info('[loadSession] Resume after page refresh succeeded')
-            setUIState(prev => ({ ...prev, isReconnecting: false, isTyping: false, isConnected: true, agentStatus: 'idle' }))
+            setUIState(prev => ({ ...prev, isReconnecting: false, isTyping: false, isConnected: true, agentStatus: 'idle', turnPhase: 'idle' }))
           },
           () => {
             // Resume failed — show history only
             logger.info('[loadSession] Resume after page refresh failed, showing history only')
-            setUIState(prev => ({ ...prev, isReconnecting: false, isTyping: false, agentStatus: 'idle' }))
+            setUIState(prev => ({ ...prev, isReconnecting: false, isTyping: false, agentStatus: 'idle', turnPhase: 'idle' }))
           },
           getAuthHeaders,
           () => {
@@ -1233,7 +1328,7 @@ export const useChatAPI = ({
             setUIState(prev => ({ ...prev, isReconnecting: false, isConnected: true }))
           },
         ).catch(() => {
-          setUIState(prev => ({ ...prev, isReconnecting: false, isTyping: false, agentStatus: 'idle' }))
+          setUIState(prev => ({ ...prev, isReconnecting: false, isTyping: false, agentStatus: 'idle', turnPhase: 'idle' }))
         })
       }
 
@@ -1261,6 +1356,7 @@ export const useChatAPI = ({
           ...prev,
           isTyping: false,
           agentStatus: 'idle',
+          turnPhase: 'idle',
         }))
       }
       return false
@@ -1269,7 +1365,12 @@ export const useChatAPI = ({
     // Close the idle window before the resume request. Messages submitted while
     // the delivery renders enter the normal queue and are flushed afterward.
     setUIState(prev => prev.agentStatus === 'idle'
-      ? { ...prev, isTyping: true, agentStatus: 'thinking' }
+      ? {
+          ...prev,
+          isTyping: true,
+          agentStatus: 'thinking',
+          turnPhase: 'waiting_for_model',
+        }
       : prev)
 
     try {

@@ -2,7 +2,8 @@
 
 import React, { useEffect, useState } from "react"
 import { motion } from "framer-motion"
-import { FileIcon, FileText, Image as ImageIcon, X } from "lucide-react"
+import { FileIcon, FileText, FolderTree, Image as ImageIcon, X } from "lucide-react"
+import type { WorkspaceAttachment } from "@/types/chat"
 
 // Support both File objects and simple file info
 interface FileInfo {
@@ -24,6 +25,24 @@ interface SentFilePreviewProps extends BaseFilePreviewProps {
   fileInfo: FileInfo
 }
 
+interface WorkspaceFilePreviewProps extends BaseFilePreviewProps {
+  fileInfo: WorkspaceAttachment
+}
+
+function isTextLikeFile(file: FileInfo): boolean {
+  const name = file.name.toLowerCase()
+  return (
+    file.type.startsWith("text/") ||
+    file.type === "application/json" ||
+    file.type === "application/x-ndjson" ||
+    name.endsWith(".txt") ||
+    name.endsWith(".md") ||
+    name.endsWith(".json") ||
+    name.endsWith(".jsonl") ||
+    name.endsWith(".ndjson")
+  )
+}
+
 // Main FilePreview for input area (with File object)
 export const FilePreview = React.forwardRef<HTMLDivElement, FilePreviewProps>(
   ({ file, onRemove, compact = false }, ref) => {
@@ -31,11 +50,7 @@ export const FilePreview = React.forwardRef<HTMLDivElement, FilePreviewProps>(
       return <ImageFilePreview file={file} onRemove={onRemove} compact={compact} ref={ref} />
     }
 
-    if (
-      file.type.startsWith("text/") ||
-      file.name.endsWith(".txt") ||
-      file.name.endsWith(".md")
-    ) {
+    if (isTextLikeFile(file)) {
       return <TextFilePreview file={file} onRemove={onRemove} compact={compact} ref={ref} />
     }
 
@@ -48,9 +63,7 @@ FilePreview.displayName = "FilePreview"
 export const SentFilePreview = React.forwardRef<HTMLDivElement, SentFilePreviewProps>(
   ({ fileInfo, compact = true }, ref) => {
     const isImage = fileInfo.type.startsWith("image/")
-    const isText = fileInfo.type.startsWith("text/") ||
-                   fileInfo.name.endsWith(".txt") ||
-                   fileInfo.name.endsWith(".md")
+    const isText = isTextLikeFile(fileInfo)
     const isPdf = fileInfo.type === "application/pdf"
 
     const getIcon = () => {
@@ -81,6 +94,34 @@ export const SentFilePreview = React.forwardRef<HTMLDivElement, SentFilePreviewP
   }
 )
 SentFilePreview.displayName = "SentFilePreview"
+
+export const WorkspaceFilePreview = React.forwardRef<HTMLDivElement, WorkspaceFilePreviewProps>(
+  ({ fileInfo, onRemove, compact = false }, ref) => (
+    <motion.div
+      ref={ref}
+      className="relative inline-flex max-w-[240px] items-center gap-2 rounded-lg border border-primary/25 bg-primary/5 px-3 py-2 text-sm"
+      layout
+      initial={compact ? false : { opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={compact ? undefined : { opacity: 0, y: 8 }}
+    >
+      <FolderTree className="h-4 w-4 shrink-0 text-primary" />
+      <span className="shrink-0 text-xs font-medium text-primary">Workspace</span>
+      <span className="min-w-0 truncate text-foreground/80">{fileInfo.name}</span>
+      {onRemove && (
+        <button
+          className="ml-1 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-border bg-background text-muted-foreground hover:border-destructive hover:bg-destructive hover:text-destructive-foreground transition-colors"
+          type="button"
+          onClick={onRemove}
+          aria-label={`Remove workspace attachment ${fileInfo.name}`}
+        >
+          <X className="h-3 w-3" />
+        </button>
+      )}
+    </motion.div>
+  )
+)
+WorkspaceFilePreview.displayName = "WorkspaceFilePreview"
 
 // Image preview (for File objects with actual image data)
 const ImageFilePreview = React.forwardRef<HTMLDivElement, FilePreviewProps>(

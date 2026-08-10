@@ -22,11 +22,13 @@
  * after React has committed the events from that stream — see `flushNext`.
  */
 import { useCallback, useRef, useState } from 'react'
+import type { WorkspaceAttachment } from '@/types/chat'
 
 export interface QueuedMessage {
   id: string
   text: string
   files: File[]
+  workspaceFiles?: WorkspaceAttachment[]
   /** Session the message was composed in; a queued item never crosses sessions. */
   sessionId: string
   /**
@@ -79,6 +81,7 @@ interface UseMessageQueueProps {
     files: File[],
     systemPrompt?: string,
     selectedArtifactId?: string | null,
+    workspaceFiles?: WorkspaceAttachment[],
   ) => Promise<void>
 }
 
@@ -113,7 +116,11 @@ export function useMessageQueue({ send }: UseMessageQueueProps): UseMessageQueue
 
   const enqueue = useCallback((message: Omit<QueuedMessage, 'id'>) => {
     const text = message.text.trim()
-    if (!text && message.files.length === 0) return
+    if (
+      !text
+      && message.files.length === 0
+      && (message.workspaceFiles?.length ?? 0) === 0
+    ) return
     updateQueue(prev => [...prev, { ...message, text, id: crypto.randomUUID() }])
   }, [updateQueue])
 
@@ -194,7 +201,13 @@ export function useMessageQueue({ send }: UseMessageQueueProps): UseMessageQueue
     // accepts it into the normal user-turn path, not after the response ends.
     updateQueue(prev => prev.filter(m => m.id !== next.id))
     try {
-      await send(next.text, next.files, next.systemPrompt, next.selectedArtifactId)
+      await send(
+        next.text,
+        next.files,
+        next.systemPrompt,
+        next.selectedArtifactId,
+        next.workspaceFiles ?? [],
+      )
       return true
     } catch {
       // send() adds the user turn before awaiting the transport. Re-inserting it

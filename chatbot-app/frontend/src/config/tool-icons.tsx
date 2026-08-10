@@ -13,6 +13,8 @@ import {
   TbChartLine,
   TbCode,
   TbTelescope,
+  TbAnalyze,
+  TbShieldCheck,
 } from 'react-icons/tb';
 import {
   SiDuckduckgo,
@@ -77,6 +79,10 @@ export const toolIconMap: Record<string, IconType> = {
   // Research Agent
   'agentcore_research-agent': TbTelescope,
   research_agent: TbTelescope,
+
+  // Delegated specialists
+  delegation_analyst: TbAnalyze,
+  delegation_reviewer: TbShieldCheck,
 };
 
 /**
@@ -206,6 +212,11 @@ export const skillToToolId: Record<string, string> = {
 export function resolveEffectiveToolId(toolId: string, toolInput?: any): string {
   if (toolId === 'skill_dispatcher' && toolInput?.skill_name) {
     return skillToToolId[toolInput.skill_name] || toolId;
+  }
+  if (toolId === 'delegate_task') {
+    return toolInput?.profile === 'reviewer'
+      ? 'delegation_reviewer'
+      : 'delegation_analyst';
   }
   return toolId;
 }

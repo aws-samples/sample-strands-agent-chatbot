@@ -6,13 +6,15 @@ import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { Upload, Send, Square, Loader2, Mic, CornerDownLeft, Zap } from "lucide-react"
-import { FilePreview } from "@/components/ui/file-preview"
+import { FilePreview, WorkspaceFilePreview } from "@/components/ui/file-preview"
 import { AnimatePresence } from "framer-motion"
 import { VoiceAnimation } from "@/components/VoiceAnimation"
 import { ModelConfigDialog } from "@/components/ModelConfigDialog"
 import { SlashCommandPopover } from "@/components/chat/SlashCommandPopover"
 import { filterCommands, SlashCommand } from "@/components/chat/slashCommands"
 import { AgentStatus } from "@/types/events"
+import type { WorkspaceAttachment } from "@/types/chat"
+import { apiFetch } from "@/lib/api-client"
 
 interface ChatInputAreaProps {
   selectedFiles: File[]
@@ -25,12 +27,20 @@ interface ChatInputAreaProps {
   sessionId: string | null
   currentModelId?: string
   onModelChange?: (modelId: string) => void
-  onSendMessage: (text: string, files: File[]) => Promise<void>
+  onSendMessage: (
+    text: string,
+    files: File[],
+    workspaceFiles: WorkspaceAttachment[],
+  ) => Promise<void>
   /**
    * Queue a turn instead of sending it, used while the agent is busy. The
    * composer stays enabled so the user can keep typing during a long run.
    */
-  onEnqueueMessage: (text: string, files: File[]) => void
+  onEnqueueMessage: (
+    text: string,
+    files: File[],
+    workspaceFiles: WorkspaceAttachment[],
+  ) => void
   /** Concise response style: on while the toggle is lit. */
   conciseMode: boolean
   onToggleConciseMode: () => void
@@ -46,6 +56,7 @@ interface ChatInputAreaProps {
 
 export const LARGE_PASTE_ATTACHMENT_THRESHOLD = 20_000
 export const MAX_PASTED_TEXT_BYTES = 1_000_000
+export const MAX_STRUCTURED_CHAT_FILE_BYTES = 4_000_000
 
 const MAX_AUTO_RESIZE_CHARS = 4_000
 const TEXTAREA_MAX_HEIGHT_PX = 128
@@ -77,6 +88,8 @@ export function ChatInputArea({
 }: ChatInputAreaProps) {
   const [inputMessage, setInputMessage] = useState('')
   const [inputError, setInputError] = useState<string | null>(null)
+  const [workspaceFiles, setWorkspaceFiles] = useState<WorkspaceAttachment[]>([])
+  const [workspaceUploadCount, setWorkspaceUploadCount] = useState(0)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const isComposingRef = useRef(false)
 
@@ -126,36 +139,135 @@ export function ChatInputArea({
   // Single submit path shared by Enter, the form, and the send button.
   // While the agent is busy the composer stays open and the turn is queued
   // instead of sent; the parent decides when it is safe to dispatch it.
-  const hasContent = /\S/.test(inputMessage) || selectedFiles.length > 0
+  const isUploadingWorkspace = workspaceUploadCount > 0
+  const hasContent = (
+    /\S/.test(inputMessage)
+    || selectedFiles.length > 0
+    || workspaceFiles.length > 0
+  )
 
   const submit = useCallback(() => {
-    if (!hasContent || isVoiceActive) return
+    if (!hasContent || isVoiceActive || isUploadingWorkspace) return
     // Slash commands are handled in handleKeyDown.
     if (/^\s*\//.test(inputMessage)) return
 
     if (isBusy) {
-      onEnqueueMessage(inputMessage, selectedFiles)
+      onEnqueueMessage(inputMessage, selectedFiles, workspaceFiles)
     } else {
-      void onSendMessage(inputMessage, selectedFiles)
+      void onSendMessage(inputMessage, selectedFiles, workspaceFiles)
     }
     setInputMessage('')
     setSelectedFiles([])
+    setWorkspaceFiles([])
   }, [
-    hasContent, isVoiceActive, inputMessage, selectedFiles, isBusy,
+    hasContent, isVoiceActive, isUploadingWorkspace, inputMessage, selectedFiles,
+    workspaceFiles, isBusy,
     onEnqueueMessage, onSendMessage, setSelectedFiles,
   ])
 
-  const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const uploadWorkspaceFile = useCallback(async (
+    file: File,
+  ): Promise<WorkspaceAttachment> => {
+    if (!sessionId) {
+      throw new Error('Start a conversation before uploading Workspace files.')
+    }
+    const ticketResponse = await apiFetch('workspace/upload', {
+      method: 'POST',
+      headers: { 'X-Session-ID': sessionId },
+      body: JSON.stringify({
+        name: file.name,
+        mimeType: file.type || 'application/octet-stream',
+        size: file.size,
+      }),
+    })
+    if (!ticketResponse.ok) {
+      const payload = await ticketResponse.json().catch(() => ({}))
+      throw new Error(payload.error || `Unable to upload ${file.name}`)
+    }
+    const { entry, uploadUrl } = await ticketResponse.json()
+    const uploadResponse = await fetch(uploadUrl, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': file.type || 'application/octet-stream',
+      },
+      body: file,
+    })
+    if (!uploadResponse.ok) throw new Error(`Unable to upload ${file.name}`)
+    return {
+      name: entry.name || file.name,
+      type: entry.mimeType || file.type || 'application/octet-stream',
+      size: entry.size ?? file.size,
+      path: entry.path || `uploads/${file.name}`,
+    }
+  }, [sessionId])
+
+  const handleFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.target.files || [])
-    setInputError(null)
-    setSelectedFiles(prev => [...prev, ...files])
+    const accepted: File[] = []
+    const workspaceUploads: File[] = []
+    for (const file of files) {
+      const name = file.name.toLowerCase()
+      const isStructured = (
+        file.type === 'application/json'
+        || file.type === 'application/x-ndjson'
+        || name.endsWith('.json')
+        || name.endsWith('.jsonl')
+        || name.endsWith('.ndjson')
+      )
+      if (isStructured && file.size > MAX_STRUCTURED_CHAT_FILE_BYTES) {
+        workspaceUploads.push(file)
+      } else {
+        accepted.push(file)
+      }
+    }
     event.target.value = ""
+    setInputError(null)
+    if (accepted.length > 0) {
+      setSelectedFiles(prev => [...prev, ...accepted])
+    }
+    if (workspaceUploads.length === 0) return
+
+    setWorkspaceUploadCount(current => current + workspaceUploads.length)
+    const results = await Promise.allSettled(
+      workspaceUploads.map(uploadWorkspaceFile),
+    )
+    const uploaded = results.flatMap(result => (
+      result.status === 'fulfilled' ? [result.value] : []
+    ))
+    const failures = results.flatMap((result, index) => (
+      result.status === 'rejected'
+        ? [result.reason instanceof Error
+          ? result.reason.message
+          : `Unable to upload ${workspaceUploads[index].name}`]
+        : []
+    ))
+
+    if (uploaded.length > 0) {
+      setWorkspaceFiles(current => {
+        const uploadedPaths = new Set(uploaded.map(file => file.path))
+        return [
+          ...current.filter(file => !uploadedPaths.has(file.path)),
+          ...uploaded,
+        ]
+      })
+      window.dispatchEvent(new CustomEvent('workspace-files-changed'))
+    }
+    setInputError(failures.length > 0 ? failures.join(' ') : null)
+    setWorkspaceUploadCount(current => Math.max(0, current - workspaceUploads.length))
   }
 
   const removeFile = (index: number) => {
     setSelectedFiles(prev => prev.filter((_, i) => i !== index))
   }
 
+  const removeWorkspaceFile = (path: string) => {
+    setWorkspaceFiles(current => current.filter(file => file.path !== path))
+  }
+
+  useEffect(() => {
+    setWorkspaceFiles([])
+    setWorkspaceUploadCount(0)
+  }, [sessionId])
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // Handle slash commands navigation
     if (slashCommands.length > 0) {
@@ -264,7 +376,7 @@ export function ChatInputArea({
   return (
     <>
       {/* File Upload Preview */}
-      {selectedFiles.length > 0 && (
+      {(selectedFiles.length > 0 || workspaceFiles.length > 0 || isUploadingWorkspace) && (
         <div className="mx-auto px-4 w-full md:max-w-4xl mb-2">
           <div className="flex flex-wrap gap-2">
             <AnimatePresence>
@@ -275,6 +387,22 @@ export function ChatInputArea({
                   onRemove={() => removeFile(index)}
                 />
               ))}
+              {workspaceFiles.map(file => (
+                <WorkspaceFilePreview
+                  key={file.path}
+                  fileInfo={file}
+                  onRemove={() => removeWorkspaceFile(file.path)}
+                />
+              ))}
+              {isUploadingWorkspace && (
+                <div
+                  role="status"
+                  className="inline-flex items-center gap-2 rounded-lg border border-border bg-background px-3 py-2 text-sm text-muted-foreground"
+                >
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Uploading {workspaceUploadCount === 1 ? 'file' : `${workspaceUploadCount} files`} to Workspace
+                </div>
+              )}
             </AnimatePresence>
           </div>
         </div>
@@ -293,9 +421,10 @@ export function ChatInputArea({
           >
             <Input
               type="file"
-              accept="image/*,application/pdf,.pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.docx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,.xlsx,application/vnd.openxmlformats-officedocument.presentationml.presentation,.pptx,.zip,application/zip,application/x-zip,application/x-zip-compressed,text/csv,.csv"
+              accept="image/*,application/pdf,.pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.docx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,.xlsx,application/vnd.openxmlformats-officedocument.presentationml.presentation,.pptx,.zip,application/zip,application/x-zip,application/x-zip-compressed,text/csv,.csv,application/json,application/x-ndjson,.json,.jsonl,.ndjson"
               multiple
               onChange={handleFileSelect}
+              disabled={isUploadingWorkspace}
               className="hidden"
               id="file-upload"
             />
@@ -397,7 +526,7 @@ export function ChatInputArea({
                 ) : (
                   <Button
                     type="submit"
-                    disabled={!hasContent}
+                    disabled={!hasContent || isUploadingWorkspace}
                     size="sm"
                     title={isBusy ? "Queue this message" : "Send"}
                     className="h-9 w-9 p-0 bg-primary hover:bg-primary/90 text-primary-foreground rounded-lg transition-colors duration-150 disabled:opacity-40"
@@ -425,7 +554,7 @@ export function ChatInputArea({
                       variant="ghost"
                       size="sm"
                       onClick={() => document.getElementById("file-upload")?.click()}
-                      disabled={isVoiceActive}
+                      disabled={isVoiceActive || isUploadingWorkspace}
                       className="h-9 w-9 p-0 hover:bg-muted transition-colors duration-150 disabled:opacity-40 text-muted-foreground"
                     >
                       <Upload className="w-4 h-4" />

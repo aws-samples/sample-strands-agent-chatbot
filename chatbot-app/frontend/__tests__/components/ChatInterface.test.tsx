@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { ChatInterface } from '@/components/ChatInterface'
 import type { Message } from '@/types/chat'
-import type { AgentStatus } from '@/types/events'
+import type { AgentStatus, TurnPhase } from '@/types/events'
 
 // Type for grouped messages
 interface GroupedMessage {
@@ -20,6 +20,7 @@ const mockUseChat: {
   isConnected: boolean
   isTyping: boolean
   agentStatus: AgentStatus
+  turnPhase: TurnPhase
   isForegroundRunActive: boolean
   turnControl: {
     isBusy: boolean
@@ -59,6 +60,7 @@ const mockUseChat: {
   isConnected: true,
   isTyping: false,
   agentStatus: 'idle',
+  turnPhase: 'idle',
   isForegroundRunActive: false,
   turnControl: {
     isBusy: false,
@@ -306,6 +308,7 @@ describe('ChatInterface', () => {
 
     it('should render when agent is thinking', () => {
       mockUseChat.agentStatus = 'thinking'
+      mockUseChat.turnPhase = 'waiting_for_model'
       mockUseChat.groupedMessages = [
         {
           type: 'user',
@@ -316,7 +319,23 @@ describe('ChatInterface', () => {
 
       render(<ChatInterface />)
 
-      expect(screen.getByRole('status', { name: 'AI is thinking' })).toBeInTheDocument()
+      expect(screen.getByRole('status', { name: 'Waiting for the model' })).toHaveTextContent('Thinking...')
+    })
+
+    it('does not duplicate tool-owned activity in the global row', () => {
+      mockUseChat.agentStatus = 'responding'
+      mockUseChat.turnPhase = 'running_tool'
+      mockUseChat.groupedMessages = [
+        {
+          type: 'user',
+          id: 'user_1',
+          messages: [{ id: '1', text: 'Run the code', sender: 'user', timestamp: '12:00' }]
+        }
+      ]
+
+      render(<ChatInterface />)
+
+      expect(screen.queryByRole('status')).not.toBeInTheDocument()
     })
 
     it('offers a queued message as an interrupt while the agent is running', () => {

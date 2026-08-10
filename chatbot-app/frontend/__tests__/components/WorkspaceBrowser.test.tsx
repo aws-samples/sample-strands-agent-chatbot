@@ -29,28 +29,62 @@ describe('WorkspaceBrowser', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true }))
     mockApiFetch.mockImplementation(async endpoint => {
       if (endpoint === 'workspace/entries') {
         return response({
-          entries: [{
-            id: 'documents',
-            path: 'documents',
-            parentPath: '',
-            name: 'Documents',
-            kind: 'directory',
-          }],
+          entries: [
+            {
+              id: 'uploads',
+              path: 'uploads',
+              parentPath: '',
+              name: 'Uploads',
+              kind: 'directory',
+            },
+            {
+              id: 'documents',
+              path: 'documents',
+              parentPath: '',
+              name: 'Documents',
+              kind: 'directory',
+            },
+          ],
         }) as any
       }
       if (endpoint === 'workspace/entries?path=documents') {
         return response({
+          entries: [
+            {
+              id: 'report',
+              path: 'documents/report.md',
+              parentPath: 'documents',
+              name: 'report.md',
+              kind: 'file',
+              size: 1200,
+              previewKind: 'markdown',
+            },
+            {
+              id: 'data',
+              path: 'documents/data.json',
+              parentPath: 'documents',
+              name: 'data.json',
+              kind: 'file',
+              size: 24,
+              previewKind: 'json',
+            },
+          ],
+        }) as any
+      }
+      if (endpoint === 'workspace/entries?path=uploads') {
+        return response({
           entries: [{
-            id: 'report',
-            path: 'documents/report.md',
-            parentPath: 'documents',
-            name: 'report.md',
+            id: 'uploaded-data',
+            path: 'uploads/uploaded.jsonl',
+            parentPath: 'uploads',
+            name: 'uploaded.jsonl',
             kind: 'file',
-            size: 1200,
-            previewKind: 'markdown',
+            size: 9,
+            previewKind: 'json',
           }],
         }) as any
       }
@@ -65,6 +99,44 @@ describe('WorkspaceBrowser', () => {
           },
           kind: 'markdown',
           content: '# Session report',
+        }) as any
+      }
+      if (endpoint === 'workspace/preview?path=documents%2Fdata.json') {
+        return response({
+          entry: {
+            id: 'data',
+            path: 'documents/data.json',
+            parentPath: 'documents',
+            name: 'data.json',
+            kind: 'file',
+          },
+          kind: 'json',
+          content: '{"name":"workspace","enabled":true}',
+        }) as any
+      }
+      if (endpoint === 'workspace/preview?path=uploads%2Fuploaded.jsonl') {
+        return response({
+          entry: {
+            id: 'uploaded-data',
+            path: 'uploads/uploaded.jsonl',
+            parentPath: 'uploads',
+            name: 'uploaded.jsonl',
+            kind: 'file',
+          },
+          kind: 'json',
+          content: '{"id":1,"active":true}\nnot-json\n{"id":2}',
+        }) as any
+      }
+      if (endpoint === 'workspace/upload') {
+        return response({
+          uploadUrl: 'https://uploads.example.test/presigned',
+          entry: {
+            id: 'uploaded-data',
+            path: 'uploads/uploaded.jsonl',
+            parentPath: 'uploads',
+            name: 'uploaded.jsonl',
+            kind: 'file',
+          },
         }) as any
       }
       throw new Error(`Unexpected endpoint: ${endpoint}`)
@@ -96,6 +168,64 @@ describe('WorkspaceBrowser', () => {
       'workspace/entries',
       { headers: { 'X-Session-ID': 'session-1' } },
     )
+  })
+
+  it('pretty-prints JSON files in the preview', async () => {
+    render(<WorkspaceBrowser sessionId="session-1" />)
+    fireEvent.click(await screen.findByRole('button', { name: /documents/i }))
+    fireEvent.click(await screen.findByRole('button', { name: /data\.json/i }))
+
+    const preview = await screen.findByTestId('json-preview')
+    expect(preview).toHaveTextContent('"name": "workspace"')
+    expect(preview).toHaveTextContent('"enabled": true')
+  })
+
+  it('pretty-prints valid JSONL records without hiding invalid lines', async () => {
+    render(<WorkspaceBrowser sessionId="session-1" />)
+    fireEvent.click(await screen.findByRole('button', { name: /uploads/i }))
+    fireEvent.click(await screen.findByRole('button', { name: /uploaded\.jsonl/i }))
+
+    const preview = await screen.findByTestId('json-preview')
+    expect(preview).toHaveTextContent('"id": 1')
+    expect(preview).toHaveTextContent('"active": true')
+    expect(preview).toHaveTextContent('not-json')
+    expect(preview).toHaveTextContent('"id": 2')
+  })
+
+  it('uploads files into the session workspace and opens Uploads', async () => {
+    render(<WorkspaceBrowser sessionId="session-1" />)
+    await screen.findByRole('button', { name: /uploads/i })
+
+    const input = screen.getByLabelText('Choose workspace files')
+    const file = new File(['{"id":1}\n'], 'uploaded.jsonl', {
+      type: 'application/x-ndjson',
+    })
+    fireEvent.change(input, { target: { files: [file] } })
+
+    await waitFor(() => {
+      expect(mockApiFetch).toHaveBeenCalledWith(
+        'workspace/upload',
+        expect.objectContaining({
+          method: 'POST',
+          headers: { 'X-Session-ID': 'session-1' },
+          body: JSON.stringify({
+            name: 'uploaded.jsonl',
+            mimeType: 'application/x-ndjson',
+            size: 9,
+          }),
+        }),
+      )
+    })
+    expect(fetch).toHaveBeenCalledWith(
+      'https://uploads.example.test/presigned',
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/x-ndjson' },
+        body: file,
+      },
+    )
+    expect(await screen.findByRole('button', { name: /uploaded\.jsonl/i }))
+      .toBeInTheDocument()
   })
 
   it('shows an explicit empty-session state', () => {

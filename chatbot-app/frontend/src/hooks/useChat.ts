@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
-import { Message, ToolExecution } from '@/types/chat'
-import { ReasoningState, ChatSessionState, ChatUIState, InterruptState, AgentStatus, PendingOAuthState } from '@/types/events'
+import { Message, ToolExecution, WorkspaceAttachment } from '@/types/chat'
+import { ReasoningState, ChatSessionState, ChatUIState, InterruptState, AgentStatus, PendingOAuthState, TurnPhase } from '@/types/events'
 import { detectBackendUrl } from '@/utils/chat'
 import { useStreamEvents } from './useStreamEvents'
 import {
@@ -39,6 +39,7 @@ interface UseChatReturn {
   isConnected: boolean
   isTyping: boolean
   agentStatus: AgentStatus
+  turnPhase: TurnPhase
   /** A foreground chat request is still running and can receive a stop signal. */
   isForegroundRunActive: boolean
   /** Canonical user-action state shared by the composer and queued turns. */
@@ -47,7 +48,13 @@ interface UseChatReturn {
   currentReasoning: ReasoningState | null
   showProgressPanel: boolean
   toggleProgressPanel: () => void
-  sendMessage: (text: string, files?: File[], systemPrompt?: string, selectedArtifactId?: string | null) => Promise<void>
+  sendMessage: (
+    text: string,
+    files?: File[],
+    systemPrompt?: string,
+    selectedArtifactId?: string | null,
+    workspaceFiles?: WorkspaceAttachment[],
+  ) => Promise<void>
   replayExecution: (
     executionId: string,
     messageIdentity?: ReplayMessageIdentity,
@@ -56,7 +63,13 @@ interface UseChatReturn {
   // Queue for turns composed while the agent is busy
   queuedMessages: QueuedMessage[]
   queueHoldReason: QueueHoldReason | null
-  enqueueMessage: (text: string, files?: File[], systemPrompt?: string, selectedArtifactId?: string | null) => void
+  enqueueMessage: (
+    text: string,
+    files?: File[],
+    systemPrompt?: string,
+    selectedArtifactId?: string | null,
+    workspaceFiles?: WorkspaceAttachment[],
+  ) => void
   removeQueuedMessage: (id: string) => void
   clearQueuedMessages: () => void
   /** User confirmed a held queue: resume and send the next message now. */
@@ -175,6 +188,7 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
     isTyping: false,
     showProgressPanel: false,
     agentStatus: 'idle',
+    turnPhase: 'idle',
     latencyMetrics: {
       requestStartTime: null,
       timeToFirstToken: null,
@@ -328,7 +342,12 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
       setUIState(prev => {
         if (prev.agentStatus !== 'researching') {
           console.log('[useChat] Setting status to researching')
-          return { ...prev, isTyping: true, agentStatus: 'researching' }
+          return {
+            ...prev,
+            isTyping: true,
+            agentStatus: 'researching',
+            turnPhase: prev.turnPhase === 'idle' ? 'running_tool' : prev.turnPhase,
+          }
         }
         return prev
       })
@@ -341,7 +360,12 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
       setUIState(prev => {
         if (prev.agentStatus === 'researching') {
           console.log('[useChat] A2A tools completed, transitioning to idle')
-          return { ...prev, isTyping: false, agentStatus: 'idle' }
+          return {
+            ...prev,
+            isTyping: false,
+            agentStatus: 'idle',
+            turnPhase: 'idle',
+          }
         }
         return prev
       })
@@ -370,6 +394,7 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
       ...prev,
       isTyping: hasPendingCompact,
       agentStatus: hasPendingCompact ? 'compacting' : 'idle',
+      turnPhase: hasPendingCompact ? 'waiting_for_model' : 'idle',
       showProgressPanel: false
     }))
 
@@ -471,7 +496,7 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
         interrupt: null,
         pendingOAuth: null
       })
-      setUIState(prev => ({ ...prev, isTyping: false, agentStatus: 'idle' }))
+      setUIState(prev => ({ ...prev, isTyping: false, agentStatus: 'idle', turnPhase: 'idle' }))
       setMessages([])
       // Queued turns were composed against the conversation being discarded.
       clearQueuedMessagesRef.current()
@@ -492,7 +517,12 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
     )
 
     const agentStatus: 'thinking' | 'researching' = isResearchInterrupt ? 'researching' : 'thinking'
-    setUIState(prev => ({ ...prev, isTyping: true, agentStatus }))
+    setUIState(prev => ({
+      ...prev,
+      isTyping: true,
+      agentStatus,
+      turnPhase: 'waiting_for_model',
+    }))
     setIsForegroundRunActive(true)
 
     try {
@@ -505,35 +535,52 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
         () => { setTurnSettled({ outcome: 'finished' }) },
         () => {
           setTurnSettled({ outcome: 'error' })
-          setUIState(prev => ({ ...prev, isTyping: false, agentStatus: 'idle' }))
+          setUIState(prev => ({ ...prev, isTyping: false, agentStatus: 'idle', turnPhase: 'idle' }))
         },
       )
     } catch (error) {
       console.error('[Interrupt] Failed to respond to interrupt:', error)
       setTurnSettled({ outcome: 'error' })
-      setUIState(prev => ({ ...prev, isTyping: false, agentStatus: 'idle' }))
+      setUIState(prev => ({ ...prev, isTyping: false, agentStatus: 'idle', turnPhase: 'idle' }))
     } finally {
       setIsForegroundRunActive(false)
     }
   }, [sessionState.interrupt, apiSendMessage])
 
-  const sendMessage = useCallback(async (text: string, files?: File[], systemPrompt?: string, selectedArtifactId?: string | null) => {
-    if (!text.trim() && (!files || files.length === 0)) return
+  const sendMessage = useCallback(async (
+    text: string,
+    files?: File[],
+    systemPrompt?: string,
+    selectedArtifactId?: string | null,
+    workspaceFiles?: WorkspaceAttachment[],
+  ) => {
+    if (
+      !text.trim()
+      && (!files || files.length === 0)
+      && (!workspaceFiles || workspaceFiles.length === 0)
+    ) return
 
     const now = Date.now()
+    const uploadedFiles = [
+      ...(files || []).map(file => ({
+        name: file.name,
+        type: file.type,
+        size: file.size,
+      })),
+      ...(workspaceFiles || []).map(file => ({
+        name: file.name,
+        type: file.type,
+        size: file.size,
+        workspacePath: file.path,
+      })),
+    ]
     const userMessage: Message = {
       id: String(now),
       text,
       sender: 'user',
       timestamp: new Date().toLocaleTimeString(),
       rawTimestamp: now,
-      ...(files && files.length > 0 ? {
-        uploadedFiles: files.map(file => ({
-          name: file.name,
-          type: file.type,
-          size: file.size
-        }))
-      } : {})
+      ...(uploadedFiles.length > 0 && { uploadedFiles }),
     }
 
     currentTurnIdRef.current = `turn_${crypto.randomUUID()}`
@@ -544,6 +591,7 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
       ...prev,
       isTyping: true,
       agentStatus: 'thinking',
+      turnPhase: 'submitting',
       latencyMetrics: {
         requestStartTime,
         timeToFirstToken: null,
@@ -576,7 +624,11 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
       }
     }
 
-    const messageToSend = text.trim() || (files && files.length > 0 ? "Please analyze the uploaded file(s)." : "")
+    const messageToSend = text.trim() || (
+      (files && files.length > 0) || (workspaceFiles && workspaceFiles.length > 0)
+        ? "Please analyze the uploaded file(s)."
+        : ""
+    )
 
     // Turn outcome for the queue: the stream closing normally is the only point
     // where flushing the next queued message can be safe. Whether it actually
@@ -600,10 +652,11 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
             interrupt: null,
             pendingOAuth: null
           }))
-          setUIState(prev => ({ ...prev, agentStatus: 'idle', isTyping: false }))
+          setUIState(prev => ({ ...prev, agentStatus: 'idle', isTyping: false, turnPhase: 'idle' }))
         },
         systemPrompt,
-        selectedArtifactId
+        selectedArtifactId,
+        workspaceFiles,
       )
     } finally {
       setIsForegroundRunActive(false)
@@ -639,8 +692,14 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
     retainSession: retainQueueSession,
   } = useMessageQueue({
     send: useCallback(
-      (text, files, systemPrompt, selectedArtifactId) =>
-        sendMessageRef.current(text, files, systemPrompt, selectedArtifactId),
+      (text, files, systemPrompt, selectedArtifactId, workspaceFiles) =>
+        sendMessageRef.current(
+          text,
+          files,
+          systemPrompt,
+          selectedArtifactId,
+          workspaceFiles,
+        ),
       [],
     ),
   })
@@ -653,10 +712,12 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
     files?: File[],
     systemPrompt?: string,
     selectedArtifactId?: string | null,
+    workspaceFiles?: WorkspaceAttachment[],
   ) => {
     enqueue({
       text,
       files: files ?? [],
+      workspaceFiles: workspaceFiles ?? [],
       sessionId,
       systemPrompt,
       selectedArtifactId,
@@ -759,7 +820,7 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
   const resumeCompact = useCallback(async (sid: string, oldEventIds: string[]) => {
     console.log(`[compact] Resuming pending compact for session ${sid} (${oldEventIds.length} events to delete)`)
     setCompactingSessionId(sid)
-    setUIState(prev => ({ ...prev, agentStatus: 'compacting', isTyping: true }))
+    setUIState(prev => ({ ...prev, agentStatus: 'compacting', isTyping: true, turnPhase: 'waiting_for_model' }))
     try {
       await apiCompactSession(oldEventIds)
       console.log('[compact] Resume: events deleted')
@@ -771,7 +832,7 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
       console.warn('[compact] Resume: error during compact resume:', error)
     } finally {
       setCompactingSessionId(null)
-      setUIState(prev => ({ ...prev, agentStatus: 'idle', isTyping: false }))
+      setUIState(prev => ({ ...prev, agentStatus: 'idle', isTyping: false, turnPhase: 'idle' }))
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [apiCompactSession, setUIState, loadSessionWithPreferences])
@@ -781,12 +842,12 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
     if (!currentSessionId) return
 
     setCompactingSessionId(currentSessionId)
-    setUIState(prev => ({ ...prev, agentStatus: 'compacting', isTyping: true }))
+    setUIState(prev => ({ ...prev, agentStatus: 'compacting', isTyping: true, turnPhase: 'waiting_for_model' }))
     try {
       const summary = await apiSummarizeForCompact(messages)
       if (!summary) {
         setCompactingSessionId(null)
-        setUIState(prev => ({ ...prev, agentStatus: 'idle', isTyping: false }))
+        setUIState(prev => ({ ...prev, agentStatus: 'idle', isTyping: false, turnPhase: 'idle' }))
         return
       }
 
@@ -804,7 +865,7 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
         timestamp: new Date().toLocaleTimeString(),
         rawTimestamp: Date.now(),
       }])
-      setUIState(prev => ({ ...prev, agentStatus: 'thinking', isTyping: true }))
+      setUIState(prev => ({ ...prev, agentStatus: 'thinking', isTyping: true, turnPhase: 'submitting' }))
       let summarySent = false
       await apiSendMessage(
         summaryText,
@@ -815,11 +876,11 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
       if (!summarySent) {
         setMessages(prev => prev.filter(m => m.id !== summaryMsgId))
         setCompactingSessionId(null)
-        setUIState(prev => ({ ...prev, agentStatus: 'idle', isTyping: false }))
+        setUIState(prev => ({ ...prev, agentStatus: 'idle', isTyping: false, turnPhase: 'idle' }))
         return
       }
 
-      setUIState(prev => ({ ...prev, agentStatus: 'compacting', isTyping: true }))
+      setUIState(prev => ({ ...prev, agentStatus: 'compacting', isTyping: true, turnPhase: 'waiting_for_model' }))
       localStorage.setItem(getCompactPendingKey(currentSessionId), JSON.stringify({ oldEventIds }))
 
       await apiCompactSession(oldEventIds)
@@ -832,11 +893,11 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
         return summaryIdx >= 0 ? prev.slice(summaryIdx) : prev
       })
       setCompactingSessionId(null)
-      setUIState(prev => ({ ...prev, agentStatus: 'idle', isTyping: false }))
+      setUIState(prev => ({ ...prev, agentStatus: 'idle', isTyping: false, turnPhase: 'idle' }))
     } catch (error) {
       console.error('[compact] Error during compact:', error)
       setCompactingSessionId(null)
-      setUIState(prev => ({ ...prev, agentStatus: 'idle', isTyping: false }))
+      setUIState(prev => ({ ...prev, agentStatus: 'idle', isTyping: false, turnPhase: 'idle' }))
     }
   }, [sessionId, messages, apiSummarizeForCompact, apiListSessionEvents, apiCompactSession, setUIState, apiSendMessage, setMessages])
 
@@ -1208,6 +1269,7 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
     isConnected: uiState.isConnected,
     isTyping: uiState.isTyping,
     agentStatus: uiState.agentStatus,
+    turnPhase: uiState.turnPhase,
     isForegroundRunActive,
     turnControl,
     currentToolExecutions: sessionState.toolExecutions,

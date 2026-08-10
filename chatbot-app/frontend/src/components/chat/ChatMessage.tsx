@@ -5,7 +5,7 @@ import { Message } from '@/types/chat'
 import { Markdown } from '@/components/ui/Markdown'
 import { ToolExecutionContainer } from './ToolExecutionContainer'
 import { LazyImage } from '@/components/ui/LazyImage'
-import { SentFilePreview } from '@/components/ui/file-preview'
+import { SentFilePreview, WorkspaceFilePreview } from '@/components/ui/file-preview'
 
 // Check if this is a compose request JSON (user message to hide)
 const isComposeRequest = (text: string): boolean => {
@@ -126,10 +126,23 @@ export const ChatMessage = React.memo<ChatMessageProps>(({ message, sessionId, o
             {message.uploadedFiles && message.uploadedFiles.length > 0 && (
               <div className="flex flex-wrap gap-2 justify-end">
                 {message.uploadedFiles.map((file, index) => (
-                  <SentFilePreview
-                    key={index}
-                    fileInfo={{ name: file.name, type: file.type, size: file.size }}
-                  />
+                  file.workspacePath ? (
+                    <WorkspaceFilePreview
+                      key={`${file.workspacePath}-${index}`}
+                      compact
+                      fileInfo={{
+                        name: file.name,
+                        type: file.type,
+                        size: file.size,
+                        path: file.workspacePath,
+                      }}
+                    />
+                  ) : (
+                    <SentFilePreview
+                      key={index}
+                      fileInfo={{ name: file.name, type: file.type, size: file.size }}
+                    />
+                  )
                 ))}
               </div>
             )}
