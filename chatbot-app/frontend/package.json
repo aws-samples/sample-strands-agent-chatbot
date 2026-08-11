@@ -122,7 +122,7 @@
     "@types/uuid": "^10.0.0",
     "@vitejs/plugin-react": "^4.5.2",
     "eslint": "^8",
-    "eslint-config-next": "15.4.3",
+    "eslint-config-next": "16.3.0",
     "jsdom": "^30.0.1",
     "postcss": "^8.5.18",
     "tailwind-scrollbar": "^4.0.2",
