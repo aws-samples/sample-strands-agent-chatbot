@@ -134,3 +134,55 @@ describe('useStreamEvents tool input streaming', () => {
     })
   })
 })
+
+describe('useStreamEvents replay deduplication', () => {
+  it('consumes each buffered text event once for the same execution', () => {
+    const hook = setup()
+    const executionId = 'session-1:run-1'
+    const events = [
+      {
+        type: 'RUN_STARTED',
+        threadId: 'session-1',
+        runId: 'run-1',
+        _eventId: 1,
+        _executionId: executionId,
+      },
+      {
+        type: 'TEXT_MESSAGE_START',
+        messageId: 'message-1',
+        role: 'assistant',
+        _eventId: 2,
+        _executionId: executionId,
+      },
+      {
+        type: 'TEXT_MESSAGE_CONTENT',
+        messageId: 'message-1',
+        delta: 'Hello',
+        _eventId: 3,
+        _executionId: executionId,
+      },
+      {
+        type: 'TEXT_MESSAGE_END',
+        messageId: 'message-1',
+        _eventId: 4,
+        _executionId: executionId,
+      },
+    ]
+
+    act(() => {
+      for (const event of events) {
+        hook.result.current.handleStreamEvent(event as any)
+      }
+      for (const replayedEvent of events) {
+        hook.result.current.handleStreamEvent(replayedEvent as any)
+      }
+    })
+
+    expect(hook.result.current.messages).toHaveLength(1)
+    expect(hook.result.current.messages[0]).toMatchObject({
+      id: 'message-1',
+      text: 'Hello',
+      isStreaming: false,
+    })
+  })
+})

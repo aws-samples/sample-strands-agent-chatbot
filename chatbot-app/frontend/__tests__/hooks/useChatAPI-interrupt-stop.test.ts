@@ -14,7 +14,9 @@ import { useChatAPI } from '@/hooks/useChatAPI'
 vi.mock('@/hooks/useSSEReconnect', () => ({
   useSSEReconnect: () => ({
     reset: vi.fn(),
+    detach: vi.fn(),
     onStreamStart: vi.fn(),
+    restoreFromSession: vi.fn().mockReturnValue(false),
     attemptReconnect: vi.fn(),
     isReconnecting: false,
     reconnectAttempt: 0,

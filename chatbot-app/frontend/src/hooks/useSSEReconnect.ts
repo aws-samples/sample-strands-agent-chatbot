@@ -60,6 +60,8 @@ export function useSSEReconnect() {
     isReconnecting: false,
     reconnectAttempt: 0,
   })
+  const reconnectGenerationRef = useRef(0)
+  const activeControllerRef = useRef<AbortController | null>(null)
   const [isReconnecting, setIsReconnecting] = useState(false)
   const [reconnectAttempt, setReconnectAttempt] = useState(0)
 
@@ -74,7 +76,21 @@ export function useSSEReconnect() {
     setReconnectAttempt(0)
   }, [])
 
+  const detach = useCallback(() => {
+    reconnectGenerationRef.current += 1
+    activeControllerRef.current?.abort()
+    activeControllerRef.current = null
+    stateRef.current = {
+      ...stateRef.current,
+      isReconnecting: false,
+      reconnectAttempt: 0,
+    }
+    setIsReconnecting(false)
+    setReconnectAttempt(0)
+  }, [])
+
   const reset = useCallback(() => {
+    detach()
     if (stateRef.current.executionId) {
       clearPersistedExecutionId(stateRef.current.executionId)
     }
@@ -85,19 +101,19 @@ export function useSSEReconnect() {
     }
     setIsReconnecting(false)
     setReconnectAttempt(0)
-  }, [])
+  }, [detach])
 
   /** Restore execution state from sessionStorage (for page refresh). */
   const restoreFromSession = useCallback((sessionId: string): boolean => {
+    detach()
     const executionId = loadPersistedExecutionId(sessionId)
-    if (!executionId) return false
     stateRef.current = {
       executionId,
-      isReconnecting: stateRef.current.isReconnecting,
-      reconnectAttempt: stateRef.current.reconnectAttempt,
+      isReconnecting: false,
+      reconnectAttempt: 0,
     }
-    return true
-  }, [])
+    return executionId !== null
+  }, [detach])
 
   const attemptReconnect = useCallback(async (
     onEvent: (event: AGUIStreamEvent) => void,
@@ -121,9 +137,17 @@ export function useSSEReconnect() {
     stateRef.current.isReconnecting = true
     setIsReconnecting(true)
 
+    const reconnectGeneration = reconnectGenerationRef.current + 1
+    reconnectGenerationRef.current = reconnectGeneration
     let connectedFired = false
 
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      if (
+        reconnectGenerationRef.current !== reconnectGeneration
+        || stateRef.current.executionId !== executionId
+      ) {
+        return
+      }
       stateRef.current.reconnectAttempt = attempt + 1
       stateRef.current.isReconnecting = true
       setReconnectAttempt(attempt + 1)
@@ -134,12 +158,25 @@ export function useSSEReconnect() {
         const baseDelay = Math.min(BASE_DELAY_MS * Math.pow(2, attempt - 1), MAX_DELAY_MS)
         const delay = Math.floor(baseDelay * (0.5 + crypto.getRandomValues(new Uint32Array(1))[0] / 0x100000000 * 0.5)) // lgtm[js/biased-cryptographic-random]
         await new Promise(resolve => setTimeout(resolve, delay))
+        if (
+          reconnectGenerationRef.current !== reconnectGeneration
+          || stateRef.current.executionId !== executionId
+        ) {
+          return
+        }
       }
 
       try {
         // 1. Check execution status via BFF buffer
         const headers = await getAuthHeaders()
+        if (
+          reconnectGenerationRef.current !== reconnectGeneration
+          || stateRef.current.executionId !== executionId
+        ) {
+          return
+        }
         const statusController = new AbortController()
+        activeControllerRef.current = statusController
         const statusTimeout = setTimeout(() => statusController.abort(), FETCH_TIMEOUT_MS)
         let statusData: { status: string }
         try {
@@ -151,6 +188,15 @@ export function useSSEReconnect() {
           statusData = await statusRes.json()
         } finally {
           clearTimeout(statusTimeout)
+          if (activeControllerRef.current === statusController) {
+            activeControllerRef.current = null
+          }
+        }
+        if (
+          reconnectGenerationRef.current !== reconnectGeneration
+          || stateRef.current.executionId !== executionId
+        ) {
+          return
         }
 
         if (statusData.status === 'not_found') {
@@ -160,6 +206,7 @@ export function useSSEReconnect() {
 
         // 2. Resume SSE stream from cursor=0 (full replay from BFF buffer)
         const resumeController = new AbortController()
+        activeControllerRef.current = resumeController
         const resumeTimeout = setTimeout(() => resumeController.abort(), FETCH_TIMEOUT_MS)
         const resumeUrl = `${getApiUrl('stream/resume')}?executionId=${encodeURIComponent(executionId)}&cursor=0`
         let response: Response
@@ -173,11 +220,17 @@ export function useSSEReconnect() {
         }
 
         if (!response.ok) {
+          if (activeControllerRef.current === resumeController) {
+            activeControllerRef.current = null
+          }
           console.warn(`[SSEReconnect] Resume failed with ${response.status}, attempt ${attempt + 1}`)
           continue
         }
 
         if (!response.body) {
+          if (activeControllerRef.current === resumeController) {
+            activeControllerRef.current = null
+          }
           console.warn('[SSEReconnect] No body in resume response')
           continue
         }
@@ -187,32 +240,54 @@ export function useSSEReconnect() {
         const reader = response.body.getReader()
         const decoder = new TextDecoder()
         let buffer = ''
+        let currentEventId: number | null = null
 
         try {
           while (true) {
             const { done, value } = await reader.read()
             if (done) break
+            if (
+              reconnectGenerationRef.current !== reconnectGeneration
+              || stateRef.current.executionId !== executionId
+            ) {
+              await reader.cancel()
+              return
+            }
 
             buffer += decoder.decode(value, { stream: true })
             const lines = buffer.split('\n')
             buffer = lines.pop() || ''
 
             for (const line of lines) {
+              if (line.startsWith('id: ')) {
+                currentEventId = parseInt(line.substring(4), 10)
+                continue
+              }
               if (line.startsWith('data: ')) {
                 try {
                   const eventData = JSON.parse(line.substring(6))
                   // Skip internal metadata events
                   if (eventData.type === 'CUSTOM' && eventData.name === 'execution_meta') {
+                    currentEventId = null
                     continue
                   }
+                  const embeddedEventId = Number(eventData.eventId)
+                  const eventId = currentEventId && currentEventId > 0
+                    ? currentEventId
+                    : embeddedEventId > 0
+                      ? embeddedEventId
+                      : null
+                  if (eventId !== null) {
+                    eventData._eventId = eventId
+                  }
+                  eventData._executionId = executionId
+                  currentEventId = null
                   // Dispatch event
                   if (eventData.type && AGUI_EVENT_TYPES.includes(eventData.type)) {
                     onEvent(eventData as AGUIStreamEvent)
                     // Clear reconnecting badge on first real event
                     if (!connectedFired) {
                       connectedFired = true
-                      stateRef.current.isReconnecting = false
-                      stateRef.current.reconnectAttempt = 0
                       setIsReconnecting(false)
                       setReconnectAttempt(0)
                       onConnected?.()
@@ -226,8 +301,17 @@ export function useSSEReconnect() {
           }
         } finally {
           reader.releaseLock()
+          if (activeControllerRef.current === resumeController) {
+            activeControllerRef.current = null
+          }
         }
 
+        if (
+          reconnectGenerationRef.current !== reconnectGeneration
+          || stateRef.current.executionId !== executionId
+        ) {
+          return
+        }
         // Success — clear persisted executionId
         clearPersistedExecutionId(executionId)
         stateRef.current.isReconnecting = false
@@ -237,6 +321,12 @@ export function useSSEReconnect() {
         onComplete()
         return
       } catch (error) {
+        if (
+          reconnectGenerationRef.current !== reconnectGeneration
+          || stateRef.current.executionId !== executionId
+        ) {
+          return
+        }
         console.warn(`[SSEReconnect] Attempt ${attempt + 1} failed:`, error)
         continue
       }
@@ -255,6 +345,7 @@ export function useSSEReconnect() {
     attemptReconnect,
     restoreFromSession,
     reset,
+    detach,
     isReconnecting,
     reconnectAttempt,
   }

@@ -21,11 +21,12 @@ const streamState: { interrupt: unknown; pendingOAuth: unknown } = {
   interrupt: null,
   pendingOAuth: null,
 }
+const resetStreamingState = vi.fn()
 
 vi.mock('@/hooks/useStreamEvents', () => ({
   useStreamEvents: vi.fn(({ setSessionState }: any) => ({
     handleStreamEvent: vi.fn(),
-    resetStreamingState: vi.fn(),
+    resetStreamingState,
     // Test seam: apply whatever the "backend" reported for this turn.
     __applyStreamState: () => setSessionState((prev: any) => ({ ...prev, ...streamState })),
   })),
@@ -52,6 +53,7 @@ const apiSendMessage = vi.fn(async (...args: SendArgs) => {
 
 const sendStopSignal = vi.fn().mockResolvedValue(true)
 const apiReplayExecution = vi.fn().mockResolvedValue(true)
+const detachStream = vi.fn()
 
 vi.mock('@/hooks/useChatAPI', () => ({
   useChatAPI: vi.fn(() => ({
@@ -62,6 +64,7 @@ vi.mock('@/hooks/useChatAPI', () => ({
     listSessionEvents: vi.fn(),
     sendMessage: apiSendMessage,
     replayExecution: apiReplayExecution,
+    detachStream,
     cleanup: vi.fn(),
     sendStopSignal,
     loadSession: vi.fn().mockResolvedValue({ preferences: null, messages: [] }),
@@ -300,6 +303,23 @@ describe('useChat message queue wiring', () => {
 
     await expect(interruptPromise!).resolves.toBe(false)
     expect(sentTexts()).toEqual([])
+  })
+
+  it('detaches and resets streaming consumers on every session transition', async () => {
+    const { result } = await mount()
+    const originalSessionId = result.current.sessionId
+    detachStream.mockClear()
+    resetStreamingState.mockClear()
+
+    await act(async () => {
+      await result.current.loadSession('different-session')
+    })
+    await act(async () => {
+      await result.current.loadSession(originalSessionId)
+    })
+
+    expect(detachStream).toHaveBeenCalledTimes(2)
+    expect(resetStreamingState).toHaveBeenCalledTimes(2)
   })
 
   it('sends the held message once the user confirms', async () => {
