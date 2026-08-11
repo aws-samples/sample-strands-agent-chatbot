@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
-from typing import Optional
+from typing import Literal, Optional
 
 from strands import ToolContext, tool
 
+from agent.config.model_catalog import normalize_task_complexity
 from agent.delegation_jobs import (
     cancel_job,
     list_jobs,
@@ -115,6 +116,7 @@ def delegate_task(
     constraints: Optional[list[str]] = None,
     context_summary: str = "",
     max_seconds: int = 600,
+    task_complexity: Optional[Literal["low", "medium", "high"]] = None,
     tool_context: ToolContext = None,
 ) -> str:
     """Delegate one independent, scoped task to an asynchronous specialist.
@@ -131,6 +133,9 @@ def delegate_task(
         constraints: Explicit non-goals or restrictions.
         context_summary: Minimal task-local context, never the full conversation.
         max_seconds: Execution deadline from 30 to 1800 seconds.
+        task_complexity: Optional model tier: low, medium, or high. Anthropic
+            and OpenAI parent models use the matching catalog tier; other
+            providers keep the parent model.
     """
     if profile not in {"analyst", "reviewer"}:
         raise ValueError("profile must be analyst or reviewer")
@@ -140,8 +145,9 @@ def delegate_task(
     session_id, user_id, run_id, tool_use_id, model_id, _auth_token = _context(
         tool_context
     )
+    complexity = normalize_task_complexity(task_complexity)
     request = {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "goal": _bounded_text(goal, _MAX_GOAL_CHARS, "goal"),
         "deliverable": _bounded_text(
             deliverable,
@@ -159,6 +165,7 @@ def delegate_task(
             if context_summary.strip()
             else ""
         ),
+        "taskComplexity": complexity or "",
         "budget": {
             "maxSeconds": int(max_seconds),
             "maxToolCalls": 20 if profile == "analyst" else 12,

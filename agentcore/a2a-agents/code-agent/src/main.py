@@ -42,6 +42,7 @@ from claude_agent_sdk import (
     ProcessError,
     CLIJSONDecodeError,
 )
+from .model_runtime import effective_model_id, needs_model_switch
 from .session_workspace import restore_s3_prefix, sync_session_inputs
 
 # Claude Agent SDK cannot run inside an existing Claude Code session.
@@ -71,12 +72,13 @@ PORT = int(os.getenv("PORT", "9000"))
 PROJECT_NAME = os.getenv("PROJECT_NAME", "strands-agent-chatbot")
 ENVIRONMENT = os.getenv("ENVIRONMENT", "dev")
 WORKSPACE_BASE = os.getenv("WORKSPACE_BASE", "/tmp/workspaces")
-CODE_AGENT_MODEL_ID = os.getenv(
-    "CODE_AGENT_MODEL_ID",
-    os.getenv("ANTHROPIC_MODEL", "us.anthropic.claude-sonnet-5"),
+CODE_AGENT_MODEL_ID = os.getenv("CODE_AGENT_MODEL_ID") or os.getenv(
+    "ANTHROPIC_MODEL"
 )
-# Claude Code reads this variable when its subprocess starts. Set it once at
-# process startup; mutating it per request would race across concurrent users.
+if not CODE_AGENT_MODEL_ID:
+    raise RuntimeError("CODE_AGENT_MODEL_ID or ANTHROPIC_MODEL is required")
+# Keep a process default for direct calls. A2A requests pass an explicit model
+# through ClaudeAgentOptions so concurrent sessions do not mutate global state.
 os.environ["ANTHROPIC_MODEL"] = CODE_AGENT_MODEL_ID
 
 
@@ -130,6 +132,7 @@ _sdk_sessions: dict = {}
 # In-memory map: "{user_id}-{session_id}" → ClaudeSDKClient instance
 # Keeps the Claude Code subprocess alive across A2A task calls (warm start)
 _sdk_clients: dict[str, ClaudeSDKClient] = {}
+_sdk_client_models: dict[str, str] = {}
 
 # In-memory map: a2a task_id → asyncio.Event
 # Set by cancel() to signal execute() to stop consuming messages gracefully
@@ -348,6 +351,7 @@ def _build_client_options(
     sdk_session_id: Optional[str] = None,
     workspace: Optional[Path] = None,
     max_turns: int = 100,
+    model_id: Optional[str] = None,
 ) -> ClaudeAgentOptions:
     """Build ClaudeAgentOptions with common settings."""
     return ClaudeAgentOptions(
@@ -358,12 +362,14 @@ def _build_client_options(
         system_prompt={"type": "preset", "preset": "claude_code"},
         setting_sources=["user", "project"],
         max_turns=max_turns,
+        model=model_id,
     )
 
 
 async def _get_or_create_client(
     sdk_key: str,
     options: ClaudeAgentOptions,
+    model_id: str,
 ) -> ClaudeSDKClient:
     """Get an existing connected client or create a new one.
 
@@ -372,10 +378,35 @@ async def _get_or_create_client(
     """
     existing = _sdk_clients.get(sdk_key)
     if existing and existing._query is not None:
-        logger.info(f"[Client] Reusing existing client for {sdk_key}")
-        return existing
+        cached_model_id = _sdk_client_models.get(sdk_key, "")
+        if needs_model_switch(cached_model_id, model_id):
+            try:
+                await existing.set_model(model_id)
+                _sdk_client_models[sdk_key] = model_id
+                logger.info(
+                    "[Client] Switched model for %s from %s to %s",
+                    sdk_key,
+                    cached_model_id,
+                    model_id,
+                )
+            except Exception:
+                logger.exception(
+                    "[Client] Model switch failed for %s; recreating client",
+                    sdk_key,
+                )
+                try:
+                    await existing.disconnect()
+                except Exception:
+                    pass
+                _sdk_clients.pop(sdk_key, None)
+                _sdk_client_models.pop(sdk_key, None)
+            else:
+                return existing
+        else:
+            logger.info(f"[Client] Reusing existing client for {sdk_key}")
+            return existing
 
-    # Discard stale client if any
+    existing = _sdk_clients.get(sdk_key)
     if existing:
         logger.info(f"[Client] Discarding disconnected client for {sdk_key}")
         try:
@@ -383,18 +414,21 @@ async def _get_or_create_client(
         except Exception:
             pass
         _sdk_clients.pop(sdk_key, None)
+        _sdk_client_models.pop(sdk_key, None)
 
     # Create and connect new client
     client = ClaudeSDKClient(options=options)
     await client.connect()
     _sdk_clients[sdk_key] = client
-    logger.info(f"[Client] Created new client for {sdk_key}")
+    _sdk_client_models[sdk_key] = model_id
+    logger.info(f"[Client] Created new client for {sdk_key} with model {model_id}")
     return client
 
 
 async def _disconnect_client(sdk_key: str) -> None:
     """Disconnect and remove a cached client."""
     client = _sdk_clients.pop(sdk_key, None)
+    _sdk_client_models.pop(sdk_key, None)
     if client:
         try:
             await client.disconnect()
@@ -458,11 +492,12 @@ class ClaudeCodeExecutor(AgentExecutor):
         user_id = metadata.get("user_id", "default_user")
 
         orchestrator_model_id = metadata.get("orchestrator_model_id")
+        model_id = effective_model_id(metadata, CODE_AGENT_MODEL_ID)
         logger.info(
             "[ClaudeCodeExecutor] session=%s, user=%s, model=%s, orchestrator_model=%s",
             session_id,
             user_id,
-            CODE_AGENT_MODEL_ID,
+            model_id,
             orchestrator_model_id,
         )
         logger.info(f"[ClaudeCodeExecutor] task={task_text[:200]}")
@@ -539,9 +574,13 @@ class ClaudeCodeExecutor(AgentExecutor):
         last_todos: list = []        # most recent TodoWrite state
 
         # --- Get or create streaming client ---
-        options = _build_client_options(sdk_session_id, workspace)
+        options = _build_client_options(
+            sdk_session_id,
+            workspace,
+            model_id=model_id,
+        )
         try:
-            client = await _get_or_create_client(sdk_key, options)
+            client = await _get_or_create_client(sdk_key, options, model_id)
         except CLINotFoundError as e:
             logger.exception("[ClaudeCodeExecutor] Claude CLI not found — check container setup")
             await updater.add_artifact(

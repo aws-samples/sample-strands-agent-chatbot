@@ -1,0 +1,197 @@
+{
+  "schemaVersion": 1,
+  "revision": "2026-08-11.1",
+  "providerMatchers": {
+    "anthropic": [
+      "anthropic.",
+      ".anthropic."
+    ],
+    "openai": [
+      "openai."
+    ]
+  },
+  "familyMatchers": {
+    "claude": [
+      "anthropic.claude-",
+      ".anthropic.claude-"
+    ],
+    "gpt": [
+      "openai.gpt-"
+    ]
+  },
+  "models": {
+    "claude.opus.latest": {
+      "id": "us.anthropic.claude-opus-5",
+      "provider": "anthropic",
+      "family": "claude",
+      "transport": "bedrock",
+      "maxInputTokens": 1000000,
+      "rejectsTemperature": true
+    },
+    "claude.sonnet.latest": {
+      "id": "us.anthropic.claude-sonnet-5",
+      "provider": "anthropic",
+      "family": "claude",
+      "transport": "bedrock",
+      "maxInputTokens": 1000000,
+      "rejectsTemperature": true
+    },
+    "claude.haiku.latest": {
+      "id": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+      "provider": "anthropic",
+      "family": "claude",
+      "transport": "bedrock",
+      "maxInputTokens": 200000,
+      "rejectsTemperature": false
+    },
+    "gpt.sol.latest": {
+      "id": "openai.gpt-5.6-sol",
+      "provider": "openai",
+      "family": "gpt",
+      "transport": "mantle_responses",
+      "region": "us-east-1",
+      "maxInputTokens": 1050000,
+      "rejectsTemperature": true
+    },
+    "gpt.terra.latest": {
+      "id": "openai.gpt-5.6-terra",
+      "provider": "openai",
+      "family": "gpt",
+      "transport": "mantle_responses",
+      "region": "us-east-1",
+      "maxInputTokens": 1050000,
+      "rejectsTemperature": true
+    },
+    "gpt.luna.latest": {
+      "id": "openai.gpt-5.6-luna",
+      "provider": "openai",
+      "family": "gpt",
+      "transport": "mantle_responses",
+      "region": "us-east-1",
+      "maxInputTokens": 1050000,
+      "rejectsTemperature": true
+    },
+    "gpt.oss.120b": {
+      "id": "openai.gpt-oss-120b-1:0",
+      "provider": "openai",
+      "family": "gpt-oss",
+      "transport": "bedrock",
+      "maxInputTokens": 131072,
+      "rejectsTemperature": false
+    },
+    "grok.latest": {
+      "id": "xai.grok-4.3",
+      "provider": "xai",
+      "family": "grok",
+      "transport": "mantle_responses",
+      "region": "us-west-2",
+      "maxInputTokens": 1048576,
+      "rejectsTemperature": false
+    },
+    "gemma.31b.latest": {
+      "id": "google.gemma-4-31b",
+      "provider": "google",
+      "family": "gemma",
+      "transport": "mantle_responses",
+      "region": "us-east-2",
+      "maxInputTokens": 262144,
+      "rejectsTemperature": false
+    },
+    "gemma.26b.latest": {
+      "id": "google.gemma-4-26b-a4b",
+      "provider": "google",
+      "family": "gemma",
+      "transport": "mantle_responses",
+      "region": "us-east-2",
+      "maxInputTokens": 262144,
+      "rejectsTemperature": false
+    },
+    "gemma.e2b.latest": {
+      "id": "google.gemma-4-e2b",
+      "provider": "google",
+      "family": "gemma",
+      "transport": "mantle_responses",
+      "region": "us-east-2",
+      "maxInputTokens": 131072,
+      "rejectsTemperature": false
+    },
+    "deepseek.v3.latest": {
+      "id": "deepseek.v3.2",
+      "provider": "deepseek",
+      "family": "deepseek",
+      "transport": "bedrock",
+      "maxInputTokens": 163840,
+      "rejectsTemperature": false
+    },
+    "glm.5.latest": {
+      "id": "zai.glm-5",
+      "provider": "zai",
+      "family": "glm",
+      "transport": "bedrock",
+      "maxInputTokens": 202752,
+      "rejectsTemperature": false
+    },
+    "glm.4.7": {
+      "id": "zai.glm-4.7",
+      "provider": "zai",
+      "family": "glm",
+      "transport": "bedrock",
+      "maxInputTokens": 202752,
+      "rejectsTemperature": false
+    },
+    "kimi.k2.5": {
+      "id": "moonshotai.kimi-k2.5",
+      "provider": "moonshotai",
+      "family": "kimi",
+      "transport": "bedrock",
+      "maxInputTokens": 262144,
+      "rejectsTemperature": false
+    },
+    "minimax.m2.5": {
+      "id": "minimax.minimax-m2.5",
+      "provider": "minimax",
+      "family": "minimax",
+      "transport": "bedrock",
+      "maxInputTokens": 196608,
+      "rejectsTemperature": false
+    },
+    "qwen.235b": {
+      "id": "qwen.qwen3-235b-a22b-2507-v1:0",
+      "provider": "qwen",
+      "family": "qwen",
+      "transport": "bedrock",
+      "region": "us-west-2",
+      "maxInputTokens": 262144,
+      "rejectsTemperature": false
+    },
+    "mistral.large.latest": {
+      "id": "mistral.mistral-large-3-675b-instruct",
+      "provider": "mistral",
+      "family": "mistral-large",
+      "transport": "bedrock",
+      "maxInputTokens": 262144,
+      "rejectsTemperature": false
+    }
+  },
+  "selectionPolicies": {
+    "general_subagent": {
+      "claude": {
+        "low": "claude.haiku.latest",
+        "medium": "claude.sonnet.latest",
+        "high": "claude.opus.latest"
+      },
+      "gpt": {
+        "low": "gpt.luna.latest",
+        "medium": "gpt.terra.latest",
+        "high": "gpt.sol.latest"
+      }
+    },
+    "code_agent": {
+      "claude": {
+        "low": "claude.haiku.latest",
+        "medium": "claude.sonnet.latest",
+        "high": "claude.opus.latest"
+      }
+    }
+  }
+}

@@ -21,6 +21,7 @@ from typing import Optional
 import boto3
 from strands.models import BedrockModel, CacheConfig
 
+from agent.config.model_catalog import get_model_catalog
 # Re-exported for callers that already reach for model_factory. The registry
 # itself lives in its own module so the session manager can size compaction
 # without importing the agent stack.
@@ -31,19 +32,17 @@ from agent.config.model_context_windows import (  # noqa: F401
 )
 
 logger = logging.getLogger(__name__)
+_MODEL_CATALOG = get_model_catalog()
 
 
 # Reasoning models that reject the `temperature` inference param. Listed by
 # exact ID rather than substring: a substring like "opus-5" also matches
-# "opus-4-5", which does accept temperature. Add an entry when a model is added
-# to the picker.
-NO_TEMPERATURE_MODELS = frozenset({
-    "us.anthropic.claude-opus-5",
-    "us.anthropic.claude-sonnet-5",
-    "openai.gpt-5.6-sol",
-    "openai.gpt-5.6-terra",
-    "openai.gpt-5.6-luna",
-})
+# "opus-4-5", which does accept temperature. Values come from the model catalog.
+NO_TEMPERATURE_MODELS = frozenset(
+    spec.model_id
+    for spec in _MODEL_CATALOG.models.values()
+    if spec.rejects_temperature
+)
 
 
 @dataclass(frozen=True)
@@ -59,28 +58,24 @@ class MantleSpec:
 
 
 # Mantle-only models (not callable via native Bedrock Converse). Anything not
-# listed here falls back to BedrockModel. The region is pinned per model: a
+# registered there falls back to BedrockModel. The region is pinned per model: a
 # Mantle model is only served in some regions (grok-4.3 in us-west-2, gpt-5.6
 # in us-east-1), so the base_url region is forced independent of where the
 # app is deployed.
 MANTLE_MODELS: dict[str, MantleSpec] = {
-    "openai.gpt-5.6-sol": MantleSpec(api="responses", region="us-east-1"),
-    "openai.gpt-5.6-terra": MantleSpec(api="responses", region="us-east-1"),
-    "openai.gpt-5.6-luna": MantleSpec(api="responses", region="us-east-1"),
-    "xai.grok-4.3": MantleSpec(api="responses", region="us-west-2"),
-    "google.gemma-4-31b": MantleSpec(api="responses", region="us-east-2"),
-    "google.gemma-4-26b-a4b": MantleSpec(api="responses", region="us-east-2"),
-    "google.gemma-4-e2b": MantleSpec(api="responses", region="us-east-2"),
+    spec.model_id: MantleSpec(api="responses", region=str(spec.region))
+    for spec in _MODEL_CATALOG.models.values()
+    if spec.transport == "mantle_responses"
 }
 
 
 # Native Bedrock models that are NOT available in every region. Selecting one of
-# these forces the BedrockModel client to the listed region, overriding the
-# app's deployment region (AWS_REGION). Models available everywhere are omitted
-# and use the default region. Keep in sync with regional Converse availability.
+# catalog entry with a native region forces BedrockModel to that region,
+# overriding the app's deployment region. Models available everywhere omit it.
 NATIVE_MODEL_REGION_OVERRIDES: dict[str, str] = {
-    # qwen3-235b is absent in us-east-1; pin to us-west-2 which serves it.
-    "qwen.qwen3-235b-a22b-2507-v1:0": "us-west-2",
+    spec.model_id: str(spec.region)
+    for spec in _MODEL_CATALOG.models.values()
+    if spec.transport == "bedrock" and spec.region
 }
 
 

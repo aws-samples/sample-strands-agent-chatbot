@@ -20,6 +20,7 @@ from strands.multiagent.a2a import A2AServer
 from strands.multiagent.a2a.executor import StrandsA2AExecutor
 
 from agent import async_tasks
+from agent.config.model_catalog import get_model_catalog
 from agents.model_factory import build_model
 from builtin_tools.code_interpreter_tool import execute_code, file_operations
 from local_tools.workspace import workspace_list, workspace_read, workspace_write
@@ -31,9 +32,16 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 PORT = int(os.environ.get("PORT", "9000"))
+_DEFAULT_SUBAGENT_SPEC = get_model_catalog().resolve(
+    "general_subagent",
+    "claude",
+    "medium",
+)
+if _DEFAULT_SUBAGENT_SPEC is None:
+    raise RuntimeError("Model catalog is missing general_subagent/claude/medium")
 DEFAULT_MODEL_ID = os.environ.get(
     "MODEL_ID",
-    "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+    _DEFAULT_SUBAGENT_SPEC.model_id,
 )
 
 

@@ -205,6 +205,33 @@ def test_unknown_profile_is_rejected():
         )
 
 
+def test_start_job_resolves_and_persists_model_selection(monkeypatch):
+    async def run_stub(_record, _factory):
+        return None
+
+    monkeypatch.setattr(delegation_jobs, "_run", run_stub)
+    request = {
+        **_request(),
+        "schemaVersion": 2,
+        "taskComplexity": "high",
+    }
+    receipt = delegation_jobs.start_job(
+        user_id="u1",
+        session_id="s1",
+        idempotency_key="s1:r1:t1",
+        profile="analyst",
+        request=request,
+        model_id="openai.gpt-5.6-terra",
+    )
+
+    record = delegation_jobs.get_job("u1", "s1", receipt.job_id)
+    assert record["parentModelId"] == "openai.gpt-5.6-terra"
+    assert record["modelId"] == "openai.gpt-5.6-sol"
+    assert record["modelSelection"]["taskComplexity"] == "high"
+    assert record["modelSelection"]["catalogRevision"] == "2026-08-11.1"
+    assert record["modelSelection"]["applied"] is True
+
+
 def test_local_storage_rejects_path_traversal():
     with pytest.raises(ValueError, match="Invalid local delegation session ID"):
         delegation_jobs.get_job("u1", "../outside", "job1")

@@ -56,9 +56,17 @@ variable "code_interpreter_private_subnets" {
 }
 
 variable "code_agent_model_id" {
-  description = "Claude model used by the Claude Agent SDK based Code Agent."
+  description = "Optional Code Agent fallback model override. Empty uses the catalog's code_agent/claude/medium model."
   type        = string
-  default     = "us.anthropic.claude-sonnet-5"
+  default     = ""
+
+  validation {
+    condition = (
+      var.code_agent_model_id == ""
+      || can(regex("(^|\\.)anthropic\\.claude-", var.code_agent_model_id))
+    )
+    error_message = "code_agent_model_id must be empty or a Claude model ID."
+  }
 }
 
 variable "research_agent_default_model_id" {
@@ -68,9 +76,9 @@ variable "research_agent_default_model_id" {
 }
 
 variable "general_subagent_default_model_id" {
-  description = "Fallback model for isolated analyst and reviewer delegations."
+  description = "Optional isolated subagent fallback override. Empty uses the catalog's general_subagent/claude/medium model."
   type        = string
-  default     = "us.anthropic.claude-sonnet-5"
+  default     = ""
 }
 
 variable "google_oauth_client_id" {

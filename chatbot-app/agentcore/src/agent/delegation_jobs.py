@@ -27,6 +27,7 @@ import boto3
 from boto3.dynamodb.conditions import Key
 
 from agent import async_tasks
+from agent.config.model_catalog import resolve_general_subagent_model
 from agent.factory.session_manager_factory import get_sessions_dir
 
 logger = logging.getLogger(__name__)
@@ -606,6 +607,7 @@ def _event_factory(record: dict[str, Any]) -> EventFactory:
         "session_id": record["sessionId"],
         "user_id": record["userId"],
         "model_id": record.get("modelId", ""),
+        "task_complexity": request.get("taskComplexity", ""),
         "workspace_paths": request.get("workspacePaths", []),
         "output_path": f"outputs/delegations/{record['jobId']}",
         "max_seconds": int(
@@ -820,6 +822,10 @@ def start_job(
     if profile not in _ALLOWED_PROFILES:
         raise ValueError(f"Unsupported delegation profile: {profile}")
 
+    model_selection = resolve_general_subagent_model(
+        model_id,
+        request.get("taskComplexity"),
+    )
     job_id = job_id_for(idempotency_key)
     existing = get_job(user_id, session_id, job_id)
     expected_hash = request_hash(request)
@@ -865,7 +871,9 @@ def start_job(
         "idempotencyKey": idempotency_key,
         "parentRunId": parent_run_id,
         "parentToolUseId": parent_tool_use_id,
-        "modelId": model_id,
+        "parentModelId": model_id,
+        "modelId": model_selection.effective_model_id,
+        "modelSelection": model_selection.as_record(),
         "conversationEpoch": conversation_epoch,
         "executionStatus": "queued",
         "workStatus": "queued",

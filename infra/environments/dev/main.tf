@@ -1,8 +1,25 @@
 data "aws_caller_identity" "current" {}
 
 locals {
-  account_id = data.aws_caller_identity.current.account_id
-  root_dir   = abspath("${path.module}/../../..")
+  account_id    = data.aws_caller_identity.current.account_id
+  root_dir      = abspath("${path.module}/../../..")
+  model_catalog = jsondecode(file("${local.root_dir}/chatbot-app/agentcore/config/model-catalog.json"))
+  code_agent_default_model_key = (
+    local.model_catalog.selectionPolicies.code_agent.claude.medium
+  )
+  code_agent_default_model_id = (
+    var.code_agent_model_id != ""
+    ? var.code_agent_model_id
+    : local.model_catalog.models[local.code_agent_default_model_key].id
+  )
+  general_subagent_default_model_key = (
+    local.model_catalog.selectionPolicies.general_subagent.claude.medium
+  )
+  general_subagent_default_model_id = (
+    var.general_subagent_default_model_id != ""
+    ? var.general_subagent_default_model_id
+    : local.model_catalog.models[local.general_subagent_default_model_key].id
+  )
 }
 
 module "auth" {
@@ -267,8 +284,8 @@ module "runtime_code_agent" {
 
   extra_env_vars = {
     CLAUDE_CODE_USE_BEDROCK = "1"
-    ANTHROPIC_MODEL         = var.code_agent_model_id
-    CODE_AGENT_MODEL_ID     = var.code_agent_model_id
+    ANTHROPIC_MODEL         = local.code_agent_default_model_id
+    CODE_AGENT_MODEL_ID     = local.code_agent_default_model_id
   }
 
   depends_on = [module.auth, aws_s3_bucket.artifacts, module.agentcore_shared]
@@ -353,7 +370,7 @@ module "runtime_general_subagent" {
   extra_env_vars = merge(
     {
       CODE_INTERPRETER_ID      = module.agentcore_shared.code_interpreter_id
-      MODEL_ID                 = var.general_subagent_default_model_id
+      MODEL_ID                 = local.general_subagent_default_model_id
       S3_FILES_FILE_SYSTEM_ID  = var.enable_s3_files_workspace ? module.session_workspace[0].file_system_id : ""
       S3_FILES_FILE_SYSTEM_ARN = var.enable_s3_files_workspace ? module.session_workspace[0].file_system_arn : ""
       S3_FILES_MOUNT_PATH      = "/mnt/workspace"

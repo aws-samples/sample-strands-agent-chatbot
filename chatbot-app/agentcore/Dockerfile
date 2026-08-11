@@ -31,6 +31,7 @@ RUN pip install --no-cache-dir --no-deps nova-act==3.1.263
 # Copy application code and skill definitions
 COPY src/ ./src/
 COPY skills/ ./skills/
+COPY config/ ./config/
 
 # Expose port (AgentCore Runtime will map this)
 EXPOSE 8080

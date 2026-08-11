@@ -10,7 +10,7 @@ Based on: amazon-bedrock-agentcore-samples orchestrator pattern
 import logging
 import os
 import asyncio
-from typing import Optional, Dict, Any, AsyncGenerator
+from typing import Optional, Dict, Any, AsyncGenerator, Literal
 from uuid import uuid4
 from strands.tools import tool
 from strands.types.tools import ToolContext
@@ -19,6 +19,7 @@ import httpx
 from a2a.client import ClientConfig, ClientFactory
 from a2a.types import Message, Part, Role, TextPart, AgentCard
 
+from agent.config.model_catalog import resolve_code_agent_model
 from agent.mcp.client import BearerAuth
 from a2a_response import A2ATextAccumulator
 
@@ -418,7 +419,13 @@ def create_a2a_tool(agent_id: str):
     # Create different tool implementations based on agent type
     if "code" in agent_id:
         # Code Agent - task parameter, streams code_step events
-        async def tool_impl(task: str, reset_session: bool = False, compact_session: bool = False, tool_context: ToolContext = None) -> AsyncGenerator[Dict[str, Any], None]:
+        async def tool_impl(
+            task: str,
+            task_complexity: Literal["low", "medium", "high"] = "medium",
+            reset_session: bool = False,
+            compact_session: bool = False,
+            tool_context: ToolContext = None,
+        ) -> AsyncGenerator[Dict[str, Any], None]:
             """
             task: The coding task to delegate.
             reset_session: Set True to clear conversation history and start fresh
@@ -427,16 +434,20 @@ def create_a2a_tool(agent_id: str):
             compact_session: Set True to summarise conversation history before
                              running the task (equivalent to /compact in Claude Code).
                              Useful when prior context is long but still relevant.
+            task_complexity: Claude model tier: low, medium, or high.
             """
             session_id, user_id, model_id, _auth_token = extract_context(tool_context)
+            model_selection = resolve_code_agent_model(task_complexity)
 
             metadata = {
                 "session_id": session_id,
                 "user_id": user_id,
                 "source": "main_agent",
                 # Claude Agent SDK has its own provider-specific model setting.
-                # Keep the orchestrator model only for diagnostics.
+                "model_id": model_selection.effective_model_id,
                 "orchestrator_model_id": model_id,
+                "task_complexity": model_selection.task_complexity,
+                "model_selection": model_selection.as_record(),
                 "reset_session": reset_session,
                 "compact_session": compact_session,
             }
@@ -473,7 +484,14 @@ def create_a2a_tool(agent_id: str):
                 tool_context.invocation_state.pop("_a2a_partial_progress", None)
 
         tool_impl.__name__ = correct_name
-        tool_impl.__doc__ = agent_description
+        tool_impl.__doc__ = f"""{agent_description}
+
+        Args:
+            task: The coding task to delegate.
+            task_complexity: Claude model tier: low, medium, or high.
+            reset_session: Clear conversation history while preserving files.
+            compact_session: Compact prior conversation before the task.
+        """
         agent_tool = tool(context=True)(tool_impl)
         agent_tool._skill_name = skill_name
 

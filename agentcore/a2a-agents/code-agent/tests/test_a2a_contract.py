@@ -7,6 +7,7 @@ invocations and format tool progress steps — no SDK or AWS calls required.
 import re
 from unittest.mock import MagicMock
 
+from src.model_runtime import effective_model_id, needs_model_switch
 
 # ============================================================
 # Helpers replicated from main.py (pure functions, no deps)
@@ -215,6 +216,24 @@ class TestExtractMetadata:
         }
         assert _extract_metadata(ctx)["orchestrator_model_id"] == "openai.gpt-5.6-terra"
         assert "model_id" not in _extract_metadata(ctx)
+
+
+class TestModelRuntime:
+    def test_request_model_overrides_process_default(self):
+        assert effective_model_id(
+            {"model_id": "us.anthropic.claude-opus-5"},
+            "us.anthropic.claude-sonnet-5",
+        ) == "us.anthropic.claude-opus-5"
+
+    def test_missing_request_model_uses_process_default(self):
+        assert effective_model_id(
+            {},
+            "us.anthropic.claude-sonnet-5",
+        ) == "us.anthropic.claude-sonnet-5"
+
+    def test_model_switch_only_when_requested_model_changes(self):
+        assert not needs_model_switch("sonnet", "sonnet")
+        assert needs_model_switch("sonnet", "opus")
 
 
 # ============================================================

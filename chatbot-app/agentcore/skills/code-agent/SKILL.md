@@ -81,18 +81,20 @@ The goal is to deliver the best possible result with minimal friction. The key i
 
 ### Simple tasks — delegate directly in one call:
 
-    code_agent(task="Fix the typo in src/config.ts line 42: 'recieve' → 'receive'")
+    code_agent(task="Fix the typo in src/config.ts line 42: 'recieve' → 'receive'",
+      task_complexity="low")
 
 ### Medium tasks — delegate with clear scope, let the agent plan internally:
 
     code_agent(task="Add input validation to the /api/users endpoint.
-      Validate email format and required fields. Add tests.")
+      Validate email format and required fields. Add tests.",
+      task_complexity="medium")
 
 ### Complex tasks — break into phases, steer between turns:
 
     # Turn 1: Explore & plan
     code_agent(task="Explore how auth works and propose a plan for adding JWT.
-      Do NOT modify files yet.")
+      Do NOT modify files yet.", task_complexity="high")
 
     # Review the plan the agent returns — does the approach make sense?
 
