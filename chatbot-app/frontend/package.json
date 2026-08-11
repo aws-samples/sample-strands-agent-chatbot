@@ -18,13 +18,13 @@
     "@ag-ui/core": "^0.0.57",
     "@aws-amplify/ui-react": "^6.15.5",
     "@aws-crypto/sha256-js": "^5.2.0",
-    "@aws-sdk/client-bedrock-agentcore": "^3.1101.0",
-    "@aws-sdk/client-dynamodb": "^3.1101.0",
-    "@aws-sdk/client-s3": "^3.1101.0",
+    "@aws-sdk/client-bedrock-agentcore": "^3.1106.0",
+    "@aws-sdk/client-dynamodb": "^3.1106.0",
+    "@aws-sdk/client-s3": "^3.1106.0",
     "@aws-sdk/client-s3files": "^3.1106.0",
-    "@aws-sdk/client-ssm": "^3.1101.0",
-    "@aws-sdk/credential-providers": "^3.1101.0",
-    "@aws-sdk/s3-request-presigner": "^3.1101.0",
+    "@aws-sdk/client-ssm": "^3.1106.0",
+    "@aws-sdk/credential-providers": "^3.1106.0",
+    "@aws-sdk/s3-request-presigner": "^3.1106.0",
     "@aws-sdk/util-dynamodb": "^3.996.7",
     "@excalidraw/excalidraw": "^0.18.1",
     "@radix-ui/react-avatar": "^1.2.6",
@@ -54,9 +54,9 @@
     "jszip": "^3.10.1",
     "katex": "^0.18.1",
     "lodash": "^4.18.1",
-    "lucide-react": "^1.28.0",
-    "marked": "^18.0.7",
-    "next": "^16.2.12",
+    "lucide-react": "^1.30.0",
+    "marked": "^18.0.9",
+    "next": "^16.3.0",
     "next-themes": "^0.4.6",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
@@ -69,7 +69,7 @@
     "remark-gfm": "^4.0.1",
     "remark-math": "^6.0.0",
     "sharp": "^0.35.3",
-    "swr": "^2.4.2",
+    "swr": "^2.5.0",
     "tailwind-merge": "^2.0.0",
     "tailwindcss-animate": "^1.0.7",
     "uuid": "^14.0.1",
@@ -112,7 +112,7 @@
     }
   },
   "devDependencies": {
-    "@next/bundle-analyzer": "^16.2.12",
+    "@next/bundle-analyzer": "^16.3.0",
     "@tailwindcss/postcss": "^4.3.3",
     "@testing-library/jest-dom": "^7.0.0",
     "@testing-library/react": "^16.3.2",
@@ -130,6 +130,6 @@
     "tailwindcss-animate": "^1.0.7",
     "typescript": "^5",
     "vitest": "^3.2.6",
-    "ws": "^8.21.1"
+    "ws": "^8.21.3"
   }
 }
