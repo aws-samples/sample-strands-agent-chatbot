@@ -86,6 +86,31 @@ def delegation_sqs_record(
     return item
 
 
+def research_record(
+    event_id: str,
+    *,
+    job_id: str = "research-1",
+):
+    item = delegation_record(event_id, job_id=job_id)
+    item["dynamodb"]["NewImage"]["recordType"] = {"S": "RESEARCH_JOB"}
+    return item
+
+
+def research_sqs_record(
+    message_id: str,
+    *,
+    job_id: str = "research-1",
+):
+    item = sqs_record(message_id)
+    item["body"] = json.dumps({
+        "kind": "research",
+        "userId": "user-1",
+        "sessionId": "session-1",
+        "jobId": job_id,
+    })
+    return item
+
+
 def test_coalesces_multiple_inserts_for_one_session(monkeypatch):
     enqueue = MagicMock()
     monkeypatch.setattr(lambda_function, "_enqueue_wake", enqueue)
@@ -167,10 +192,37 @@ def test_sqs_worker_starts_delegation(monkeypatch):
     start.assert_called_once_with("user-1", "session-1", "job-1")
 
 
+def test_stream_enqueues_research_job(monkeypatch):
+    enqueue = MagicMock()
+    monkeypatch.setattr(lambda_function, "_enqueue_research", enqueue)
+
+    result = lambda_function.lambda_handler(
+        {"Records": [research_record("stream-1")]},
+        None,
+    )
+
+    assert result == {"batchItemFailures": []}
+    enqueue.assert_called_once_with("user-1", "session-1", "research-1")
+
+
+def test_sqs_worker_starts_research(monkeypatch):
+    start = MagicMock()
+    monkeypatch.setattr(lambda_function, "_start_research", start)
+
+    result = lambda_function.lambda_handler(
+        {"Records": [research_sqs_record("message-1")]},
+        None,
+    )
+
+    assert result == {"batchItemFailures": []}
+    start.assert_called_once_with("user-1", "session-1", "research-1")
+
+
 def test_reconcile_enqueues_queued_and_stale_jobs(monkeypatch):
     query = MagicMock(side_effect=[
         {
             "Items": [{
+                "recordType": {"S": "DELEGATION_JOB"},
                 "userId": {"S": "user-1"},
                 "sessionId": {"S": "session-1"},
                 "jobId": {"S": "queued-job"},
@@ -178,6 +230,7 @@ def test_reconcile_enqueues_queued_and_stale_jobs(monkeypatch):
         },
         {
             "Items": [{
+                "recordType": {"S": "RESEARCH_JOB"},
                 "userId": {"S": "user-1"},
                 "sessionId": {"S": "session-1"},
                 "jobId": {"S": "stale-job"},
@@ -189,8 +242,10 @@ def test_reconcile_enqueues_queued_and_stale_jobs(monkeypatch):
         "client",
         lambda service: MagicMock(query=query),
     )
-    enqueue = MagicMock()
-    monkeypatch.setattr(lambda_function, "_enqueue_delegation", enqueue)
+    delegation = MagicMock()
+    research = MagicMock()
+    monkeypatch.setattr(lambda_function, "_enqueue_delegation", delegation)
+    monkeypatch.setattr(lambda_function, "_enqueue_research", research)
     monkeypatch.setenv("ORCHESTRATION_TABLE_NAME", "orchestration")
 
     result = lambda_function.lambda_handler(
@@ -199,8 +254,8 @@ def test_reconcile_enqueues_queued_and_stale_jobs(monkeypatch):
     )
 
     assert result == {"status": "reconciled", "enqueued": 2}
-    assert enqueue.call_args_list[0].args[-1] == "queued-job"
-    assert enqueue.call_args_list[1].args[-1] == "stale-job"
+    delegation.assert_called_once_with("user-1", "session-1", "queued-job")
+    research.assert_called_once_with("user-1", "session-1", "stale-job")
 
 
 def test_sqs_worker_coalesces_wakes_for_one_session(monkeypatch):

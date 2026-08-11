@@ -8,16 +8,20 @@
  * never work, logging only "No active run available to stop".
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { renderHook, act } from '@testing-library/react'
+import { renderHook, act, waitFor } from '@testing-library/react'
 import { useChatAPI } from '@/hooks/useChatAPI'
+
+const reconnectMocks = vi.hoisted(() => ({
+  reset: vi.fn(),
+  detach: vi.fn(),
+  onStreamStart: vi.fn(),
+  restoreFromSession: vi.fn().mockReturnValue(false),
+  attemptReconnect: vi.fn(),
+}))
 
 vi.mock('@/hooks/useSSEReconnect', () => ({
   useSSEReconnect: () => ({
-    reset: vi.fn(),
-    detach: vi.fn(),
-    onStreamStart: vi.fn(),
-    restoreFromSession: vi.fn().mockReturnValue(false),
-    attemptReconnect: vi.fn(),
+    ...reconnectMocks,
     isReconnecting: false,
     reconnectAttempt: 0,
   }),
@@ -70,7 +74,10 @@ const INTERRUPT = {
 
 function setup(handleStreamEvent = vi.fn()) {
   const stopFetch = vi.fn().mockResolvedValue({ ok: true, text: async () => '' })
-  const setMessages = vi.fn()
+  let messageState: any[] = []
+  const setMessages = vi.fn((update: any) => {
+    messageState = typeof update === 'function' ? update(messageState) : update
+  })
   const hook = renderHook(() =>
     useChatAPI({
       backendUrl: 'http://localhost:8000',
@@ -84,7 +91,13 @@ function setup(handleStreamEvent = vi.fn()) {
       currentTemperature: 0.5,
     } as any),
   )
-  return { hook, stopFetch, handleStreamEvent, setMessages }
+  return {
+    hook,
+    stopFetch,
+    handleStreamEvent,
+    setMessages,
+    getMessages: () => messageState,
+  }
 }
 
 /** Runs one turn whose stream ends with the given events. */
@@ -281,5 +294,102 @@ describe('useChatAPI — background execution replay', () => {
         logicalMessageId: 'mailbox:research-result:job-1:1',
       }),
     ])
+  })
+})
+
+describe('useChatAPI — durable session restore', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    sessionStorage.clear()
+    reconnectMocks.restoreFromSession.mockReturnValue(false)
+    reconnectMocks.attemptReconnect.mockReset()
+  })
+
+  const history = (text: string) => ({
+    success: true,
+    messages: [
+      { id: `${text}-user`, role: 'user', content: [{ text: 'question' }] },
+      { id: `${text}-assistant`, role: 'assistant', content: [{ text }] },
+    ],
+    artifacts: [],
+    sessionPreferences: null,
+  })
+
+  it('restores canonical history when the persisted execution has expired', async () => {
+    reconnectMocks.restoreFromSession.mockReturnValue(true)
+    reconnectMocks.attemptReconnect.mockImplementation(
+      async (_onEvent, _onComplete, onFail) => onFail(),
+    )
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => history('durable answer'),
+    }))
+    const { hook, getMessages } = setup()
+
+    await act(async () => {
+      await hook.result.current.loadSession('session-1')
+    })
+
+    expect(getMessages()).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'durable answer-assistant',
+        text: 'durable answer',
+      }),
+    ]))
+  })
+
+  it('does not let an older session response overwrite the active session', async () => {
+    let resolveA: ((response: Response) => void) | undefined
+    let resolveB: ((response: Response) => void) | undefined
+    const fetchMock = vi.fn((url: string) => {
+      if (url.includes('conversation/history') && url.includes('session-a')) {
+        return new Promise<Response>(resolve => { resolveA = resolve })
+      }
+      if (url.includes('conversation/history') && url.includes('session-b')) {
+        return new Promise<Response>(resolve => { resolveB = resolve })
+      }
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({ status: 'warm' }),
+      } as Response)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const { hook, getMessages } = setup()
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    let loadA: Promise<unknown>
+    let loadB: Promise<unknown>
+    act(() => {
+      loadA = hook.result.current.loadSession('session-a')
+    })
+    await waitFor(() => expect(resolveA).toBeDefined())
+    act(() => {
+      loadB = hook.result.current.loadSession('session-b')
+    })
+    await waitFor(() => expect(resolveB).toBeDefined())
+    await act(async () => {
+      resolveB?.({
+        ok: true,
+        json: async () => history('answer B'),
+      } as Response)
+      await loadB!
+    })
+    await act(async () => {
+      resolveA?.({
+        ok: true,
+        json: async () => history('answer A'),
+      } as Response)
+      await loadA!
+    })
+
+    expect(getMessages()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ text: 'answer B' }),
+    ]))
+    expect(getMessages()).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ text: 'answer A' }),
+    ]))
   })
 })

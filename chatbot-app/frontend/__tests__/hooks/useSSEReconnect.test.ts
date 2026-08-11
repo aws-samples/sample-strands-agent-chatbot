@@ -81,6 +81,45 @@ describe('useSSEReconnect', () => {
     expect(onComplete).toHaveBeenCalledOnce()
   })
 
+  it('serializes asynchronous event cleanup before completing replay', async () => {
+    const executionId = 'session-a:run-serial'
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(statusResponse())
+      .mockResolvedValueOnce(streamResponse([
+        'id: 1',
+        'data: {"type":"RUN_FINISHED","threadId":"session-a","runId":"run-serial"}',
+        '',
+      ].join('\n')))
+    vi.stubGlobal('fetch', fetchMock)
+    let releaseCleanup: (() => void) | undefined
+    const cleanup = new Promise<void>(resolve => {
+      releaseCleanup = resolve
+    })
+    const onEvent = vi.fn().mockReturnValue(cleanup)
+    const onComplete = vi.fn()
+    const hook = renderHook(() => useSSEReconnect())
+
+    act(() => hook.result.current.onStreamStart(executionId))
+    let replay: Promise<void>
+    act(() => {
+      replay = hook.result.current.attemptReconnect(
+        onEvent,
+        onComplete,
+        vi.fn(),
+        async () => ({}),
+      )
+    })
+    await waitFor(() => expect(onEvent).toHaveBeenCalledOnce())
+    expect(onComplete).not.toHaveBeenCalled()
+
+    await act(async () => {
+      releaseCleanup?.()
+      await replay!
+    })
+
+    expect(onComplete).toHaveBeenCalledOnce()
+  })
+
   it('does not dispatch replay events after the consumer is detached', async () => {
     const executionId = 'session-a:run-2'
     let resolveRead: ((value: ReadableStreamReadResult<Uint8Array>) => void) | undefined

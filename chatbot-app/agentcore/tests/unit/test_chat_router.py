@@ -167,6 +167,27 @@ class TestExecutionRegistry:
         assert events[0].event_id == 3
 
     @pytest.mark.asyncio
+    async def test_overflow_preserves_monotonic_replay_ids(self):
+        from streaming.execution_registry import ExecutionRegistry
+
+        ExecutionRegistry.reset()
+        execution = await ExecutionRegistry().create_execution(
+            "overflow-session",
+            "user1",
+            "run1",
+        )
+        for index in range(execution.MAX_EVENTS + 1):
+            execution.append_event(
+                f'data: {{"type":"CUSTOM","name":"event-{index}"}}\n\n',
+                "custom",
+            )
+
+        event_ids = [event.event_id for event in execution.events]
+        assert event_ids == sorted(event_ids)
+        assert execution.events[0].event_type == "buffer_truncated"
+        assert '"type":"CUSTOM"' in execution.events[0].data
+
+    @pytest.mark.asyncio
     async def test_cleanup_expired(self):
         """Test that completed executions are cleaned up after TTL."""
         import time

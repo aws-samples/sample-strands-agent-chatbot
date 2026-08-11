@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import json
 import os
+import time
 
+import httpx
 import pytest
 
 pytestmark = pytest.mark.e2e
@@ -160,51 +162,65 @@ def test_protocol_path(stream, prompt, expected_tool_substrings, call_kwargs):
     _assert_skill_or_tool_invoked(result, expected_tool_substrings)
 
 
-def test_a2a_research_approval_roundtrip(stream):
-    """Approve the HITL interrupt and verify the Research Agent completes."""
-    first = stream(
+def _research_start_receipt(result) -> dict:
+    for content in result.tool_result_contents():
+        try:
+            wrapper = json.loads(content)
+            receipt = wrapper.get("result", wrapper)
+            if isinstance(receipt, str):
+                receipt = json.loads(receipt)
+        except (json.JSONDecodeError, AttributeError):
+            continue
+        if isinstance(receipt, dict) and receipt.get("status") == "started":
+            return receipt
+    return {}
+
+
+def test_a2a_research_durable_completion(stream, bff_url, cognito_token):
+    """Verify research reaches durable artifact and mailbox delivery."""
+    started = stream(
         "Use the research agent for a concise multi-source comparison of HTTP/2 "
         "and HTTP/3 with a summary, three technical differences, and sources.",
         timeout=300.0,
     )
-    assert first.interrupted_for_approval(), (
-        f"Research approval interrupt not observed. Errors: {first.raw_error_events}"
+    assert started.run_finished(), (
+        f"Research start turn did not finish. Errors: {started.raw_error_events}"
     )
-    _assert_skill_or_tool_invoked(first, ("research-agent", "research_agent"))
+    _assert_skill_or_tool_invoked(started, ("research-agent", "research_agent"))
+    receipt = _research_start_receipt(started)
+    assert receipt.get("job_id"), f"Research returned no durable receipt: {receipt}"
+    assert receipt.get("artifact_id"), f"Research receipt is incomplete: {receipt}"
 
-    interrupt = first.interrupts()[0]
-    interrupt_id = interrupt.get("id") or interrupt.get("interruptId")
-    assert interrupt_id, f"Interrupt has no ID: {interrupt}"
+    deadline = time.monotonic() + 600
+    job = {}
+    with httpx.Client(
+        base_url=bff_url,
+        headers={"Authorization": f"Bearer {cognito_token}"},
+        timeout=30.0,
+    ) as client:
+        while time.monotonic() < deadline:
+            response = client.get(
+                "/api/research/jobs",
+                params={
+                    "session_id": started.thread_id,
+                    "job_id": receipt["job_id"],
+                    "include_content": "true",
+                },
+            )
+            response.raise_for_status()
+            job = response.json().get("job") or {}
+            if job.get("status") in {"delivered", "error", "cancelled"}:
+                break
+            time.sleep(5)
 
-    approval = json.dumps([{
-        "interruptResponse": {
-            "interruptId": interrupt_id,
-            "response": "approved",
-        }
-    }])
-    completed = stream(
-        approval,
-        thread_id=first.thread_id,
-        timeout=600.0,
+    assert job.get("status") == "delivered", (
+        f"Research did not reach mailbox delivery: {job}"
     )
-
-    assert completed.run_finished(), (
-        f"Research approval continuation did not finish. "
-        f"Errors: {completed.raw_error_events}"
-    )
-    assert not completed.raw_error_events
-    assert completed.custom_events("research_progress"), (
-        "Research Agent completed without emitting research_progress events"
-    )
-    research_results = [
-        content for content in completed.tool_result_contents()
-        if "<research>" in content
-    ]
-    assert research_results, "Research Agent returned no research artifact"
-    assert research_results[0].count("<research>") == 1
-    assert research_results[0].count("</research>") == 1
-    assert completed.assistant_text().strip(), (
-        "Orchestrator returned no completion summary"
+    assert job.get("mailboxEventId") == f"research-result:{receipt['job_id']}"
+    artifact = job.get("artifact") or {}
+    assert artifact.get("id") == receipt["artifact_id"]
+    assert str(artifact.get("content") or "").strip(), (
+        "Delivered research job has no hydrated artifact content"
     )
 
 

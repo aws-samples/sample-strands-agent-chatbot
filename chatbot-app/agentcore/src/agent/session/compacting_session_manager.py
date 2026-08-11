@@ -59,6 +59,7 @@ class CompactionState:
 class MailboxPersistenceScope:
     origin_event_id: str
     conversation_epoch: int
+    hide_user_message: bool = True
     message_index: int = 0
 
 
@@ -188,14 +189,17 @@ class CompactingSessionManager(AgentCoreMemorySessionManager):
         self,
         origin_event_id: str,
         conversation_epoch: int = 0,
+        *,
+        hide_user_message: bool = True,
     ):
-        """Make message writes idempotent for one durable mailbox event."""
+        """Make message writes idempotent and conversation-epoch aware."""
         with self._mailbox_scope_lock:
             if self._mailbox_scope is not None:
                 raise RuntimeError("Nested mailbox persistence scopes are not supported")
             self._mailbox_scope = MailboxPersistenceScope(
                 origin_event_id,
                 conversation_epoch,
+                hide_user_message,
             )
         try:
             yield
@@ -222,6 +226,7 @@ class CompactingSessionManager(AgentCoreMemorySessionManager):
                 scoped_message = (
                     scope.origin_event_id,
                     scope.conversation_epoch,
+                    scope.hide_user_message,
                     message_index,
                 )
 
@@ -233,7 +238,12 @@ class CompactingSessionManager(AgentCoreMemorySessionManager):
                 **kwargs,
             )
 
-        origin_event_id, conversation_epoch, message_index = scoped_message
+        (
+            origin_event_id,
+            conversation_epoch,
+            hide_user_message,
+            message_index,
+        ) = scoped_message
         logical_message_id = f"mailbox:{origin_event_id}:{message_index}"
         role = session_message.message.get("role", "")
         metadata = dict(kwargs.pop("metadata", {}) or {})
@@ -242,7 +252,11 @@ class CompactingSessionManager(AgentCoreMemorySessionManager):
             "conversationEpoch": {"stringValue": str(conversation_epoch)},
             "logicalMessageId": {"stringValue": logical_message_id},
             "visibility": {
-                "stringValue": "internal" if role == "user" else "conversation"
+                "stringValue": (
+                    "internal"
+                    if role == "user" and hide_user_message
+                    else "conversation"
+                )
             },
         })
 

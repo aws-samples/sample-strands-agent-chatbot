@@ -448,6 +448,14 @@ export async function POST(request: NextRequest) {
           }
 
         } catch (error) {
+          if (
+            clientDisconnected
+            && error instanceof Error
+            && error.name === 'AbortError'
+          ) {
+            console.log('[BFF] Stream relay detached after client disconnect')
+            return
+          }
           console.error('[BFF] Error:', error)
           const errorEvent = `data: ${JSON.stringify({
             type: 'error',

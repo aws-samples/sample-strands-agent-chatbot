@@ -131,6 +131,37 @@ def _start_delegation(user_id: str, session_id: str, job_id: str) -> None:
         )
 
 
+def _start_research(user_id: str, session_id: str, job_id: str) -> None:
+    payload = json.dumps({
+        "thread_id": session_id,
+        "run_id": f"research-dispatch-{job_id}",
+        "messages": [],
+        "tools": [],
+        "context": [],
+        "state": {
+            "action": "start_research",
+            "user_id": user_id,
+            "job_id": job_id,
+        },
+    }).encode()
+    request = urllib.request.Request(
+        os.environ["AGENTCORE_RUNTIME_URL"],
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {_access_token()}",
+            "Content-Type": "application/json",
+            "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": session_id,
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        result = json.loads(response.read())
+    if result.get("status") not in {"accepted", "ignored"}:
+        raise RuntimeError(
+            f"Research was not accepted for {user_id}/{session_id}: {result}"
+        )
+
+
 def _mailbox_target(record: dict[str, Any]) -> tuple[str, str, str] | None:
     if record.get("eventName") != "INSERT":
         return None
@@ -152,6 +183,24 @@ def _delegation_target(record: dict[str, Any]) -> tuple[str, str, str] | None:
         return None
     image = record.get("dynamodb", {}).get("NewImage", {})
     if image.get("recordType", {}).get("S") != "DELEGATION_JOB":
+        return None
+    if image.get("workStatus", {}).get("S") != "queued":
+        return None
+    if image.get("desiredState", {}).get("S") != "running":
+        return None
+    user_id = image.get("userId", {}).get("S")
+    session_id = image.get("sessionId", {}).get("S")
+    job_id = image.get("jobId", {}).get("S")
+    if not user_id or not session_id or not job_id:
+        return None
+    return user_id, session_id, job_id
+
+
+def _research_target(record: dict[str, Any]) -> tuple[str, str, str] | None:
+    if record.get("eventName") not in {"INSERT", "MODIFY"}:
+        return None
+    image = record.get("dynamodb", {}).get("NewImage", {})
+    if image.get("recordType", {}).get("S") != "RESEARCH_JOB":
         return None
     if image.get("workStatus", {}).get("S") != "queued":
         return None
@@ -201,6 +250,24 @@ def _enqueue_delegation(user_id: str, session_id: str, job_id: str) -> None:
         MessageGroupId=hashlib.sha256(target).hexdigest(),
         MessageDeduplicationId=hashlib.sha256(
             target + b"\ndelegation\n" + job_id.encode()
+        ).hexdigest(),
+    )
+
+
+def _enqueue_research(user_id: str, session_id: str, job_id: str) -> None:
+    body = json.dumps({
+        "kind": "research",
+        "userId": user_id,
+        "sessionId": session_id,
+        "jobId": job_id,
+    })
+    target = f"{user_id}\n{session_id}".encode()
+    boto3.client("sqs").send_message(
+        QueueUrl=os.environ["WAKE_QUEUE_URL"],
+        MessageBody=body,
+        MessageGroupId=hashlib.sha256(target).hexdigest(),
+        MessageDeduplicationId=hashlib.sha256(
+            target + b"\nresearch\n" + job_id.encode()
         ).hexdigest(),
     )
 
@@ -271,7 +338,7 @@ def _handle_stream(event: dict[str, Any]) -> dict[str, Any]:
         tuple[str, str],
         dict[str, list[str]],
     ] = {}
-    delegation_records: list[tuple[str, str, str, str]] = []
+    job_records: list[tuple[str, str, str, str, str]] = []
     for record in event.get("Records", []):
         target = _mailbox_target(record)
         if target:
@@ -285,8 +352,14 @@ def _handle_stream(event: dict[str, Any]) -> dict[str, Any]:
             continue
         delegation = _delegation_target(record)
         if delegation:
-            delegation_records.append(
-                (*delegation, record.get("eventID", ""))
+            job_records.append(
+                ("delegation", *delegation, record.get("eventID", ""))
+            )
+            continue
+        research = _research_target(record)
+        if research:
+            job_records.append(
+                ("research", *research, record.get("eventID", ""))
             )
 
     failures = []
@@ -308,12 +381,16 @@ def _handle_stream(event: dict[str, Any]) -> dict[str, Any]:
                 for record_id in grouped["stream_record_ids"]
                 if record_id
             )
-    for user_id, session_id, job_id, record_id in delegation_records:
+    for kind, user_id, session_id, job_id, record_id in job_records:
         try:
-            _enqueue_delegation(user_id, session_id, job_id)
+            if kind == "delegation":
+                _enqueue_delegation(user_id, session_id, job_id)
+            else:
+                _enqueue_research(user_id, session_id, job_id)
         except Exception:
             logger.exception(
-                "Failed to enqueue delegation %s for %s/%s",
+                "Failed to enqueue %s %s for %s/%s",
+                kind,
                 job_id,
                 user_id,
                 session_id,
@@ -332,7 +409,7 @@ def _handle_sqs(event: dict[str, Any]) -> dict[str, Any]:
         try:
             body = json.loads(record["body"])
             kind = str(body.get("kind") or "mailbox")
-            if kind not in {"mailbox", "delegation"}:
+            if kind not in {"mailbox", "delegation", "research"}:
                 raise ValueError(f"Unknown wake kind: {kind}")
             target = (kind, body["userId"], body["sessionId"])
             record["_mailboxEventIds"] = [
@@ -341,8 +418,8 @@ def _handle_sqs(event: dict[str, Any]) -> dict[str, Any]:
                 if event_id
             ]
             record["_delegationJobId"] = str(body.get("jobId") or "")
-            if kind == "delegation" and not record["_delegationJobId"]:
-                raise ValueError("Delegation wake requires jobId")
+            if kind in {"delegation", "research"} and not record["_delegationJobId"]:
+                raise ValueError(f"{kind} wake requires jobId")
         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
             logger.exception("Invalid mailbox wake message %s", message_id)
             if message_id:
@@ -361,6 +438,12 @@ def _handle_sqs(event: dict[str, Any]) -> dict[str, Any]:
                     record["_delegationJobId"] for record in records
                 }):
                     _start_delegation(user_id, session_id, job_id)
+                continue
+            if kind == "research":
+                for job_id in sorted({
+                    record["_delegationJobId"] for record in records
+                }):
+                    _start_research(user_id, session_id, job_id)
                 continue
             event_ids = sorted({
                 event_id
@@ -388,7 +471,7 @@ def _handle_sqs(event: dict[str, Any]) -> dict[str, Any]:
 
 
 def _handle_reconcile() -> dict[str, Any]:
-    """Re-enqueue queued and stale-running delegation jobs."""
+    """Re-enqueue queued and stale-running durable jobs."""
     client = boto3.client("dynamodb")
     table_name = os.environ["ORCHESTRATION_TABLE_NAME"]
     now = datetime.now(timezone.utc)
@@ -408,22 +491,29 @@ def _handle_reconcile() -> dict[str, Any]:
                 "KeyConditionExpression": (
                     "workStatus = :workStatus AND heartbeatAt <= :cutoff"
                 ),
-                "FilterExpression": (
-                    "recordType = :recordType AND desiredState = :running"
-                ),
+                "FilterExpression": "desiredState = :running",
                 "ExpressionAttributeValues": {
                     ":workStatus": {"S": work_status},
                     ":cutoff": {"S": cutoff},
-                    ":recordType": {"S": "DELEGATION_JOB"},
                     ":running": {"S": "running"},
                 },
-                "ProjectionExpression": "userId, sessionId, jobId",
+                "ProjectionExpression": "recordType, userId, sessionId, jobId",
             }
             if exclusive_start_key:
                 parameters["ExclusiveStartKey"] = exclusive_start_key
             response = client.query(**parameters)
             for item in response.get("Items", []):
-                _enqueue_delegation(
+                record_type = item.get("recordType", {}).get("S")
+                enqueue = (
+                    _enqueue_delegation
+                    if record_type == "DELEGATION_JOB"
+                    else _enqueue_research
+                    if record_type == "RESEARCH_JOB"
+                    else None
+                )
+                if enqueue is None:
+                    continue
+                enqueue(
                     item["userId"]["S"],
                     item["sessionId"]["S"],
                     item["jobId"]["S"],

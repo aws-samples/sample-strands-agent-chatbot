@@ -146,6 +146,40 @@ function advanceLocalConversationEpoch(
       }
     }
   }
+
+  const researchJobsDir = path.resolve(
+    process.cwd(),
+    '..',
+    'agentcore',
+    'sessions',
+    `session_${sessionId}`,
+    'research_jobs',
+  )
+  if (researchJobsDir.startsWith(path.resolve(
+    process.cwd(),
+    '..',
+    'agentcore',
+    'sessions',
+  ) + path.sep) && fs.existsSync(researchJobsDir)) {
+    for (const name of fs.readdirSync(researchJobsDir)) {
+      if (!name.endsWith('.json')) continue
+      const jobPath = path.join(researchJobsDir, name)
+      const job = JSON.parse(fs.readFileSync(jobPath, 'utf-8'))
+      if (
+        Number(job.conversationEpoch || 0) < nextEpoch &&
+        ['queued', 'running', 'completed', 'delivering'].includes(job.status)
+      ) {
+        Object.assign(job, {
+          status: 'cancelled',
+          workStatus: 'terminal',
+          desiredState: 'cancelled',
+          updatedAt,
+          deliveryError: 'Conversation truncated',
+        })
+        writeLocalMailbox(jobPath, job)
+      }
+    }
+  }
   return nextEpoch
 }
 
@@ -341,13 +375,15 @@ export async function advanceSessionConversationEpoch(
       TableName: TABLE_NAME,
       Key: key,
       UpdateExpression:
-        'SET #status = :cancelled, updatedAt = :updated, deliveryError = :reason',
+        'SET #status = :cancelled, workStatus = :terminal, ' +
+        'desiredState = :cancelled, updatedAt = :updated, deliveryError = :reason',
       ConditionExpression:
         '#status = :queued OR #status = :running OR #status = :completed ' +
         'OR #status = :delivering',
       ExpressionAttributeNames: { '#status': 'status' },
       ExpressionAttributeValues: marshall({
         ':cancelled': 'cancelled',
+        ':terminal': 'terminal',
         ':updated': updatedAt,
         ':reason': 'Conversation truncated',
         ':queued': 'queued',
