@@ -148,6 +148,29 @@ class TestMailboxPersistenceScope:
         )
         assert calls[0].kwargs["metadata"]["visibility"]["stringValue"] == "conversation"
 
+    @patch(
+        'agent.session.compacting_session_manager.AgentCoreMemorySessionManager.create_message'
+    )
+    def test_foreground_scope_keeps_user_message_visible(self, parent_create, manager):
+        from strands.types.session import SessionMessage
+
+        parent_create.return_value = {"eventId": "stored"}
+        user = SessionMessage.from_message(
+            {"role": "user", "content": [{"text": "hello"}]},
+            0,
+        )
+
+        with manager.mailbox_event_scope(
+            "foreground:run-1",
+            4,
+            hide_user_message=False,
+        ):
+            manager.create_message("session-1", "default", user)
+
+        metadata = parent_create.call_args.kwargs["metadata"]
+        assert metadata["conversationEpoch"]["stringValue"] == "4"
+        assert metadata["visibility"]["stringValue"] == "conversation"
+
     def test_list_messages_filters_stale_mailbox_epochs(self, manager):
         repository = MagicMock()
         repository.get_conversation_epoch.return_value = 3

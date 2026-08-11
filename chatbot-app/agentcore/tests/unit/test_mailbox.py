@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from unittest.mock import MagicMock
 
 import pytest
@@ -384,6 +385,26 @@ def test_dynamodb_enqueue_uses_event_key_for_idempotency():
     client.transact_write_items.side_effect = transaction_condition_failure()
     client.get_item.return_value = {}
     assert repository.enqueue(item) is False
+
+
+def test_dynamodb_serialize_accepts_nested_decimal_values():
+    repository = DynamoDBMailboxRepository("mailbox-table", client=MagicMock())
+
+    serialized = repository._serialize({
+        "artifact": {
+            "wordCount": Decimal("527"),
+            "confidence": Decimal("0.875"),
+            "scores": [Decimal("1"), 0.5],
+        },
+    })
+
+    assert repository._deserialize(serialized) == {
+        "artifact": {
+            "wordCount": 527,
+            "confidence": 0.875,
+            "scores": [1, 0.5],
+        },
+    }
 
 
 def test_dynamodb_get_event_uses_direct_consistent_read():

@@ -544,6 +544,11 @@ def create_a2a_tool(agent_id: str):
                 artifact_id=artifact_id,
                 event_factory=event_factory,
                 model_id=model_id,
+                agent_id=agent_id,
+                research_session_id=research_session_id,
+                region=region,
+                metadata=metadata,
+                auth_token=_auth_token or "",
             )
             return __import__("json").dumps(receipt)
 

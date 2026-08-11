@@ -1,6 +1,7 @@
 import asyncio
 from copy import deepcopy
 from dataclasses import replace
+from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -116,17 +117,16 @@ def test_start_returns_without_running_worker_inline(monkeypatch):
     saved = []
     started = []
 
-    class FakeThread:
-        def __init__(self, *, target, name, daemon):
-            self.target = target
-            self.name = name
-            self.daemon = daemon
-
-        def start(self):
-            started.append(self)
-
-    monkeypatch.setattr(research_jobs, "_save_job", lambda record: saved.append(record))
-    monkeypatch.setattr(research_jobs.threading, "Thread", FakeThread)
+    monkeypatch.setattr(
+        research_jobs,
+        "_create_job",
+        lambda record: saved.append(deepcopy(record)),
+    )
+    monkeypatch.setattr(
+        research_jobs,
+        "start_job_execution",
+        lambda *args, **kwargs: started.append((args, kwargs)),
+    )
 
     async def events():
         yield {"status": "success", "content": [{"text": "# Report"}]}
@@ -142,11 +142,12 @@ def test_start_returns_without_running_worker_inline(monkeypatch):
     assert receipt["status"] == "started"
     assert receipt["artifact_id"] == "research-tool-3"
     assert saved[0]["status"] == "queued"
+    assert saved[0]["workStatus"] == "queued"
+    assert saved[0]["desiredState"] == "running"
     assert len(started) == 1
-    assert started[0].daemon is True
 
 
-def test_cloud_job_writes_use_orchestration_table(monkeypatch):
+def test_cloud_job_create_uses_orchestration_table(monkeypatch):
     table = MagicMock()
     resource = MagicMock()
     resource.Table.return_value = table
@@ -160,14 +161,17 @@ def test_cloud_job_writes_use_orchestration_table(monkeypatch):
         "status": "queued",
     }
 
-    research_jobs._save_job(record)
+    research_jobs._create_job(record)
 
     resource.Table.assert_called_once_with("orchestration-table")
     item = table.put_item.call_args.kwargs["Item"]
     assert item["sessionKey"] == "USER#user-1#SESSION#session-1"
     assert item["recordKey"] == "JOB#job-1"
-    assert item["recordType"] == "JOB"
+    assert item["recordType"] == "RESEARCH_JOB"
     assert "sk" not in item
+    assert "attribute_not_exists" in table.put_item.call_args.kwargs[
+        "ConditionExpression"
+    ]
 
 
 def test_cloud_job_reads_merge_orchestration_and_legacy_rows(monkeypatch):
@@ -244,6 +248,12 @@ def test_completion_mailbox_event_is_small_and_idempotent(monkeypatch):
 
     class Repository:
         def enqueue(self, event):
+            from agent.mailbox import DynamoDBMailboxRepository
+
+            DynamoDBMailboxRepository(
+                "mailbox-table",
+                client=MagicMock(),
+            )._serialize(event.to_record())
             observed.append(event)
             return len(observed) == 1
 
@@ -261,6 +271,9 @@ def test_completion_mailbox_event_is_small_and_idempotent(monkeypatch):
             "id": "research-tool-1",
             "title": "Report",
             "type": "research",
+            "metadata": {
+                "word_count": Decimal("527"),
+            },
         },
         "artifactBucket": "bucket",
         "artifactS3Key": "research/report.md",
@@ -304,7 +317,7 @@ def test_artifact_state_reference_excludes_report_body():
 
 
 def test_recover_pending_job_creates_deterministic_mailbox_event(monkeypatch):
-    saved = []
+    updated = []
     record = {
         "jobId": "job-1",
         "sessionId": "session-1",
@@ -323,8 +336,10 @@ def test_recover_pending_job_creates_deterministic_mailbox_event(monkeypatch):
     )
     monkeypatch.setattr(
         research_jobs,
-        "_save_job",
-        lambda item: saved.append(deepcopy(item)),
+        "_update_existing",
+        lambda item, changes, **kwargs: updated.append(
+            (deepcopy(changes), kwargs)
+        ) or True,
     )
 
     recovered = research_jobs.recover_pending_mailbox_events(
@@ -333,12 +348,18 @@ def test_recover_pending_job_creates_deterministic_mailbox_event(monkeypatch):
     )
 
     assert recovered == ["research-result:job-1"]
-    assert saved[0]["mailboxEventId"] == "research-result:job-1"
+    assert updated[0][0]["mailboxEventId"] == "research-result:job-1"
+    assert updated[0][0]["status"] == "delivering"
+    assert updated[0][0]["workStatus"] == "terminal"
+    assert updated[0][1]["allowed_statuses"] == ("completed", "delivering")
 
 
 def test_recover_pending_job_reenqueues_existing_idempotency_key(monkeypatch):
     record = {
         "jobId": "job-1",
+        "userId": "user-1",
+        "sessionId": "session-1",
+        "status": "delivering",
         "mailboxEventId": "research-result:job-1",
     }
     monkeypatch.setattr(
@@ -347,9 +368,9 @@ def test_recover_pending_job_reenqueues_existing_idempotency_key(monkeypatch):
         lambda user_id, session_id: [{"record": record, "artifact": {}}],
     )
     enqueue = MagicMock(return_value="research-result:job-1")
-    save = MagicMock()
+    update = MagicMock(return_value=True)
     monkeypatch.setattr(research_jobs, "_enqueue_completion_event", enqueue)
-    monkeypatch.setattr(research_jobs, "_save_job", save)
+    monkeypatch.setattr(research_jobs, "_update_existing", update)
 
     recovered = research_jobs.recover_pending_mailbox_events(
         "user-1",
@@ -358,17 +379,18 @@ def test_recover_pending_job_reenqueues_existing_idempotency_key(monkeypatch):
 
     assert recovered == ["research-result:job-1"]
     enqueue.assert_called_once_with(record)
-    save.assert_called_once_with(record)
+    update.assert_called_once()
 
 
-def test_reconcile_processed_delivery_marks_job_delivered(monkeypatch):
+@pytest.mark.parametrize("job_status", ["completed", "delivering"])
+def test_reconcile_processed_delivery_marks_job_delivered(monkeypatch, job_status):
     from agent.mailbox import MailboxEvent, PROCESSED
 
     record = {
         "jobId": "job-1",
         "userId": "user-1",
         "sessionId": "session-1",
-        "status": "delivering",
+        "status": job_status,
         "mailboxEventId": "research-result:job-1",
     }
     event = replace(
@@ -579,7 +601,62 @@ async def test_mailbox_write_failure_stays_retryable_without_direct_delivery(
     assert writes[-1]["deliveryError"] == (
         "Mailbox delivery is enabled but completion enqueue failed"
     )
-    assert "mailboxEventId" not in writes[-1]
+    assert writes[-1]["mailboxEventId"] == "research-result:job-1"
+    assert writes[-1]["mailboxWriteError"] == "write failed"
+
+
+def test_cloud_claim_supports_stale_takeover(monkeypatch):
+    table = MagicMock()
+    current = {
+        "jobId": "job-1",
+        "userId": "user-1",
+        "sessionId": "session-1",
+        "status": "running",
+        "workStatus": "running",
+        "desiredState": "running",
+        "heartbeatAt": "2020-01-01T00:00:00+00:00",
+        "attempts": 1,
+    }
+    table.update_item.return_value = {
+        "Attributes": {
+            **current,
+            "executionToken": "new-token",
+            "attempts": 2,
+        }
+    }
+    monkeypatch.setenv("DYNAMODB_USERS_TABLE", "users-table")
+    monkeypatch.setenv("SESSION_ORCHESTRATION_TABLE", "orchestration-table")
+    monkeypatch.setattr(research_jobs, "_orchestration_table", lambda: table)
+    monkeypatch.setattr(research_jobs, "_get_job", lambda *_: current)
+
+    claimed = research_jobs._claim_job("user-1", "session-1", "job-1")
+
+    assert claimed["executionToken"] == "new-token"
+    condition = table.update_item.call_args.kwargs["ConditionExpression"]
+    assert "heartbeatAt < :stale" in condition
+    assert "attempts < :maxAttempts" in condition
+
+
+def test_owned_update_rejects_cancelled_or_taken_over_job(monkeypatch):
+    table = MagicMock()
+    error = RuntimeError("condition failed")
+    error.response = {"Error": {"Code": "ConditionalCheckFailedException"}}
+    table.update_item.side_effect = error
+    monkeypatch.setenv("DYNAMODB_USERS_TABLE", "users-table")
+    monkeypatch.setenv("SESSION_ORCHESTRATION_TABLE", "orchestration-table")
+    monkeypatch.setattr(research_jobs, "_orchestration_table", lambda: table)
+
+    updated = research_jobs._update_owned(
+        {
+            "jobId": "job-1",
+            "userId": "user-1",
+            "sessionId": "session-1",
+            "executionToken": "old-token",
+        },
+        {"status": "delivering"},
+    )
+
+    assert updated is False
 
 
 @pytest.mark.asyncio

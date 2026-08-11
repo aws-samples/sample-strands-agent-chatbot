@@ -321,6 +321,34 @@ async def invocations(http_request: Request):
             auth_token=auth_token,
         )
 
+    if action == "start_research":
+        if not _is_mailbox_dispatcher_request(http_request):
+            raise HTTPException(
+                status_code=403,
+                detail="Research dispatcher token required",
+            )
+        user_id = str(state.get("user_id") or "")
+        job_id = str(state.get("job_id") or "")
+        if not user_id or not thread_id or not job_id:
+            raise HTTPException(
+                status_code=400,
+                detail="thread_id, state.user_id, and state.job_id are required",
+            )
+        authorization = http_request.headers.get("authorization", "")
+        auth_token = (
+            authorization.split(" ", 1)[1]
+            if authorization.lower().startswith("bearer ")
+            else ""
+        )
+        from agent.research_jobs import start_job_execution
+
+        return start_job_execution(
+            user_id,
+            thread_id,
+            job_id,
+            auth_token=auth_token,
+        )
+
     if action == "drain_mailbox":
         if not _is_mailbox_dispatcher_request(http_request):
             raise HTTPException(status_code=403, detail="Mailbox dispatcher token required")
@@ -585,8 +613,15 @@ async def _handle_agui_invocation(body: dict, http_request: Request) -> Streamin
     from agent.mailbox_runtime import mailbox_delivery_enabled
 
     use_mailbox_delivery = mailbox_delivery_enabled()
+    conversation_epoch = 0
     pending_research = []
     if use_mailbox_delivery:
+        from agent.mailbox import get_mailbox_repository
+
+        conversation_epoch = get_mailbox_repository().get_conversation_epoch(
+            user_id,
+            session_id,
+        )
         # A foreground invocation is also a recovery signal. Recreate any
         # deterministic completion envelopes that predate mailbox delivery;
         # the coordinator will materialize them as separate assistant turns.
@@ -713,16 +748,31 @@ async def _handle_agui_invocation(body: dict, http_request: Request) -> Streamin
             # microVM mid-run.
             task_id = async_tasks.begin("agent_run", {"execution_id": execution.execution_id})
             try:
-                stream = agui_processor.process_stream(
-                    agent.agent,
-                    agui_message,
-                    session_id=session_id,
-                    invocation_state=invocation_state,
-                    elicitation_bridge=getattr(agent, 'elicitation_bridge', None),
+                persistence_scope = getattr(
+                    agent.session_manager,
+                    "mailbox_event_scope",
+                    None,
                 )
-                async for sse_chunk in stream:
-                    event_type = _extract_event_type(sse_chunk)
-                    execution.append_event(sse_chunk, event_type)
+                scope_context = (
+                    persistence_scope(
+                        f"foreground:{run_id}",
+                        conversation_epoch,
+                        hide_user_message=False,
+                    )
+                    if persistence_scope and use_mailbox_delivery
+                    else nullcontext()
+                )
+                with scope_context:
+                    stream = agui_processor.process_stream(
+                        agent.agent,
+                        agui_message,
+                        session_id=session_id,
+                        invocation_state=invocation_state,
+                        elicitation_bridge=getattr(agent, 'elicitation_bridge', None),
+                    )
+                    async for sse_chunk in stream:
+                        event_type = _extract_event_type(sse_chunk)
+                        execution.append_event(sse_chunk, event_type)
 
                 if pending_research:
                     from agent.research_jobs import mark_delivered

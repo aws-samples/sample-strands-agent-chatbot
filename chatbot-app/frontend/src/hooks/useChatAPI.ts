@@ -221,6 +221,7 @@ export const useChatAPI = ({
 
   const abortRef = useRef<{ unsubscribe: () => void } | null>(null)
   const streamGenerationRef = useRef(0)
+  const loadGenerationRef = useRef(0)
   const sessionIdRef = useRef<string | null>(null)
   const activeRunIdRef = useRef<string | null>(null)
   const activeRunSessionIdRef = useRef<string | null>(null)
@@ -738,7 +739,7 @@ export const useChatAPI = ({
                 }
 
                 if (eventData.type && (AGUI_EVENT_TYPES as readonly string[]).includes(eventData.type)) {
-                  handleStreamEvent(eventData as AGUIStreamEvent)
+                  await handleStreamEvent(eventData as AGUIStreamEvent)
                 }
               } catch (error) {
                 logger.error('Error processing SSE event:', error)
@@ -1011,6 +1012,11 @@ export const useChatAPI = ({
   }
 
   const loadSession = useCallback(async (newSessionId: string): Promise<{ preferences: SessionPreferences | null; messages: Message[] }> => {
+    const loadGeneration = ++loadGenerationRef.current
+    const isCurrentLoad = () => (
+      loadGenerationRef.current === loadGeneration
+      && sessionIdRef.current === newSessionId
+    )
     try {
       logger.info(`Loading session: ${newSessionId}`)
 
@@ -1025,6 +1031,9 @@ export const useChatAPI = ({
       }
 
       const authHeaders = await getAuthHeaders()
+      if (!isCurrentLoad()) {
+        return { preferences: null, messages: [] }
+      }
 
       // Load conversation history from AgentCore Memory
       const url = getApiUrl(`conversation/history?session_id=${newSessionId}`)
@@ -1042,6 +1051,9 @@ export const useChatAPI = ({
       }
 
       const data = await response.json()
+      if (!isCurrentLoad()) {
+        return { preferences: null, messages: [] }
+      }
 
       if (!data.success) {
         throw new Error(data.error || 'Failed to load conversation history')
@@ -1284,6 +1296,9 @@ export const useChatAPI = ({
         )
         return { ...msg, toolExecutions: updated }
       })
+      if (!isCurrentLoad()) {
+        return { preferences: null, messages: [] }
+      }
 
       // Skip setMessages during polling if content hasn't changed (prevents re-render flicker)
       if (isSameSession) {
@@ -1345,21 +1360,27 @@ export const useChatAPI = ({
         reconnect.attemptReconnect(
           (event) => handleStreamEvent(event),
           () => {
+            if (!isCurrentLoad()) return
             // Resume succeeded
             logger.info('[loadSession] Resume after page refresh succeeded')
             setUIState(prev => ({ ...prev, isReconnecting: false, isTyping: false, isConnected: true, agentStatus: 'idle', turnPhase: 'idle' }))
           },
           () => {
+            if (!isCurrentLoad()) return
             // Resume failed — show history only
             logger.info('[loadSession] Resume after page refresh failed, showing history only')
+            setMessages(finalMessages)
             setUIState(prev => ({ ...prev, isReconnecting: false, isTyping: false, agentStatus: 'idle', turnPhase: 'idle' }))
           },
           getAuthHeaders,
           () => {
+            if (!isCurrentLoad()) return
             // Connected — clear badge, keep isTyping true since stream continues
             setUIState(prev => ({ ...prev, isReconnecting: false, isConnected: true }))
           },
         ).catch(() => {
+          if (!isCurrentLoad()) return
+          setMessages(finalMessages)
           setUIState(prev => ({ ...prev, isReconnecting: false, isTyping: false, agentStatus: 'idle', turnPhase: 'idle' }))
         })
       }

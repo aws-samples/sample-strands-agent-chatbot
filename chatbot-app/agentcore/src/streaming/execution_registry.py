@@ -57,14 +57,18 @@ class Execution:
         if len(self.events) >= self.MAX_EVENTS:
             trim_count = int(self.MAX_EVENTS * self.TRUNCATE_RATIO)
             self.events = self.events[trim_count:]
-            # Insert truncation marker
+            first_retained_id = self.events[0].event_id
+            # The marker represents the gap immediately before the retained
+            # window, so its id must preserve chronological cursor ordering.
             marker = SSEEvent(
-                event_id=self.next_event_id,
-                data='data: {"type":"custom","name":"buffer_truncated"}\n\n',
+                event_id=first_retained_id - 1,
+                data=(
+                    'data: {"type":"CUSTOM","name":"buffer_truncated",'
+                    f'"value":{{"truncatedThroughEventId":{first_retained_id - 1}}}}}\n\n'
+                ),
                 timestamp=time.time(),
                 event_type="buffer_truncated",
             )
-            self.next_event_id += 1
             self.events.insert(0, marker)
 
         event = SSEEvent(

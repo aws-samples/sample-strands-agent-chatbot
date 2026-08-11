@@ -412,9 +412,29 @@ class DynamoDBMailboxRepository(MailboxRepository):
         self._deserializer = TypeDeserializer()
 
     def _serialize(self, value: Dict[str, Any]) -> Dict[str, Any]:
-        # DynamoDB rejects Python floats. A JSON round trip converts them to
-        # Decimal while also proving the envelope is JSON-compatible.
-        normalized = json.loads(json.dumps(value), parse_float=Decimal)
+        # DynamoDB rejects Python floats, while records read through the boto3
+        # resource API already contain Decimal values. Normalize both without
+        # sending existing Decimals through json.dumps(), which cannot encode
+        # them and previously broke research completion delivery.
+        def normalize(item: Any) -> Any:
+            if isinstance(item, Decimal):
+                return item
+            if isinstance(item, float):
+                return Decimal(str(item))
+            if isinstance(item, dict):
+                return {
+                    str(key): normalize(child)
+                    for key, child in item.items()
+                }
+            if isinstance(item, (list, tuple)):
+                return [normalize(child) for child in item]
+            if item is None or isinstance(item, (str, int, bool)):
+                return item
+            raise TypeError(
+                f"Mailbox records must be JSON-compatible; got {type(item).__name__}"
+            )
+
+        normalized = normalize(value)
         return {key: self._serializer.serialize(item) for key, item in normalized.items()}
 
     def _deserialize(self, value: Dict[str, Any]) -> Dict[str, Any]:

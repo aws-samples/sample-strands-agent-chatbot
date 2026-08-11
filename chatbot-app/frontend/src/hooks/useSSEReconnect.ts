@@ -116,7 +116,7 @@ export function useSSEReconnect() {
   }, [detach])
 
   const attemptReconnect = useCallback(async (
-    onEvent: (event: AGUIStreamEvent) => void,
+    onEvent: (event: AGUIStreamEvent) => void | Promise<void>,
     onComplete: () => void,
     onFail: () => void,
     getAuthHeaders: () => Promise<Record<string, string>>,
@@ -284,7 +284,7 @@ export function useSSEReconnect() {
                   currentEventId = null
                   // Dispatch event
                   if (eventData.type && AGUI_EVENT_TYPES.includes(eventData.type)) {
-                    onEvent(eventData as AGUIStreamEvent)
+                    await onEvent(eventData as AGUIStreamEvent)
                     // Clear reconnecting badge on first real event
                     if (!connectedFired) {
                       connectedFired = true

@@ -244,7 +244,7 @@ def test_local_storage_rejects_session_symlink_escape(tmp_path):
     outside = tmp_path.parent / f"{tmp_path.name}-outside"
     outside.mkdir()
     storage_root = tmp_path / "delegation_jobs"
-    storage_root.mkdir()
+    storage_root.mkdir(exist_ok=True)
     session_key = hashlib.sha256(b"s1").hexdigest()
     (storage_root / session_key).symlink_to(
         outside,
