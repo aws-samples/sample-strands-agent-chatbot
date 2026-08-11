@@ -35,6 +35,21 @@ explicit constraints, a bounded context summary, and selected workspace paths.
 The server limits a session to two active delegations and three execution
 attempts per job.
 
+## Model Selection
+
+Delegation accepts an optional `task_complexity` value: `low`, `medium`, or
+`high`. The backend model catalog maps Claude tasks to Haiku, Sonnet, or Opus
+and GPT tasks to Luna, Terra, or Sol. Other model families keep the parent
+model, and omitting complexity preserves the existing inherit behavior.
+
+The effective model is resolved once when the durable job is created. The job
+stores the parent model, effective model, complexity, family, and catalog
+version so retries cannot change models if catalog configuration changes.
+
+The Code Agent uses the same catalog but always resolves within the Claude
+family. Its default complexity is `medium`; the runtime applies the selected
+model to the session's Claude SDK client before executing the task.
+
 ## Interrupt And Cancellation
 
 Foreground response interruption does not cancel accepted background work.

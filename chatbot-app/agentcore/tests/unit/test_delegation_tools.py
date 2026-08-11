@@ -44,6 +44,7 @@ def test_delegate_task_builds_deterministic_scoped_request(monkeypatch):
         acceptance_criteria=["List invalid lines"],
         workspace_paths=["uploads/events.jsonl"],
         constraints=["Do not modify source"],
+        task_complexity="high",
         tool_context=_context(),
     )
 
@@ -55,6 +56,8 @@ def test_delegate_task_builds_deterministic_scoped_request(monkeypatch):
     assert captured["idempotency_key"] == "session-1:run-1:tool-1"
     assert captured["request"]["workspacePaths"] == ["uploads/events.jsonl"]
     assert captured["request"]["constraints"] == ["Do not modify source"]
+    assert captured["request"]["schemaVersion"] == 2
+    assert captured["request"]["taskComplexity"] == "high"
 
 
 def test_delegate_task_rejects_broad_profile():
@@ -74,6 +77,17 @@ def test_delegate_task_limits_budget():
             goal="Review",
             deliverable="Report",
             max_seconds=10,
+            tool_context=_context(),
+        )
+
+
+def test_delegate_task_rejects_invalid_complexity():
+    with pytest.raises(ValueError, match="task_complexity"):
+        delegation.delegate_task(
+            profile="reviewer",
+            goal="Review",
+            deliverable="Report",
+            task_complexity="extreme",
             tool_context=_context(),
         )
 

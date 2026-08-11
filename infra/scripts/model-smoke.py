@@ -87,13 +87,32 @@ def _tool_names(events: list[dict]) -> set[str]:
     }
 
 
-def _interrupts(events: list[dict]) -> list[dict]:
-    result = []
+def _tool_receipt(events: list[dict], tool_name: str) -> dict:
+    tool_call_ids = {
+        event.get("toolCallId")
+        for event in events
+        if event.get("type") == "TOOL_CALL_START"
+        and event.get("toolCallName") == tool_name
+    }
     for event in events:
-        if event.get("type") != "CUSTOM" or event.get("name") != "interrupt":
+        if (
+            event.get("type") != "TOOL_CALL_RESULT"
+            or event.get("toolCallId") not in tool_call_ids
+        ):
             continue
-        result.extend((event.get("value") or {}).get("interrupts") or [])
-    return result
+        content = event.get("content")
+        if not isinstance(content, str):
+            continue
+        try:
+            wrapper = json.loads(content)
+            receipt = wrapper.get("result", wrapper)
+            if isinstance(receipt, str):
+                receipt = json.loads(receipt)
+        except (json.JSONDecodeError, AttributeError):
+            continue
+        if isinstance(receipt, dict):
+            return receipt
+    return {}
 
 
 def main() -> int:
@@ -108,47 +127,24 @@ def main() -> int:
     print(f"  Code Agent -> completed with {MODEL_ID} as orchestrator model")
 
     research_thread = _thread_id("research_smoke")
-    approval_events = _invoke(
+    research_events = _invoke(
         "Use the research agent for a concise multi-source comparison of HTTP/2 "
         "and HTTP/3 with three technical differences and sources.",
         research_thread,
     )
-    interrupts = _interrupts(approval_events)
-    if not interrupts:
-        raise RuntimeError("Research Agent approval interrupt was not emitted")
-    interrupt_id = interrupts[0].get("id") or interrupts[0].get("interruptId")
-    if not interrupt_id:
-        raise RuntimeError(f"Research interrupt has no ID: {interrupts[0]}")
-
-    approval = json.dumps([{
-        "interruptResponse": {
-            "interruptId": interrupt_id,
-            "response": "approved",
-        }
-    }])
-    research_events = _invoke(approval, research_thread)
     _assert_finished(research_events, "Research Agent")
-    progress = [
-        event for event in research_events
-        if event.get("type") == "CUSTOM"
-        and event.get("name") == "research_progress"
-    ]
-    research_results = [
-        str(event.get("content", ""))
-        for event in research_events
-        if event.get("type") == "TOOL_CALL_RESULT"
-        and "<research>" in str(event.get("content", ""))
-    ]
-    if not progress:
-        raise RuntimeError("Research Agent emitted no research_progress events")
-    if not research_results:
-        raise RuntimeError("Research Agent returned no research artifact")
-    if (
-        research_results[0].count("<research>") != 1
-        or research_results[0].count("</research>") != 1
-    ):
-        raise RuntimeError("Research Agent returned a duplicated research artifact")
-    print(f"  Research Agent -> approved and completed with {MODEL_ID}")
+    if "research_agent" not in _tool_names(research_events):
+        raise RuntimeError(
+            f"Research Agent tool was not called: {_tool_names(research_events)}"
+        )
+    receipt = _tool_receipt(research_events, "research_agent")
+    if receipt.get("status") != "started":
+        raise RuntimeError(
+            f"Research Agent returned no durable start receipt: {receipt}"
+        )
+    if not receipt.get("job_id") or not receipt.get("artifact_id"):
+        raise RuntimeError(f"Research Agent receipt is incomplete: {receipt}")
+    print(f"  Research Agent -> durable background job started with {MODEL_ID}")
     return 0
 
 

@@ -26,6 +26,14 @@ Do not delegate requests such as "investigate everything", "fix all issues", or
 - Use `reviewer` for an independent read-only review. It cannot execute code or
   modify source files.
 
+## Select task complexity
+
+- Use `low` for narrow extraction, classification, or simple checks.
+- Use `medium` for normal analysis and review work.
+- Use `high` only for genuinely difficult reasoning or broad synthesis.
+- Omit `task_complexity` when the delegated agent should inherit the parent
+  model unchanged.
+
 ## Execute
 
 Call `delegate_task` once. It returns an acceptance receipt immediately.
