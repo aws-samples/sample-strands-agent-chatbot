@@ -2,6 +2,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act, waitFor } from '@testing-library/react'
 import { useChat } from '@/hooks/useChat'
 
+const detachStream = vi.fn()
+const resetStreamingState = vi.fn()
+
 // Mock dependencies
 vi.mock('@/utils/chat', () => ({
   detectBackendUrl: vi.fn().mockResolvedValue({ url: 'http://localhost:8000', connected: true }),
@@ -12,7 +15,7 @@ vi.mock('@/utils/chat', () => ({
 vi.mock('@/hooks/useStreamEvents', () => ({
   useStreamEvents: vi.fn(() => ({
     handleStreamEvent: vi.fn(),
-    resetStreamingState: vi.fn()
+    resetStreamingState
   }))
 }))
 
@@ -21,6 +24,7 @@ vi.mock('@/hooks/useChatAPI', () => ({
     newChat: vi.fn().mockResolvedValue(true),
     sendMessage: vi.fn().mockResolvedValue(undefined),
     replayExecution: vi.fn().mockResolvedValue(true),
+    detachStream,
     cleanup: vi.fn(),
     sendStopSignal: vi.fn(),
     loadSession: vi.fn().mockResolvedValue(null)

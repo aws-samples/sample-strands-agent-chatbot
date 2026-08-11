@@ -75,6 +75,7 @@ export const useStreamEvents = ({
 
   // Event deduplication for SSE reconnection (tracks processed "eventId:type" keys)
   const processedEventIdsRef = useRef(new Set<string>())
+  const processedExecutionIdRef = useRef<string | null>(null)
 
   // Swarm mode state
   const swarmModeRef = useRef<{
@@ -980,9 +981,6 @@ export const useStreamEvents = ({
   }, [setSessionState, setMessages, setUIState, streamingStartedRef, streamingIdRef, completeProcessedRef, metadataTracking, currentToolExecutionsRef, textBuffer, stopPollingRef])
 
   const handleInitEvent = useCallback(() => {
-    // Clear dedup set at the start of each new run so that events from the new
-    // execution (which restart eventId from 1) are not mistakenly dropped.
-    processedEventIdsRef.current.clear()
     pendingAssistantTurnBoundaryRef.current = true
 
     setUIState(prev => {
@@ -1578,11 +1576,24 @@ export const useStreamEvents = ({
 
   const handleStreamEvent = useCallback((event: AGUIStreamEvent) => {
     try {
+      const executionId = (event as any)._executionId as string | undefined
+      if (executionId) {
+        if (processedExecutionIdRef.current !== executionId) {
+          processedEventIdsRef.current.clear()
+          processedExecutionIdRef.current = executionId
+        }
+      } else if (event.type === EventType.RUN_STARTED) {
+        // Legacy/non-buffered streams do not carry an execution identity.
+        processedEventIdsRef.current.clear()
+        processedExecutionIdRef.current = null
+      }
+
       // Event deduplication for SSE reconnection
-      // Use "eventId:type" as key because multiple event types can share the same SSE event id
-      const eventId = (event as any)._eventId as number | undefined
+      const eventId = Number(
+        (event as any)._eventId ?? (event as any).eventId,
+      )
       if (eventId && eventId > 0) {
-        const dedupKey = `${eventId}:${event.type}`
+        const dedupKey = `${executionId || 'legacy'}:${eventId}:${event.type}`
         if (processedEventIdsRef.current.has(dedupKey)) {
           return  // Skip duplicate
         }
@@ -1765,6 +1776,7 @@ export const useStreamEvents = ({
     tokenUsageRef.current = null
     pendingAssistantTurnBoundaryRef.current = false
     processedEventIdsRef.current.clear()
+    processedExecutionIdRef.current = null
     metadataTracking.reset()
 
     // Reset swarm mode state if active

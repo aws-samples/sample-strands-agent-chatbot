@@ -283,6 +283,7 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
     listSessionEvents: apiListSessionEvents,
     sendMessage: apiSendMessage,
     replayExecution: apiReplayExecution,
+    detachStream,
     cleanup,
     sendStopSignal,
     hasStoppableRun,
@@ -376,6 +377,15 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
 
   // ==================== SESSION LOADING ====================
   const loadSessionWithPreferences = useCallback(async (newSessionId: string) => {
+    const previousSessionId = currentSessionIdRef.current
+    if (previousSessionId && previousSessionId !== newSessionId) {
+      // Detach the local consumers only. The backend execution remains alive
+      // and its persisted execution ID is used for a single replay on return.
+      detachStream()
+      resetStreamingState()
+      currentToolExecutionsRef.current = []
+    }
+
     // Immediately update session ref to prevent race conditions
     currentSessionIdRef.current = newSessionId
 
@@ -450,7 +460,7 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
     } finally {
       setIsLoadingMessages(false)
     }
-  }, [apiLoadSession, setUIState, setSessionState, stopPolling, checkAndStartPollingForA2ATools])
+  }, [apiLoadSession, setUIState, setSessionState, stopPolling, checkAndStartPollingForA2ATools, detachStream, resetStreamingState])
 
   // ==================== INITIALIZATION EFFECTS ====================
   // Restore last session on page load
@@ -482,6 +492,8 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
     // Invalidate current session
     currentSessionIdRef.current = `temp_${Date.now()}`
     stopPolling()
+    detachStream()
+    resetStreamingState()
 
     const success = await apiNewChat()
     if (success) {
@@ -501,7 +513,7 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
       // Queued turns were composed against the conversation being discarded.
       clearQueuedMessagesRef.current()
     }
-  }, [apiNewChat, stopPolling])
+  }, [apiNewChat, stopPolling, detachStream, resetStreamingState])
 
   // Answering an approval resumes the same turn, so the queue must keep waiting
   // for that turn to finish rather than treating the hold as resolved: the hold

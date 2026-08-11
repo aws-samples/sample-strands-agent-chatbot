@@ -198,6 +198,7 @@ interface UseChatAPIReturn {
     executionId: string,
     messageIdentity?: ReplayMessageIdentity,
   ) => Promise<boolean>
+  detachStream: () => void
   cleanup: () => void
   sendStopSignal: () => Promise<boolean>
   hasStoppableRun: boolean
@@ -219,14 +220,27 @@ export const useChatAPI = ({
 }: UseChatAPIProps) => {
 
   const abortRef = useRef<{ unsubscribe: () => void } | null>(null)
+  const streamGenerationRef = useRef(0)
   const sessionIdRef = useRef<string | null>(null)
   const activeRunIdRef = useRef<string | null>(null)
+  const activeRunSessionIdRef = useRef<string | null>(null)
   const [hasStoppableRun, setHasStoppableRun] = useState(false)
   // Read through a ref: adding conciseMode to sendMessage's deps would rebuild
   // it whenever the toggle flips, and useChat's queue flush closes over it.
   const conciseModeRef = useRef(conciseMode)
   conciseModeRef.current = conciseMode
   const reconnect = useSSEReconnect()
+
+  const detachStream = useCallback(() => {
+    streamGenerationRef.current += 1
+    const activeStream = abortRef.current
+    abortRef.current = null
+    activeStream?.unsubscribe()
+    reconnect.detach()
+    activeRunIdRef.current = null
+    activeRunSessionIdRef.current = null
+    setHasStoppableRun(false)
+  }, [reconnect.detach])
 
   // Restore last session on page load (with timeout check) and trigger warmup
   useEffect(() => {
@@ -484,9 +498,9 @@ export const useChatAPI = ({
     // Update last activity timestamp (for session timeout tracking)
     updateLastActivity()
 
-    abortRef.current?.unsubscribe()
-    abortRef.current = null
+    detachStream()
     reconnect.reset()
+    const streamGeneration = streamGenerationRef.current
 
     let requestRunId: string | null = null
     try {
@@ -536,6 +550,7 @@ export const useChatAPI = ({
         const threadId = sessionIdRef.current ?? crypto.randomUUID()
         requestRunId = crypto.randomUUID()
         activeRunIdRef.current = requestRunId
+        activeRunSessionIdRef.current = threadId
         setHasStoppableRun(true)
         const aguiBody = JSON.stringify({
           threadId,
@@ -617,6 +632,9 @@ export const useChatAPI = ({
         if (responseSessionId && responseSessionId !== currentSessionId) {
           setSessionId(responseSessionId)
           sessionIdRef.current = responseSessionId
+          if (activeRunIdRef.current === requestRunId) {
+            activeRunSessionIdRef.current = responseSessionId
+          }
           sessionStorage.setItem('chat-session-id', responseSessionId)
           logger.info('Session updated:', responseSessionId)
         }
@@ -628,6 +646,7 @@ export const useChatAPI = ({
         // normally, so completion below must not treat it as finished: the run is
         // parked mid-turn and the user still needs to be able to stop it.
         let endedAtInterrupt = false
+        let streamExecutionId: string | null = null
 
         if (!reader) {
           throw new Error('No response body reader available')
@@ -640,6 +659,7 @@ export const useChatAPI = ({
         const streamSessionId = sessionIdRef.current
 
         let buffer = ''
+        let currentEventId: number | null = null
 
         while (true) {
           let readResult: ReadableStreamReadResult<Uint8Array>
@@ -659,13 +679,15 @@ export const useChatAPI = ({
           const lines = buffer.split('\n')
           buffer = lines.pop() || ''
 
-          // Session guard: if user switched sessions, consume the stream
-          // without dispatching events so the backend can finish normally.
-          if (sessionIdRef.current !== streamSessionId) {
+          // A detached consumer is permanently stale even if the user later
+          // returns to this session. Replay owns delivery after a session switch.
+          if (
+            streamGenerationRef.current !== streamGeneration
+            || sessionIdRef.current !== streamSessionId
+          ) {
             continue
           }
 
-          let currentEventId: number | null = null
           for (const line of lines) {
             if (line.startsWith('event: ')) {
               continue
@@ -690,6 +712,7 @@ export const useChatAPI = ({
                 if (eventData.type === 'CUSTOM' && eventData.name === 'execution_meta') {
                   const execId = eventData.value?.executionId
                   if (execId) {
+                    streamExecutionId = execId
                     reconnect.onStreamStart(execId)
                     logger.info(`[useChatAPI] Execution started: ${execId}`)
                   }
@@ -699,6 +722,9 @@ export const useChatAPI = ({
                 // Inject eventId for deduplication
                 if (currentEventId !== null && currentEventId > 0) {
                   eventData._eventId = currentEventId
+                }
+                if (streamExecutionId) {
+                  eventData._executionId = streamExecutionId
                 }
                 currentEventId = null
 
@@ -724,10 +750,14 @@ export const useChatAPI = ({
         setUIState(prev => ({ ...prev, isConnected: true }))
 
         // Skip post-stream callbacks if user switched sessions during streaming
-        if (sessionIdRef.current !== streamSessionId) {
+        if (
+          streamGenerationRef.current !== streamGeneration
+          || sessionIdRef.current !== streamSessionId
+        ) {
           logger.info(`[useChatAPI] Stream finished for stale session ${streamSessionId}, skipping callbacks`)
           return
         }
+        abortRef.current = null
 
         // Session metadata is automatically updated by backend (/api/stream/chat)
         // Just check if it's a new session and refresh the list
@@ -745,6 +775,7 @@ export const useChatAPI = ({
         // no run to target and only logged "No active run available to stop".
         if (activeRunIdRef.current === requestRunId && !endedAtInterrupt) {
           activeRunIdRef.current = null
+          activeRunSessionIdRef.current = null
           setHasStoppableRun(false)
         }
         onSuccess?.()
@@ -845,10 +876,11 @@ export const useChatAPI = ({
       onError?.(errorMessage)
       if (activeRunIdRef.current === requestRunId) {
         activeRunIdRef.current = null
+        activeRunSessionIdRef.current = null
         setHasStoppableRun(false)
       }
     }
-  }, [handleStreamEvent, setUIState, setMessages, onSessionCreated, currentModelId, currentTemperature, reconnect])
+  }, [detachStream, handleStreamEvent, setUIState, setMessages, onSessionCreated, currentModelId, currentTemperature, reconnect])
   // sessionId removed from dependency array - using sessionIdRef.current instead
 
   /**
@@ -1422,6 +1454,7 @@ export const useChatAPI = ({
               if (currentEventId !== null && currentEventId > 0) {
                 eventData._eventId = currentEventId
               }
+              eventData._executionId = executionId
               currentEventId = null
               if (
                 eventData.type &&
@@ -1476,14 +1509,17 @@ export const useChatAPI = ({
     }
   }, [getAuthHeaders, handleStreamEvent, setMessages, setUIState])
 
-  const cleanup = useCallback(() => {
-    abortRef.current?.unsubscribe()
-  }, [])
+  const cleanup = detachStream
 
   const sendStopSignal = useCallback(async () => {
     const currentSessionId = sessionIdRef.current
     const currentRunId = activeRunIdRef.current
-    if (!currentSessionId || !currentRunId) {
+    const activeRunSessionId = activeRunSessionIdRef.current
+    if (
+      !currentSessionId
+      || !currentRunId
+      || activeRunSessionId !== currentSessionId
+    ) {
       logger.warn('No active run available to stop')
       return false
     }
@@ -1512,6 +1548,7 @@ export const useChatAPI = ({
       abortRef.current = null
       if (activeRunIdRef.current === currentRunId) {
         activeRunIdRef.current = null
+        activeRunSessionIdRef.current = null
         setHasStoppableRun(false)
       }
       logger.debug('Stop signal sent to backend')
@@ -1530,6 +1567,7 @@ export const useChatAPI = ({
     listSessionEvents,
     sendMessage,
     replayExecution,
+    detachStream,
     cleanup,
     sendStopSignal,
     hasStoppableRun,
