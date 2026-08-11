@@ -20,7 +20,7 @@ aws-sdk-bedrock-runtime  # Required by strands BidiNovaSonicModel
 a2a-sdk>=0.3.0,<1.0.0
 
 # AWS & Bedrock
-boto3>=1.43.62
+boto3>=1.43.67
 
 # AgentCore Memory Integration (optional, for cloud deployment only)
 # Uncomment below for cloud deployment:
