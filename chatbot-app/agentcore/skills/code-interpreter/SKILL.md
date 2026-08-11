@@ -161,7 +161,13 @@ legacy fallback deployments.
 **Uploaded files:**
 
 Files uploaded by the user are available in the mounted workspace without
-manual loading or base64 transfer.
+manual loading or base64 transfer under `/mnt/workspace/inputs`. JSON, JSONL,
+and NDJSON attachments may be represented by a bounded text excerpt in the
+conversation; use the mounted file when the full dataset is needed.
+
+If the session reports that the S3 Files mount is unavailable, the legacy
+fallback preloads the same uploads into the Code Interpreter working directory
+by filename. Use `ls` to confirm the path, then read `<filename>` directly.
 
 **Read saved files via workspace skill:**
 ```

@@ -61,7 +61,7 @@ describe('useMessageQueue', () => {
     ])
 
     await act(async () => { await hook.result.current.flushNext(SESSION, CLEAR) })
-    expect(send).toHaveBeenCalledWith('selected', [], undefined, undefined)
+    expect(send).toHaveBeenCalledWith('selected', [], undefined, undefined, [])
   })
 
   it('does not prioritize a message from another session', () => {
@@ -93,6 +93,35 @@ describe('useMessageQueue', () => {
     expect(hook.result.current.queue).toHaveLength(1)
   })
 
+  it('keeps Workspace-only submissions and forwards their paths', async () => {
+    const { hook, send } = setup()
+    const workspaceFile = {
+      name: 'large.jsonl',
+      type: 'application/x-ndjson',
+      size: 5_000_000,
+      path: 'uploads/large.jsonl',
+    }
+    act(() => {
+      hook.result.current.enqueue({
+        text: '',
+        files: [],
+        workspaceFiles: [workspaceFile],
+        sessionId: SESSION,
+      })
+    })
+
+    expect(hook.result.current.queue).toHaveLength(1)
+    await act(async () => { await hook.result.current.flushNext(SESSION, CLEAR) })
+
+    expect(send).toHaveBeenCalledWith(
+      '',
+      [],
+      undefined,
+      undefined,
+      [workspaceFile],
+    )
+  })
+
   it('carries the artifact context captured at enqueue time', async () => {
     const { hook, send } = setup()
     act(() => {
@@ -107,7 +136,7 @@ describe('useMessageQueue', () => {
 
     await act(async () => { await hook.result.current.flushNext(SESSION, CLEAR) })
 
-    expect(send).toHaveBeenCalledWith('hi', [], 'artifact-ctx', 'artifact-1')
+    expect(send).toHaveBeenCalledWith('hi', [], 'artifact-ctx', 'artifact-1', [])
   })
 
   // A turn that stops at a HITL approval still closes its SSE stream normally,
@@ -149,7 +178,7 @@ describe('useMessageQueue', () => {
     act(() => { hook.result.current.release() })
     await act(async () => { await hook.result.current.flushNext(SESSION, CLEAR) })
 
-    expect(send).toHaveBeenCalledWith('queued', [], undefined, undefined)
+    expect(send).toHaveBeenCalledWith('queued', [], undefined, undefined, [])
   })
 
   it('re-holds when released while an approval is still pending', async () => {
@@ -220,7 +249,7 @@ describe('useMessageQueue', () => {
       flushPromise = hook.result.current.flushNext(SESSION, CLEAR)
     })
 
-    expect(send).toHaveBeenCalledWith('dispatched', [], undefined, undefined)
+    expect(send).toHaveBeenCalledWith('dispatched', [], undefined, undefined, [])
     expect(hook.result.current.queue.map(m => m.text)).toEqual(['still waiting'])
 
     await act(async () => {
@@ -275,7 +304,7 @@ describe('useMessageQueue', () => {
     await act(async () => { await hook.result.current.flushNext(SESSION, CLEAR) })
 
     expect(send).toHaveBeenCalledTimes(1)
-    expect(send).toHaveBeenCalledWith('mine', [], undefined, undefined)
+    expect(send).toHaveBeenCalledWith('mine', [], undefined, undefined, [])
     expect(hook.result.current.queue.map(m => m.text)).toEqual(['foreign'])
   })
 

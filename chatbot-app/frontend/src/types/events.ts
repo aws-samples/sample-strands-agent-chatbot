@@ -223,6 +223,18 @@ export type AgentStatus =
   | 'voice_processing'
   | 'voice_speaking';
 
+export type TurnPhase =
+  | 'idle'
+  | 'submitting'
+  | 'waiting_for_model'
+  | 'reasoning'
+  | 'preparing_tool'
+  | 'running_tool'
+  | 'processing_tool_result'
+  | 'streaming_response'
+  | 'waiting_for_user'
+  | 'reconnecting';
+
 export interface LatencyMetrics {
   requestStartTime: number | null;
   timeToFirstToken: number | null;
@@ -244,6 +256,7 @@ export interface ChatUIState {
   reconnectAttempt?: number;
   showProgressPanel: boolean;
   agentStatus: AgentStatus;
+  turnPhase: TurnPhase;
   latencyMetrics: LatencyMetrics;
 }
 

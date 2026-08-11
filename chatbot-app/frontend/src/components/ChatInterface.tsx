@@ -6,6 +6,7 @@ import { useChat } from "@/hooks/useChat"
 import { useArtifacts } from "@/hooks/useArtifacts"
 import { useCanvasHandlers } from "@/hooks/useCanvasHandlers"
 import { useResearchJobs } from "@/hooks/useResearchJobs"
+import { useDelegationJobs } from "@/hooks/useDelegationJobs"
 import { useSessionEvents } from "@/hooks/useSessionEvents"
 import { ArtifactType } from "@/types/artifact"
 import { ChatMessage } from "@/components/chat/ChatMessage"
@@ -18,6 +19,7 @@ import { SwarmProgress } from "@/components/SwarmProgress"
 import { Canvas } from "@/components/canvas"
 import { ChatInputArea } from "@/components/chat/ChatInputArea"
 import { QueuedMessages } from "@/components/chat/QueuedMessages"
+import { DelegationJobs } from "@/components/chat/DelegationJobs"
 import { Button } from "@/components/ui/button"
 import { SidebarTrigger, SidebarInset, useSidebar } from "@/components/ui/sidebar"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
@@ -27,8 +29,10 @@ import { ArrowDown, Files, FolderTree, Loader2 } from "lucide-react"
 import { ModelConfigDialog } from "@/components/ModelConfigDialog"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog"
 import { buildArtifactContext } from "@/lib/artifactContext"
+import type { WorkspaceAttachment } from "@/types/chat"
 import { useTheme } from "next-themes"
 import { useVoiceIntegration } from "@/hooks/useVoiceIntegration"
+import { TurnActivityIndicator } from "@/components/chat/TurnActivityIndicator"
 
 
 // Custom throttle hook
@@ -151,6 +155,7 @@ export function ChatInterface() {
     isConnected,
     isTyping,
     agentStatus,
+    turnPhase,
     turnControl,
     currentReasoning,
     sendMessage,
@@ -242,6 +247,26 @@ export function ChatInterface() {
     }
     return invocationIds.size
   }, [groupedMessages])
+  const delegationInvocationCount = useMemo(() => {
+    const invocationIds = new Set<string>()
+    for (const group of groupedMessages) {
+      for (const message of group.messages) {
+        for (const tool of message.toolExecutions || []) {
+          if (tool.toolName === 'delegate_task') invocationIds.add(tool.id)
+        }
+      }
+    }
+    return invocationIds.size
+  }, [groupedMessages])
+  const {
+    jobs: delegationJobs,
+    cancel: cancelDelegation,
+    hasPendingDelivery: hasPendingDelegationDelivery,
+    deliveryVersion: delegationDeliveryVersion,
+  } = useDelegationJobs(
+    sessionId,
+    delegationInvocationCount,
+  )
   const {
     jobs: researchJobs,
     hasPendingDelivery,
@@ -252,8 +277,8 @@ export function ChatInterface() {
   )
   const { events: sessionEvents } = useSessionEvents(
     sessionId,
-    hasPendingDelivery,
-    deliveryVersion,
+    hasPendingDelivery || hasPendingDelegationDelivery,
+    deliveryVersion + delegationDeliveryVersion,
     sessionEventRefreshVersion,
   )
   const representedOriginEventIds = useMemo(() => {
@@ -656,17 +681,37 @@ export function ChatInterface() {
     return buildArtifactContext(selectedArtifact).artifactContext
   }, [selectedArtifactId, artifacts])
 
-  const handleSendMessage = async (text: string, files: File[]) => {
+  const handleSendMessage = async (
+    text: string,
+    files: File[],
+    workspaceFiles: WorkspaceAttachment[] = [],
+  ) => {
     if (open) {
       setOpen(false)
     }
     setOpenMobile(false)
 
-    await sendMessage(text, files, buildCurrentArtifactContext(), selectedArtifactId)
+    await sendMessage(
+      text,
+      files,
+      buildCurrentArtifactContext(),
+      selectedArtifactId,
+      workspaceFiles,
+    )
   }
 
-  const handleEnqueueMessage = useCallback((text: string, files: File[]) => {
-    enqueueMessage(text, files, buildCurrentArtifactContext(), selectedArtifactId)
+  const handleEnqueueMessage = useCallback((
+    text: string,
+    files: File[],
+    workspaceFiles: WorkspaceAttachment[] = [],
+  ) => {
+    enqueueMessage(
+      text,
+      files,
+      buildCurrentArtifactContext(),
+      selectedArtifactId,
+      workspaceFiles,
+    )
   }, [enqueueMessage, buildCurrentArtifactContext, selectedArtifactId])
 
   // Interrupt approval handlers for destructive/write operations.
@@ -976,6 +1021,7 @@ export function ChatInterface() {
                         onOpenExcalidrawArtifact={handleOpenExcalidrawArtifact}
                         researchProgress={researchProgress}
                         researchJobs={researchJobs}
+                        delegationJobs={delegationJobs}
                         codeProgress={codeProgress}
                       />
                     </>
@@ -993,18 +1039,10 @@ export function ChatInterface() {
             </div>
           )}
 
-          {/* Thinking Animation - Show only when agent is thinking (not in swarm mode) */}
-          {agentStatus === 'thinking' && !swarmProgress?.isActive && (
-            <div
-              className="mx-auto flex w-full max-w-4xl min-w-0 items-center gap-1 px-4 py-2 animate-fade-in"
-              role="status"
-              aria-label="AI is thinking"
-            >
-              <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/60 animate-pulse" />
-              <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/60 animate-pulse [animation-delay:150ms]" />
-              <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/60 animate-pulse [animation-delay:300ms]" />
-            </div>
-          )}
+          <TurnActivityIndicator
+            phase={turnPhase}
+            hidden={!!swarmProgress?.isActive}
+          />
 
           {/* Reconnection banner */}
           {isReconnecting && (
@@ -1045,6 +1083,11 @@ export function ChatInterface() {
         )}
 
         {/* Turns queued while the agent is busy */}
+        <DelegationJobs
+          jobs={delegationJobs}
+          onCancel={cancelDelegation}
+        />
+
         <QueuedMessages
           queue={queuedMessages}
           holdReason={queueHoldReason}

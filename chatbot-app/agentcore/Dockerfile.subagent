@@ -1,0 +1,23 @@
+FROM public.ecr.aws/docker/library/python:3.13-slim
+
+WORKDIR /app
+ENV PYTHONPATH=/app/src
+
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY src/ ./src/
+COPY skills/ ./skills/
+
+EXPOSE 9000
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=45s --retries=4 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:9000/ping')"
+
+CMD ["opentelemetry-instrument", "uvicorn", "src.subagent_main:app", "--host", "0.0.0.0", "--port", "9000", "--log-level", "info"]

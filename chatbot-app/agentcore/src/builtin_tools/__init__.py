@@ -1,136 +1,110 @@
-"""Built-in tools powered by AWS Bedrock services
+"""Lazy exports for built-in AWS-powered tools.
 
-This package contains tools that leverage AWS Bedrock capabilities:
-- Code Interpreter: Execute Python code for diagrams, charts, and document creation
-- Browser Automation: Navigate, interact, and extract data from web pages using Nova Act AI
-- Word Documents: Create, modify, and manage Word documents with persistent storage
-- Excel Spreadsheets: Create, modify, and manage Excel spreadsheets with persistent storage
-- PowerPoint Presentations: Create, modify, and manage PowerPoint presentations with persistent storage
-
-IMPORTANT: When adding a NEW TOOL, you MUST complete ALL 3 steps:
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-1. Add tool import and export in THIS file (__init__.py)
-2. Add tool definition in: chatbot-app/frontend/src/config/tools-config.json
-3. Sync to DynamoDB: POST http://localhost:3000/api/tools/sync-registry
-   (Or in production: POST https://your-domain.com/api/tools/sync-registry)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-Why? The tool registry is stored in DynamoDB (userId='TOOL_REGISTRY') and
-must be manually synced whenever tools-config.json changes. Without step 3,
-your new tool will NOT appear in the agent's tool list!
-
-You can verify the sync with: GET http://localhost:3000/api/tools
+Focused runtimes such as the general subagent only import Code Interpreter
+tools. Lazy loading prevents those runtimes from importing browser and Office
+dependencies that are not part of their capability profile.
 """
 
-from .diagram_tool import generate_chart, create_visual_design
+from importlib import import_module
 
-# Nova Act browser tools
-from .nova_act_browser_tools import browser_act, browser_get_page_info, browser_manage_tabs, browser_save_screenshot
+_EXPORTS = {
+    "generate_chart": (".diagram_tool", "generate_chart"),
+    "create_visual_design": (".diagram_tool", "create_visual_design"),
+    "browser_act": (".nova_act_browser_tools", "browser_act"),
+    "browser_get_page_info": (
+        ".nova_act_browser_tools",
+        "browser_get_page_info",
+    ),
+    "browser_manage_tabs": (".nova_act_browser_tools", "browser_manage_tabs"),
+    "browser_save_screenshot": (
+        ".nova_act_browser_tools",
+        "browser_save_screenshot",
+    ),
+    "create_word_document": (".word_document_tool", "create_word_document"),
+    "modify_word_document": (".word_document_tool", "modify_word_document"),
+    "list_my_word_documents": (
+        ".word_document_tool",
+        "list_my_word_documents",
+    ),
+    "read_word_document": (".word_document_tool", "read_word_document"),
+    "preview_word_page": (".word_document_tool", "preview_word_page"),
+    "create_excel_spreadsheet": (
+        ".excel_spreadsheet_tool",
+        "create_excel_spreadsheet",
+    ),
+    "modify_excel_spreadsheet": (
+        ".excel_spreadsheet_tool",
+        "modify_excel_spreadsheet",
+    ),
+    "list_my_excel_spreadsheets": (
+        ".excel_spreadsheet_tool",
+        "list_my_excel_spreadsheets",
+    ),
+    "read_excel_spreadsheet": (
+        ".excel_spreadsheet_tool",
+        "read_excel_spreadsheet",
+    ),
+    "preview_excel_sheets": (
+        ".excel_spreadsheet_tool",
+        "preview_excel_sheets",
+    ),
+    "get_slide_design_reference": (
+        ".powerpoint_presentation_tool",
+        "get_slide_design_reference",
+    ),
+    "list_my_powerpoint_presentations": (
+        ".powerpoint_presentation_tool",
+        "list_my_powerpoint_presentations",
+    ),
+    "get_presentation_layouts": (
+        ".powerpoint_presentation_tool",
+        "get_presentation_layouts",
+    ),
+    "analyze_presentation": (
+        ".powerpoint_presentation_tool",
+        "analyze_presentation",
+    ),
+    "create_presentation": (
+        ".powerpoint_presentation_tool",
+        "create_presentation",
+    ),
+    "update_slide_content": (
+        ".powerpoint_presentation_tool",
+        "update_slide_content",
+    ),
+    "add_slide": (".powerpoint_presentation_tool", "add_slide"),
+    "delete_slides": (".powerpoint_presentation_tool", "delete_slides"),
+    "move_slide": (".powerpoint_presentation_tool", "move_slide"),
+    "duplicate_slide": (".powerpoint_presentation_tool", "duplicate_slide"),
+    "update_slide_notes": (
+        ".powerpoint_presentation_tool",
+        "update_slide_notes",
+    ),
+    "preview_presentation_slides": (
+        ".powerpoint_presentation_tool",
+        "preview_presentation_slides",
+    ),
+    "execute_code": (".code_interpreter_tool", "execute_code"),
+    "execute_command": (".code_interpreter_tool", "execute_command"),
+    "file_operations": (".code_interpreter_tool", "file_operations"),
+    "ci_push_to_workspace": (
+        ".code_interpreter_tool",
+        "ci_push_to_workspace",
+    ),
+}
 
-from .word_document_tool import (
-    create_word_document,
-    modify_word_document,
-    list_my_word_documents,
-    read_word_document,
-    preview_word_page
-)
-from .excel_spreadsheet_tool import (
-    create_excel_spreadsheet,
-    modify_excel_spreadsheet,
-    list_my_excel_spreadsheets,
-    read_excel_spreadsheet,
-    preview_excel_sheets
-)
-# Code Interpreter (general-purpose sandbox)
-from .code_interpreter_tool import execute_code, execute_command, file_operations, ci_push_to_workspace
+__all__ = list(_EXPORTS)
 
-from .powerpoint_presentation_tool import (
-    get_slide_design_reference,
-    list_my_powerpoint_presentations,
-    get_presentation_layouts,
-    analyze_presentation,
-    create_presentation,
-    update_slide_content,
-    add_slide,
-    delete_slides,
-    move_slide,
-    duplicate_slide,
-    update_slide_notes,
-    preview_presentation_slides
-)
 
-__all__ = [
-    'generate_chart',
-    'create_visual_design',
-    'browser_act',
-    'browser_get_page_info',
-    'browser_manage_tabs',
-    'browser_save_screenshot',
-    'create_word_document',
-    'modify_word_document',
-    'list_my_word_documents',
-    'read_word_document',
-    'preview_word_page',
-    'create_excel_spreadsheet',
-    'modify_excel_spreadsheet',
-    'list_my_excel_spreadsheets',
-    'read_excel_spreadsheet',
-    'preview_excel_sheets',
-    # PowerPoint tools
-    'get_slide_design_reference',
-    'list_my_powerpoint_presentations',
-    'get_presentation_layouts',
-    'analyze_presentation',
-    'create_presentation',
-    'update_slide_content',
-    'add_slide',
-    'delete_slides',
-    'move_slide',
-    'duplicate_slide',
-    'update_slide_notes',
-    'preview_presentation_slides',
-    # Code Interpreter tools
-    'execute_code',
-    'execute_command',
-    'file_operations',
-    'ci_push_to_workspace',
-]
-
-# Collection of all builtin tools for registry sync
-BUILTIN_TOOLS = [
-    generate_chart,
-    create_visual_design,
-    create_word_document,
-    modify_word_document,
-    list_my_word_documents,
-    read_word_document,
-    preview_word_page,
-    create_excel_spreadsheet,
-    modify_excel_spreadsheet,
-    list_my_excel_spreadsheets,
-    read_excel_spreadsheet,
-    preview_excel_sheets,
-    get_slide_design_reference,
-    list_my_powerpoint_presentations,
-    get_presentation_layouts,
-    analyze_presentation,
-    create_presentation,
-    update_slide_content,
-    add_slide,
-    delete_slides,
-    move_slide,
-    duplicate_slide,
-    update_slide_notes,
-    preview_presentation_slides
-]
-
-# Code Interpreter tools
-BUILTIN_TOOLS.extend([execute_code, execute_command, file_operations, ci_push_to_workspace])
-
-# Nova Act browser tools
-BUILTIN_TOOLS.extend([
-    browser_act,
-    browser_get_page_info,
-    browser_manage_tabs,
-    browser_save_screenshot,
-])
+def __getattr__(name):
+    if name == "BUILTIN_TOOLS":
+        tools = [__getattr__(tool_name) for tool_name in __all__]
+        globals()[name] = tools
+        return tools
+    try:
+        module_name, attribute = _EXPORTS[name]
+    except KeyError as error:
+        raise AttributeError(name) from error
+    value = getattr(import_module(module_name, __name__), attribute)
+    globals()[name] = value
+    return value

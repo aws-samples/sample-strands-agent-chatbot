@@ -22,6 +22,13 @@ export interface ToolExecution {
   codeResultMeta?: { files_changed: string[]; todos: any[]; steps: number }
 }
 
+export interface WorkspaceAttachment {
+  name: string
+  type: string
+  size: number
+  path: string
+}
+
 export interface Message {
   id: string
   logicalMessageId?: string
@@ -48,6 +55,7 @@ export interface Message {
     name: string
     type: string
     size: number
+    workspacePath?: string
   }>
   latencyMetrics?: {
     timeToFirstToken?: number  // ms from request to first response

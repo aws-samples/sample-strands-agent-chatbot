@@ -67,6 +67,12 @@ variable "research_agent_default_model_id" {
   default     = "us.anthropic.claude-sonnet-5"
 }
 
+variable "general_subagent_default_model_id" {
+  description = "Fallback model for isolated analyst and reviewer delegations."
+  type        = string
+  default     = "us.anthropic.claude-sonnet-5"
+}
+
 variable "google_oauth_client_id" {
   description = "Google OAuth Client ID for Gmail/Calendar MCP 3LO. Empty disables the provider."
   type        = string

@@ -19,6 +19,7 @@ function setup() {
     const [uiState, setUIState] = useState<any>({
       agentStatus: 'thinking',
       isTyping: true,
+      turnPhase: 'waiting_for_model',
       latencyMetrics: {},
     })
     const currentToolExecutionsRef = useRef<ToolExecution[]>([])
@@ -67,6 +68,9 @@ describe('useStreamEvents tool input streaming', () => {
       toolInputRaw: '',
       toolInputState: 'streaming',
     })
+    expect(hook.result.current.uiState).toMatchObject({
+      turnPhase: 'preparing_tool',
+    })
 
     act(() => {
       hook.result.current.handleStreamEvent({
@@ -111,6 +115,22 @@ describe('useStreamEvents tool input streaming', () => {
       toolName: 'tavily_search',
       toolInput: { query: 'mailbox' },
       toolInputState: 'complete',
+    })
+    expect(hook.result.current.uiState).toMatchObject({
+      turnPhase: 'running_tool',
+    })
+
+    act(() => {
+      hook.result.current.handleStreamEvent({
+        type: 'TOOL_CALL_RESULT',
+        toolCallId: 'tool-1',
+        content: JSON.stringify({ result: 'done' }),
+      } as any)
+    })
+
+    expect(hook.result.current.uiState).toMatchObject({
+      agentStatus: 'thinking',
+      turnPhase: 'processing_tool_result',
     })
   })
 })

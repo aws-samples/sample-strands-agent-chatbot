@@ -93,6 +93,9 @@ export function QueuedMessages({
         <div className="flex flex-col gap-1.5">
           {queue.map(message => {
             const label = message.text || "attachments"
+            const attachmentCount = (
+              message.files.length + (message.workspaceFiles?.length ?? 0)
+            )
             return (
               <motion.div
                 key={message.id}
@@ -104,11 +107,11 @@ export function QueuedMessages({
               >
                 <Clock3 className="h-4 w-4 shrink-0 text-muted-foreground" />
                 <span className="min-w-0 flex-1 truncate text-foreground/80">
-                  {message.text || `${message.files.length} attachment(s)`}
+                  {message.text || `${attachmentCount} attachment(s)`}
                 </span>
-                {message.files.length > 0 && message.text && (
+                {attachmentCount > 0 && message.text && (
                   <span className="shrink-0 text-xs text-muted-foreground">
-                    +{message.files.length}
+                    +{attachmentCount}
                   </span>
                 )}
                 {actionMode && (

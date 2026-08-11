@@ -1,7 +1,6 @@
 import React, { useState, useMemo } from 'react'
 import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
-import { Copy, ThumbsUp, ThumbsDown, Check, Sparkles } from 'lucide-react'
+import { Copy, Check, Sparkles } from 'lucide-react'
 import { Message } from '@/types/chat'
 import { ReasoningState } from '@/types/events'
 import { Markdown } from '@/components/ui/Markdown'
@@ -9,8 +8,8 @@ import { StreamingText } from './StreamingText'
 import { ToolExecutionContainer } from './ToolExecutionContainer'
 import { CodeAgentTerminal, isCodeAgentExecution } from './CodeAgentUI'
 import { LazyImage } from '@/components/ui/LazyImage'
-import { fetchAuthSession } from 'aws-amplify/auth'
 import type { ResearchJob } from '@/lib/research-jobs'
+import type { DelegationJob } from '@/lib/delegation-jobs'
 
 // Parse artifact creation message pattern
 const parseArtifactMessage = (text: string): { title: string; wordCount: number } | null => {
@@ -60,25 +59,19 @@ interface AssistantTurnProps {
     content: string
   }
   researchJobs?: ResearchJob[]
+  delegationJobs?: DelegationJob[]
   codeProgress?: Array<{
     stepNumber: number
     content: string
   }>
 }
 
-export const AssistantTurn = React.memo<AssistantTurnProps>(({ messages, currentReasoning, sessionId, onOpenResearchArtifact, onOpenWordArtifact, onOpenExcelArtifact, onOpenPptArtifact, onOpenExtractedDataArtifact, onOpenExcalidrawArtifact, researchProgress, researchJobs, codeProgress }) => {
-  // Get initial feedback state from first message
-  const initialFeedback = messages[0]?.feedback || null
-
+export const AssistantTurn = React.memo<AssistantTurnProps>(({ messages, currentReasoning, sessionId, onOpenResearchArtifact, onOpenWordArtifact, onOpenExcelArtifact, onOpenPptArtifact, onOpenExtractedDataArtifact, onOpenExcalidrawArtifact, researchProgress, researchJobs, delegationJobs, codeProgress }) => {
   const [copied, setCopied] = useState(false)
-  const [feedback, setFeedback] = useState<'up' | 'down' | null>(initialFeedback)
 
 if (!messages || messages.length === 0) {
     return null
   }
-
-  // Get turn ID from first message for feedback storage
-  const turnId = messages[0]?.id
 
   // Handle copy to clipboard
   const handleCopy = async () => {
@@ -94,43 +87,6 @@ if (!messages || messages.length === 0) {
       setTimeout(() => setCopied(false), 2000)
     } catch (err) {
       console.error('Failed to copy:', err)
-    }
-  }
-
-  // Handle feedback (thumbs up/down)
-  const handleFeedback = async (type: 'up' | 'down') => {
-    const newFeedback = feedback === type ? null : type
-    setFeedback(newFeedback)
-
-    // Save feedback to metadata
-    if (sessionId && turnId) {
-      try {
-        // Get auth token
-        const authHeaders: Record<string, string> = { 'Content-Type': 'application/json' }
-        try {
-          const session = await fetchAuthSession()
-          const token = session.tokens?.accessToken?.toString()
-          if (token) {
-            authHeaders['Authorization'] = `Bearer ${token}`
-          }
-        } catch (error) {
-          console.log('[AssistantTurn] No auth session available')
-        }
-
-        await fetch('/api/session/update-metadata', {
-          method: 'POST',
-          headers: authHeaders,
-          body: JSON.stringify({
-            sessionId,
-            messageId: turnId,
-            metadata: {
-              feedback: newFeedback
-            }
-          })
-        })
-      } catch (err) {
-        console.error('Failed to save feedback:', err)
-      }
     }
   }
 
@@ -253,9 +209,21 @@ if (!messages || messages.length === 0) {
   // Find latency metrics and token usage from the messages
   const latencyMetrics = sortedMessages.find(msg => msg.latencyMetrics)?.latencyMetrics
   const tokenUsage = sortedMessages.find(msg => msg.tokenUsage)?.tokenUsage
+  const metricsText = [
+    latencyMetrics?.timeToFirstToken && `TTFT ${latencyMetrics.timeToFirstToken}ms`,
+    latencyMetrics?.endToEndLatency && `E2E ${(latencyMetrics.endToEndLatency / 1000).toFixed(1)}s`,
+    tokenUsage && `${(tokenUsage.inputTokens / 1000).toFixed(1)}k in · ${tokenUsage.outputTokens} out${
+      (tokenUsage.cacheReadInputTokens ?? 0) > 0 || (tokenUsage.cacheWriteInputTokens ?? 0) > 0
+        ? ` (${[
+            (tokenUsage.cacheReadInputTokens ?? 0) > 0 && `${tokenUsage.cacheReadInputTokens!.toLocaleString()} hit`,
+            (tokenUsage.cacheWriteInputTokens ?? 0) > 0 && `${tokenUsage.cacheWriteInputTokens!.toLocaleString()} write`,
+          ].filter(Boolean).join(', ')})`
+        : ''
+    }`,
+  ].filter(Boolean).join(' · ')
 
   return (
-    <div className="flex justify-start mb-8 group">
+    <div className="flex justify-start mb-5 group">
       <div className="w-full max-w-4xl min-w-0">
         <div data-testid="assistant-turn-content" className="min-w-0 space-y-4 pt-1">
           {/* Render messages in chronological order — merge consecutive tool items */}
@@ -286,6 +254,7 @@ if (!messages || messages.length === 0) {
                       onOpenExtractedDataArtifact={onOpenExtractedDataArtifact}
                       onOpenExcalidrawArtifact={onOpenExcalidrawArtifact}
                       researchJobs={researchJobs}
+                      delegationJobs={delegationJobs}
                     />
                   )}
                 </div>
@@ -375,66 +344,26 @@ if (!messages || messages.length === 0) {
             <CodeAgentTerminal steps={codeProgress} />
           )}
 
-          {/* Metrics - Minimal text on hover (hidden on mobile) */}
-          {((latencyMetrics && (latencyMetrics.timeToFirstToken || latencyMetrics.endToEndLatency)) || tokenUsage) && (
-            <div className="hidden md:flex justify-end opacity-0 group-hover:opacity-100 transition-opacity duration-200 -mt-1">
-              <span className="text-[11px] text-muted-foreground/70">
-                {[
-                  latencyMetrics?.timeToFirstToken && `TTFT ${latencyMetrics.timeToFirstToken}ms`,
-                  latencyMetrics?.endToEndLatency && `E2E ${(latencyMetrics.endToEndLatency / 1000).toFixed(1)}s`,
-                  tokenUsage && `${(tokenUsage.inputTokens / 1000).toFixed(1)}k in · ${tokenUsage.outputTokens} out${
-                    (tokenUsage.cacheReadInputTokens ?? 0) > 0 || (tokenUsage.cacheWriteInputTokens ?? 0) > 0
-                      ? ` (${[
-                          (tokenUsage.cacheReadInputTokens ?? 0) > 0 && `${tokenUsage.cacheReadInputTokens!.toLocaleString()} hit`,
-                          (tokenUsage.cacheWriteInputTokens ?? 0) > 0 && `${tokenUsage.cacheWriteInputTokens!.toLocaleString()} write`,
-                        ].filter(Boolean).join(', ')})`
-                      : ''
-                  }`,
-                ].filter(Boolean).join(' · ')}
-              </span>
-            </div>
-          )}
-
-          {/* Action Buttons - Shows on hover at bottom */}
-          <div className="flex gap-2 mt-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
-            <Button
-              variant="ghost"
-              size="sm"
+          {/* Compact turn footer: actions and metrics share one baseline. */}
+          <div className="mt-1 flex h-6 items-center justify-between opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100">
+            <button
+              type="button"
               onClick={handleCopy}
-              className="h-8 px-3 text-muted-foreground hover:text-foreground hover:bg-muted"
+              className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              aria-label={copied ? 'Response copied' : 'Copy response'}
+              title={copied ? 'Copied' : 'Copy'}
             >
               {copied ? (
-                <Check className="h-3.5 w-3.5" />
+                <Check className="h-3.5 w-3.5 text-primary" />
               ) : (
                 <Copy className="h-3.5 w-3.5" />
               )}
-            </Button>
-
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => handleFeedback('up')}
-              className={`h-8 px-3 ${
-                feedback === 'up'
-                  ? 'text-green-600 bg-green-500/10 hover:bg-green-500/20 dark:text-green-400'
-                  : 'text-muted-foreground hover:text-foreground hover:bg-muted'
-              }`}
-            >
-              <ThumbsUp className="h-3.5 w-3.5" />
-            </Button>
-
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => handleFeedback('down')}
-              className={`h-8 px-3 ${
-                feedback === 'down'
-                  ? 'text-destructive bg-destructive/10 hover:bg-destructive/20'
-                  : 'text-muted-foreground hover:text-foreground hover:bg-muted'
-              }`}
-            >
-              <ThumbsDown className="h-3.5 w-3.5" />
-            </Button>
+            </button>
+            {metricsText && (
+              <span className="hidden text-[11px] text-muted-foreground/70 md:block">
+                {metricsText}
+              </span>
+            )}
           </div>
         </div>
       </div>
@@ -510,6 +439,7 @@ if (!messages || messages.length === 0) {
 
   // Compare codeProgress for real-time code agent status
   const codeProgressEqual = (prevProps.codeProgress?.length ?? 0) === (nextProps.codeProgress?.length ?? 0)
+  const delegationJobsEqual = prevProps.delegationJobs === nextProps.delegationJobs
 
-  return messagesEqual && reasoningEqual && prevProps.sessionId === nextProps.sessionId && callbackEqual && researchProgressEqual && codeProgressEqual
+  return messagesEqual && reasoningEqual && prevProps.sessionId === nextProps.sessionId && callbackEqual && researchProgressEqual && codeProgressEqual && delegationJobsEqual
 })

@@ -166,6 +166,36 @@ describe('useChatAPI — stopping a turn that parked at an interrupt', () => {
 
     expect(requested).toBe(false)
   })
+
+  it('sends Workspace attachment paths in AG-UI state', async () => {
+    const { hook } = setup()
+    const fetchMock = vi.fn().mockResolvedValue(sseResponse([RUN_FINISHED]))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await act(async () => {
+      await hook.result.current.sendMessage(
+        'inspect this file',
+        [],
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        [{
+          name: 'large.jsonl',
+          type: 'application/x-ndjson',
+          size: 5_000_000,
+          path: 'uploads/large.jsonl',
+        }],
+      )
+    })
+
+    const chatCall = fetchMock.mock.calls.find(call =>
+      String(call[0]).includes('stream/chat'),
+    )
+    expect(chatCall).toBeDefined()
+    const body = JSON.parse(String(chatCall?.[1]?.body))
+    expect(body.state.workspace_paths).toEqual(['uploads/large.jsonl'])
+  })
 })
 
 describe('useChatAPI — background execution replay', () => {

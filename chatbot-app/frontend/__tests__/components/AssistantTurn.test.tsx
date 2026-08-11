@@ -12,13 +12,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { AssistantTurn } from '@/components/chat/AssistantTurn'
 import type { Message } from '@/types/chat'
-
-// Mock fetchAuthSession
-vi.mock('aws-amplify/auth', () => ({
-  fetchAuthSession: vi.fn().mockResolvedValue({
-    tokens: { idToken: { toString: () => 'mock-token' } }
-  })
-}))
+import type { DelegationJob } from '@/lib/delegation-jobs'
 
 // Mock fetch
 const mockFetch = vi.fn()
@@ -184,6 +178,25 @@ describe('AssistantTurn', () => {
 
       expect(container.innerHTML).not.toContain('TTFT')
       expect(container.innerHTML).not.toContain('E2E')
+    })
+  })
+
+  describe('Compact Footer', () => {
+    it('shows only the copy action alongside metrics', () => {
+      const messages: Message[] = [
+        createMessage({
+          latencyMetrics: {
+            timeToFirstToken: 150,
+            endToEndLatency: 500,
+          },
+        }),
+      ]
+
+      render(<AssistantTurn messages={messages} sessionId="test-session" />)
+
+      expect(screen.getByRole('button', { name: 'Copy response' })).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /thumb|feedback|like|dislike/i })).not.toBeInTheDocument()
+      expect(screen.getByText(/TTFT 150ms/)).toBeInTheDocument()
     })
   })
 
@@ -585,6 +598,116 @@ describe('AssistantTurn', () => {
       // Both tools rendered via ToolExecutionContainer (formatted names)
       expect(container.innerHTML).toContain('Used Web Search')
       expect(container.innerHTML).toContain('Used Research Agent')
+    })
+
+    it('hydrates a delegated tool call with the completed background result', () => {
+      const messages: Message[] = [
+        createMessage({
+          id: 'msg-delegation',
+          text: '',
+          timestamp: '2024-01-01T10:00:00Z',
+          toolExecutions: [{
+            id: 'tool-delegation-1',
+            toolName: 'delegate_task',
+            toolInput: {
+              profile: 'analyst',
+              goal: 'Analyze the uploaded events',
+            },
+            reasoning: [],
+            isComplete: true,
+            isExpanded: false,
+            toolResult: JSON.stringify({
+              status: 'accepted',
+              profile: 'analyst',
+            }),
+          }],
+        }),
+      ]
+      const jobs: DelegationJob[] = [{
+        jobId: 'job-1',
+        sessionId: 'test-session',
+        userId: 'user-1',
+        parentToolUseId: 'tool-delegation-1',
+        profile: 'analyst',
+        executionStatus: 'succeeded',
+        deliveryStatus: 'delivered',
+        request: {
+          goal: 'Analyze the uploaded events',
+          deliverable: 'An anomaly report',
+        },
+        resultSummary: 'Found three malformed records.',
+        artifacts: ['outputs/delegations/job-1/report.md'],
+        createdAt: '2024-01-01T10:00:00Z',
+        updatedAt: '2024-01-01T10:01:00Z',
+        completedAt: '2024-01-01T10:01:00Z',
+      }]
+
+      const { container } = render(
+        <AssistantTurn
+          messages={messages}
+          sessionId="test-session"
+          delegationJobs={jobs}
+        />,
+      )
+
+      expect(screen.getByText('Analyst completed')).toBeInTheDocument()
+      fireEvent.click(screen.getByText('Analyst completed'))
+      expect(container.innerHTML).toContain('Found three malformed records.')
+      expect(container.innerHTML).toContain('outputs/delegations/job-1/report.md')
+      expect(container.querySelector('svg')).toBeInTheDocument()
+    })
+
+    it('keeps a delegated tool call active while the background job is running', () => {
+      const messages: Message[] = [
+        createMessage({
+          id: 'msg-delegation-running',
+          text: '',
+          timestamp: '2024-01-01T10:00:00Z',
+          toolExecutions: [{
+            id: 'tool-delegation-2',
+            toolName: 'delegate_task',
+            toolInput: {
+              profile: 'reviewer',
+              goal: 'Review the document',
+            },
+            reasoning: [],
+            isComplete: true,
+            isExpanded: false,
+            toolResult: JSON.stringify({ status: 'accepted' }),
+          }],
+        }),
+      ]
+      const jobs: DelegationJob[] = [{
+        jobId: 'job-2',
+        sessionId: 'test-session',
+        userId: 'user-1',
+        parentToolUseId: 'tool-delegation-2',
+        profile: 'reviewer',
+        executionStatus: 'running',
+        deliveryStatus: 'none',
+        request: {
+          goal: 'Review the document',
+          deliverable: 'A review',
+        },
+        progress: {
+          content: 'Checking requirements',
+          stepNumber: 1,
+        },
+        createdAt: '2024-01-01T10:00:00Z',
+        updatedAt: '2024-01-01T10:00:30Z',
+      }]
+
+      render(
+        <AssistantTurn
+          messages={messages}
+          sessionId="test-session"
+          delegationJobs={jobs}
+        />,
+      )
+
+      expect(screen.getByText('Reviewer working...')).toBeInTheDocument()
+      expect(screen.getByText('Checking requirements')).toBeInTheDocument()
+      expect(screen.queryByText('"accepted"')).not.toBeInTheDocument()
     })
 
     it('should always sort by timestamp (id is always string now)', () => {

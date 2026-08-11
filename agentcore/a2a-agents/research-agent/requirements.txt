@@ -6,7 +6,7 @@ fastapi==0.116.1
 uvicorn[standard]==0.35.0
 
 # Strands Agent Framework
-strands-agents>=1.45.0,<2.0.0
+strands-agents>=1.45.0,<1.51.0
 openai>=2.0.0
 
 # AWS & Bedrock

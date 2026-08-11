@@ -282,6 +282,7 @@ def _parse_stream(response: dict) -> tuple:
 def _get_workspace_s3_prefixes(user_id: str, session_id: str) -> List[str]:
     """Return S3 prefixes for all workspace document types."""
     return [
+        f"code-interpreter-workspace/{user_id}/{session_id}/inputs/",
         f"documents/{user_id}/{session_id}/zip/",
         f"documents/{user_id}/{session_id}/word/",
         f"documents/{user_id}/{session_id}/excel/",

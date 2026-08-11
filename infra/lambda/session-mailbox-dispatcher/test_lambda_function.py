@@ -48,6 +48,44 @@ def sqs_record(
     }
 
 
+def delegation_record(
+    event_id: str,
+    *,
+    job_id: str = "job-1",
+    user_id: str = "user-1",
+    session_id: str = "session-1",
+):
+    return {
+        "eventID": event_id,
+        "eventName": "INSERT",
+        "dynamodb": {
+            "NewImage": {
+                "recordType": {"S": "DELEGATION_JOB"},
+                "workStatus": {"S": "queued"},
+                "desiredState": {"S": "running"},
+                "userId": {"S": user_id},
+                "sessionId": {"S": session_id},
+                "jobId": {"S": job_id},
+            }
+        },
+    }
+
+
+def delegation_sqs_record(
+    message_id: str,
+    *,
+    job_id: str = "job-1",
+):
+    item = sqs_record(message_id)
+    item["body"] = json.dumps({
+        "kind": "delegation",
+        "userId": "user-1",
+        "sessionId": "session-1",
+        "jobId": job_id,
+    })
+    return item
+
+
 def test_coalesces_multiple_inserts_for_one_session(monkeypatch):
     enqueue = MagicMock()
     monkeypatch.setattr(lambda_function, "_enqueue_wake", enqueue)
@@ -101,6 +139,68 @@ def test_reports_each_coalesced_record_when_wake_fails(monkeypatch):
             {"itemIdentifier": "2"},
         ]
     }
+
+
+def test_stream_enqueues_delegation_job(monkeypatch):
+    enqueue = MagicMock()
+    monkeypatch.setattr(lambda_function, "_enqueue_delegation", enqueue)
+
+    result = lambda_function.lambda_handler(
+        {"Records": [delegation_record("stream-1")]},
+        None,
+    )
+
+    assert result == {"batchItemFailures": []}
+    enqueue.assert_called_once_with("user-1", "session-1", "job-1")
+
+
+def test_sqs_worker_starts_delegation(monkeypatch):
+    start = MagicMock()
+    monkeypatch.setattr(lambda_function, "_start_delegation", start)
+
+    result = lambda_function.lambda_handler(
+        {"Records": [delegation_sqs_record("message-1")]},
+        None,
+    )
+
+    assert result == {"batchItemFailures": []}
+    start.assert_called_once_with("user-1", "session-1", "job-1")
+
+
+def test_reconcile_enqueues_queued_and_stale_jobs(monkeypatch):
+    query = MagicMock(side_effect=[
+        {
+            "Items": [{
+                "userId": {"S": "user-1"},
+                "sessionId": {"S": "session-1"},
+                "jobId": {"S": "queued-job"},
+            }]
+        },
+        {
+            "Items": [{
+                "userId": {"S": "user-1"},
+                "sessionId": {"S": "session-1"},
+                "jobId": {"S": "stale-job"},
+            }]
+        },
+    ])
+    monkeypatch.setattr(
+        lambda_function.boto3,
+        "client",
+        lambda service: MagicMock(query=query),
+    )
+    enqueue = MagicMock()
+    monkeypatch.setattr(lambda_function, "_enqueue_delegation", enqueue)
+    monkeypatch.setenv("ORCHESTRATION_TABLE_NAME", "orchestration")
+
+    result = lambda_function.lambda_handler(
+        {"source": "aws.events"},
+        None,
+    )
+
+    assert result == {"status": "reconciled", "enqueued": 2}
+    assert enqueue.call_args_list[0].args[-1] == "queued-job"
+    assert enqueue.call_args_list[1].args[-1] == "stale-job"
 
 
 def test_sqs_worker_coalesces_wakes_for_one_session(monkeypatch):

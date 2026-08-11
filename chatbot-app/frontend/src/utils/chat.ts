@@ -50,10 +50,15 @@ const formatName = (name: string): string =>
   name.replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
 
 // Tool name to user-friendly display name
-export const getToolDisplayName = (toolId: string, isComplete: boolean, _toolInput?: any): string => {
+export const getToolDisplayName = (toolId: string, isComplete: boolean, toolInput?: any): string => {
   // skill_dispatcher is a meta-tool that returns SKILL.md instructions.
   if (toolId === 'skill_dispatcher') {
     return isComplete ? 'Found the right tool' : 'Finding the right tool...'
+  }
+
+  if (toolId === 'delegate_task') {
+    const profile = toolInput?.profile === 'reviewer' ? 'Reviewer' : 'Analyst'
+    return isComplete ? `${profile} completed` : `${profile} working...`
   }
 
   const mapping = displayNameMap[toolId]

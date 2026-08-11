@@ -83,6 +83,12 @@ jobs:
       - name: Integration tests
         run: python -m pytest tests/integration/ -v --tb=short
 
+      - name: Build general subagent image
+        run: docker build --file Dockerfile.subagent --tag general-subagent-ci .
+
+      - name: Import general subagent application
+        run: docker run --rm general-subagent-ci python -c "import src.subagent_main"
+
   gateway-lambda:
     name: Gateway Lambda (Python)
     needs: changes
@@ -233,6 +239,17 @@ jobs:
 
       - name: Check model smoke script syntax
         run: python3 -m py_compile infra/scripts/model-smoke.py
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Install dispatcher test dependencies
+        run: pip install boto3 pytest
+
+      - name: Test mailbox and delegation dispatcher
+        working-directory: infra/lambda/session-mailbox-dispatcher
+        run: python -m pytest test_lambda_function.py -v --tb=short
 
   mobile:
     name: Mobile (TypeScript)

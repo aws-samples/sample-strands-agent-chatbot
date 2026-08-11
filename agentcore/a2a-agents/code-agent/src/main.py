@@ -17,9 +17,8 @@ import logging
 import os
 import re
 import uuid
-import zipfile
 from pathlib import Path
-from typing import Optional, List, Dict
+from typing import Optional
 
 from fastapi import FastAPI
 from a2a.server.agent_execution import AgentExecutor, RequestContext
@@ -43,6 +42,7 @@ from claude_agent_sdk import (
     ProcessError,
     CLIJSONDecodeError,
 )
+from .session_workspace import restore_s3_prefix, sync_session_inputs
 
 # Claude Agent SDK cannot run inside an existing Claude Code session.
 # Unset CLAUDECODE so nested invocation is allowed in all environments.
@@ -142,62 +142,6 @@ _task_to_sdk_key: dict[str, str] = {}
 
 
 # ============================================================
-# S3 File Handling
-# ============================================================
-
-def download_s3_files(s3_files: List[Dict], workspace: Path) -> List[str]:
-    """
-    Download files listed in metadata["s3_files"] into the workspace.
-
-    Each entry: {"s3_uri": "s3://bucket/key", "filename": "code.zip"}
-    Zip files are auto-extracted into a subdirectory named after the zip.
-
-    Returns human-readable descriptions of what was placed in the workspace.
-    """
-    if not s3_files:
-        return []
-
-    import boto3
-    from botocore.exceptions import ClientError
-
-    s3 = boto3.client("s3", region_name=AWS_REGION)
-    descriptions = []
-
-    for entry in s3_files:
-        s3_uri = entry.get("s3_uri", "")
-        filename = entry.get("filename") or Path(s3_uri).name
-
-        if not s3_uri.startswith("s3://"):
-            logger.warning(f"[S3] Invalid URI skipped: {s3_uri}")
-            continue
-
-        bucket, key = s3_uri[5:].split("/", 1)
-        dest = workspace / filename
-
-        try:
-            s3.download_file(bucket, key, str(dest))
-            logger.info(f"[S3] {s3_uri} → {dest}")
-
-            if filename.endswith(".zip"):
-                extract_dir = workspace / Path(filename).stem
-                extract_dir.mkdir(exist_ok=True)
-                with zipfile.ZipFile(dest, "r") as zf:
-                    zf.extractall(extract_dir)
-                descriptions.append(
-                    f"- `{filename}` (zip) → extracted to `{extract_dir.name}/`"
-                )
-                logger.info(f"[S3] Extracted → {extract_dir}")
-            else:
-                descriptions.append(f"- `{filename}`")
-
-        except ClientError as e:
-            logger.error(f"[S3] Download failed {s3_uri}: {e}")
-            descriptions.append(f"- `{filename}` ⚠️ download failed")
-
-    return descriptions
-
-
-# ============================================================
 # Session Persistence (S3 sync/restore)
 # ============================================================
 
@@ -235,13 +179,22 @@ def _should_exclude(rel: Path) -> bool:
     return any(part in _SYNC_EXCLUDE_DIRS for part in rel.parts)
 
 
-def _sync_dir_to_s3(local_dir: Path, bucket: str, s3_prefix: str, s3_client) -> int:
+def _sync_dir_to_s3(
+    local_dir: Path,
+    bucket: str,
+    s3_prefix: str,
+    s3_client,
+    *,
+    exclude_top_level_inputs: bool = False,
+) -> int:
     """Upload all files under local_dir to s3://bucket/s3_prefix/. Returns upload count."""
     uploaded = 0
     for file_path in local_dir.rglob("*"):
         if not file_path.is_file():
             continue
         rel = file_path.relative_to(local_dir)
+        if exclude_top_level_inputs and rel.parts[0] == "inputs":
+            continue
         if _should_exclude(rel):
             continue
         s3_key = f"{s3_prefix}/{rel}"
@@ -253,34 +206,6 @@ def _sync_dir_to_s3(local_dir: Path, bucket: str, s3_prefix: str, s3_client) -> 
     return uploaded
 
 
-def _restore_dir_from_s3(local_dir: Path, bucket: str, s3_prefix: str, s3_client) -> int:
-    """Download all files from s3://bucket/s3_prefix/ to local_dir. Returns download count."""
-    local_dir.mkdir(parents=True, exist_ok=True)
-    paginator = s3_client.get_paginator("list_objects_v2")
-    downloaded = 0
-    try:
-        for page in paginator.paginate(Bucket=bucket, Prefix=s3_prefix + "/"):
-            for obj in page.get("Contents", []):
-                key = obj["Key"]
-                if key.endswith("/"):
-                    continue
-                rel = key[len(s3_prefix) + 1:]
-                if not rel:
-                    continue
-                if _should_exclude(Path(rel)):
-                    continue
-                dest = local_dir / rel
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                try:
-                    s3_client.download_file(bucket, key, str(dest))
-                    downloaded += 1
-                except Exception as e:
-                    logger.warning(f"[S3 restore] Failed to download {key}: {e}")
-    except Exception as e:
-        logger.warning(f"[S3 restore] List failed for prefix '{s3_prefix}': {e}")
-    return downloaded
-
-
 def restore_session(user_id: str, session_id: str, workspace: Path) -> Optional[str]:
     """Restore workspace + ~/.claude/ from S3. Returns sdk_session_id if previously saved."""
     if not ARTIFACT_BUCKET:
@@ -289,12 +214,25 @@ def restore_session(user_id: str, session_id: str, workspace: Path) -> Optional[
     s3 = _s3()
 
     # 1. Restore workspace files
-    n = _restore_dir_from_s3(workspace, ARTIFACT_BUCKET, _workspace_s3_prefix(user_id, session_id), s3)
+    n = restore_s3_prefix(
+        workspace,
+        ARTIFACT_BUCKET,
+        _workspace_s3_prefix(user_id, session_id),
+        s3,
+        exclude_top_level_inputs=True,
+        excluded_parts=_SYNC_EXCLUDE_DIRS,
+    )
     if n:
         logger.info(f"[S3 restore] Workspace: {n} files")
 
     # 2. Restore ~/.claude/ (contains session .jsonl for resume=)
-    n = _restore_dir_from_s3(CLAUDE_HOME, ARTIFACT_BUCKET, _claude_home_s3_prefix(user_id, session_id), s3)
+    n = restore_s3_prefix(
+        CLAUDE_HOME,
+        ARTIFACT_BUCKET,
+        _claude_home_s3_prefix(user_id, session_id),
+        s3,
+        excluded_parts=_SYNC_EXCLUDE_DIRS,
+    )
     if n:
         logger.info(f"[S3 restore] Claude home: {n} files")
 
@@ -319,7 +257,13 @@ def sync_session(user_id: str, session_id: str, workspace: Path, sdk_session_id:
     s3 = _s3()
 
     # 1. Sync workspace files
-    n = _sync_dir_to_s3(workspace, ARTIFACT_BUCKET, _workspace_s3_prefix(user_id, session_id), s3)
+    n = _sync_dir_to_s3(
+        workspace,
+        ARTIFACT_BUCKET,
+        _workspace_s3_prefix(user_id, session_id),
+        s3,
+        exclude_top_level_inputs=True,
+    )
     logger.info(f"[S3 sync] Workspace: {n} files")
 
     # 2. Sync ~/.claude/ so session .jsonl survives container restarts
@@ -383,14 +327,14 @@ def _clear_session_history(user_id: str, session_id: str) -> None:
 
 
 
-def build_task_with_files(task_text: str, file_descriptions: List[str]) -> str:
-    """Prepend a file context block to the task when S3 files were downloaded."""
+def build_task_with_files(task_text: str, file_descriptions: list[str]) -> str:
+    """Prepend canonical session input paths to the delegated task."""
     if not file_descriptions:
         return task_text
 
     files_block = "\n".join(file_descriptions)
     return (
-        f"The following files have been downloaded to your workspace:\n"
+        f"The following session files are synchronized under `inputs/`:\n"
         f"{files_block}\n\n"
         f"{task_text}"
     )
@@ -542,6 +486,8 @@ class ClaudeCodeExecutor(AgentExecutor):
                 "- Do NOT ask for confirmation on implementation details you can figure out yourself.\n"
                 "- Keep your final response concise: summarize what you did, what files changed, "
                 "and any issues or decisions worth noting.\n"
+                "- Treat files under `inputs/` as read-only session attachments. "
+                "Write generated or modified files outside `inputs/`.\n"
             )
 
         # --- Session management ---
@@ -570,9 +516,18 @@ class ClaudeCodeExecutor(AgentExecutor):
             else:
                 logger.info(f"[ClaudeCodeExecutor] Resuming SDK session (in-memory): {sdk_session_id}")
 
-        # --- Download user-uploaded S3 files into workspace ---
-        s3_files = metadata.get("s3_files", [])
-        file_descriptions = download_s3_files(s3_files, workspace)
+        # --- Sync canonical session uploads into workspace/inputs ---
+        file_descriptions = (
+            sync_session_inputs(
+                ARTIFACT_BUCKET,
+                user_id,
+                session_id,
+                workspace,
+                _s3(),
+            )
+            if ARTIFACT_BUCKET
+            else []
+        )
         task_text = build_task_with_files(task_text, file_descriptions)
 
         await updater.submit()

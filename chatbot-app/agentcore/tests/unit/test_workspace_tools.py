@@ -9,7 +9,6 @@ Tests cover:
 - userId/sessionId isolation from tool_context
 """
 import json
-import pytest
 from datetime import datetime
 from unittest.mock import patch, MagicMock
 
@@ -61,6 +60,15 @@ class TestPathRouting:
         from local_tools.workspace import _to_logical_path
         logical = _to_logical_path("u1", "s1", "code-interpreter-workspace/u1/s1/chart.png")
         assert logical == "code-interpreter/chart.png"
+
+    def test_logical_path_from_mounted_input_key(self):
+        from local_tools.workspace import _to_logical_path
+        logical = _to_logical_path(
+            "u1",
+            "s1",
+            "code-interpreter-workspace/u1/s1/inputs/data.json",
+        )
+        assert logical == "uploads/data.json"
 
     def test_logical_path_from_documents_s3_key(self):
         from local_tools.workspace import _to_logical_path
@@ -293,6 +301,38 @@ class TestWorkspaceRead:
 
         assert data['size'] == 5
 
+    @patch('local_tools.workspace._s3_client')
+    @patch('local_tools.workspace.get_workspace_bucket', return_value='my-bucket')
+    def test_truncates_large_uploaded_text_and_points_to_full_mounted_file(
+        self,
+        mock_bucket,
+        mock_s3_factory,
+    ):
+        mock_s3 = MagicMock()
+        mock_s3_factory.return_value = mock_s3
+        body = MagicMock()
+        body.read.return_value = b'x' * 100_001
+        mock_s3.get_object.return_value = {
+            'Body': body,
+            'ContentLength': 250_000,
+        }
+
+        from local_tools.workspace import workspace_read
+        result = workspace_read(
+            path='uploads/records.jsonl',
+            tool_context=_make_context(),
+        )
+        data = json.loads(result)
+
+        body.read.assert_called_once_with(100_001)
+        assert data['status'] == 'ok'
+        assert data['encoding'] == 'text'
+        assert data['size'] == 100_000
+        assert data['truncated'] is True
+        assert len(data['content']) == 100_000
+        assert '/mnt/workspace/inputs/records.jsonl' in data['full_file']
+        assert 'records.jsonl in the working directory' in data['full_file']
+
 
 # ============================================================
 # workspace_write Tests
@@ -478,3 +518,7 @@ class TestResponseFormat:
         result = workspace_write(path='x.txt', content='hi', tool_context=_make_context())
         data = json.loads(result)
         assert isinstance(data, dict)
+    def test_uploads_prefix_maps_to_mounted_inputs(self):
+        from local_tools.workspace import _to_s3_key
+        key = _to_s3_key("u1", "s1", "uploads/data.jsonl")
+        assert key == "code-interpreter-workspace/u1/s1/inputs/data.jsonl"

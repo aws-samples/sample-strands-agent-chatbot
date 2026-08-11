@@ -1,6 +1,7 @@
 import {
   GetObjectCommand,
   ListObjectsV2Command,
+  PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3'
 import { GetParameterCommand, SSMClient } from '@aws-sdk/client-ssm'
@@ -31,6 +32,13 @@ interface Namespace {
 
 const NAMESPACES: Namespace[] = [
   {
+    logicalPath: 'uploads',
+    label: 'Uploads',
+    prefix: (userId, sessionId) => (
+      `code-interpreter-workspace/${userId}/${sessionId}/inputs/`
+    ),
+  },
+  {
     logicalPath: 'documents',
     label: 'Documents',
     prefix: (userId, sessionId) => `documents/${userId}/${sessionId}/`,
@@ -57,7 +65,9 @@ const MIME_TYPES: Record<string, string> = {
   jpg: 'image/jpeg',
   js: 'text/javascript',
   json: 'application/json',
+  jsonl: 'application/x-ndjson',
   md: 'text/markdown',
+  ndjson: 'application/x-ndjson',
   pdf: 'application/pdf',
   png: 'image/png',
   ppt: 'application/vnd.ms-powerpoint',
@@ -78,6 +88,12 @@ const MIME_TYPES: Record<string, string> = {
 let bucketPromise: Promise<string> | undefined
 
 export class WorkspacePathError extends Error {}
+
+function validateWorkspaceIdentity(userId: string, sessionId: string): void {
+  if (!SAFE_ID.test(userId) || !SAFE_ID.test(sessionId)) {
+    throw new WorkspacePathError('Invalid workspace identity')
+  }
+}
 
 export function normalizeWorkspacePath(path = ''): string {
   if (path.includes('\0') || path.includes('\\')) {
@@ -105,6 +121,10 @@ export function getWorkspaceMimeType(path: string): string {
 }
 
 export function getWorkspacePreviewKind(path: string): WorkspacePreviewKind {
+  const extension = path.split('.').pop()?.toLowerCase() || ''
+  if (extension === 'json' || extension === 'jsonl' || extension === 'ndjson') {
+    return 'json'
+  }
   const mimeType = getWorkspaceMimeType(path)
   if (mimeType === 'text/markdown') return 'markdown'
   if (
@@ -122,6 +142,22 @@ export function getWorkspacePreviewKind(path: string): WorkspacePreviewKind {
     || mimeType === 'application/vnd.ms-powerpoint'
   ) return 'office'
   return 'unsupported'
+}
+
+export function normalizeWorkspaceFilename(filename: string): string {
+  const clean = filename.trim()
+  if (
+    !clean
+    || clean.length > 255
+    || clean.startsWith('.')
+    || clean.includes('/')
+    || clean.includes('\\')
+    || clean.includes('\0')
+    || /[\u0000-\u001f\u007f]/.test(clean)
+  ) {
+    throw new WorkspacePathError('Invalid workspace filename')
+  }
+  return clean
 }
 
 function encodeCursor(path: string, token: string): string {
@@ -203,9 +239,7 @@ async function mountedSessionRoot(
   sessionId: string,
 ): Promise<string | undefined> {
   if (!MOUNT_PATH) return undefined
-  if (!SAFE_ID.test(userId) || !SAFE_ID.test(sessionId)) {
-    throw new WorkspacePathError('Invalid workspace identity')
-  }
+  validateWorkspaceIdentity(userId, sessionId)
 
   const mountRoot = await realpath(resolve(MOUNT_PATH)).catch(error => {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
@@ -306,7 +340,11 @@ async function listMountedWorkspace(
   }
 
   const children = (await readdir(directory, { withFileTypes: true }))
-    .filter(child => !child.name.startsWith('.') && !child.isSymbolicLink())
+    .filter(child => (
+      !child.name.startsWith('.')
+      && !child.isSymbolicLink()
+      && !(logicalPath === 'code-interpreter' && child.name === 'inputs')
+    ))
     .sort((left, right) => {
       if (left.isDirectory() !== right.isDirectory()) {
         return left.isDirectory() ? -1 : 1
@@ -356,6 +394,7 @@ export async function resolveWorkspaceS3Location(
   sessionId: string,
   logicalPath: string,
 ): Promise<{ bucket: string; key: string }> {
+  validateWorkspaceIdentity(userId, sessionId)
   const path = normalizeWorkspacePath(logicalPath)
   const { namespace, relativePath } = namespaceForPath(path)
   if (!relativePath) throw new WorkspacePathError('A file path is required')
@@ -392,6 +431,7 @@ export class S3WorkspaceRepository implements WorkspaceRepository {
     rawPath = '',
     cursor?: string,
   ): Promise<WorkspacePage> {
+    validateWorkspaceIdentity(userId, sessionId)
     const path = normalizeWorkspacePath(rawPath)
 
     if (!path) {
@@ -431,6 +471,9 @@ export class S3WorkspaceRepository implements WorkspaceRepository {
       const relative = commonPrefix.Prefix.slice(basePrefix.length).replace(/\/$/, '')
       const name = relative.split('/').pop()
       if (!name || name.startsWith('.')) continue
+      if (namespace.logicalPath === 'code-interpreter' && relative === 'inputs') {
+        continue
+      }
       const logicalPath = `${namespace.logicalPath}/${relative}`
       entries.push(directoryEntry(logicalPath, name))
     }
@@ -472,6 +515,7 @@ export class S3WorkspaceRepository implements WorkspaceRepository {
     sessionId: string,
     rawPath: string,
   ): Promise<WorkspacePreview> {
+    validateWorkspaceIdentity(userId, sessionId)
     const path = normalizeWorkspacePath(rawPath)
     const mounted = await openMountedWorkspaceFile(userId, sessionId, path)
       .catch(error => {
@@ -492,7 +536,7 @@ export class S3WorkspaceRepository implements WorkspaceRepository {
         previewKind: kind,
       }
       try {
-        if (kind === 'text' || kind === 'markdown') {
+        if (kind === 'text' || kind === 'markdown' || kind === 'json') {
           const bytesToRead = Math.min(mounted.metadata.size, TEXT_PREVIEW_LIMIT)
           const buffer = Buffer.alloc(bytesToRead)
           await mounted.handle.read(buffer, 0, bytesToRead, 0)
@@ -532,7 +576,7 @@ export class S3WorkspaceRepository implements WorkspaceRepository {
       previewKind: kind,
     }
 
-    if (kind === 'text' || kind === 'markdown') {
+    if (kind === 'text' || kind === 'markdown' || kind === 'json') {
       const response = await this.s3.send(new GetObjectCommand({
         Bucket: bucket,
         Key: key,
@@ -562,6 +606,45 @@ export class S3WorkspaceRepository implements WorkspaceRepository {
       entry,
       kind,
       url,
+    }
+  }
+
+  async createUpload(
+    userId: string,
+    sessionId: string,
+    file: {
+      name: string
+      mimeType: string
+      size: number
+    },
+  ): Promise<{ entry: WorkspaceEntry; uploadUrl: string }> {
+    validateWorkspaceIdentity(userId, sessionId)
+    const name = normalizeWorkspaceFilename(file.name)
+    const path = `uploads/${name}`
+    const { bucket, key } = await resolveWorkspaceS3Location(
+      userId,
+      sessionId,
+      path,
+    )
+    const mimeType = file.mimeType || getWorkspaceMimeType(name)
+    const uploadUrl = await getSignedUrl(this.s3, new PutObjectCommand({
+      Bucket: bucket,
+      Key: key,
+      ContentType: mimeType,
+    }), { expiresIn: 900 })
+    return {
+      uploadUrl,
+      entry: {
+        id: entryId(path),
+        path,
+        parentPath: 'uploads',
+        name,
+        kind: 'file',
+        size: file.size,
+        modifiedAt: new Date().toISOString(),
+        mimeType,
+        previewKind: getWorkspacePreviewKind(name),
+      },
     }
   }
 }

@@ -37,7 +37,10 @@ export function hideBackgroundResearchInputs<T extends {
       Array.isArray(message.content) &&
       message.content.some(part =>
         typeof part?.text === 'string' &&
-        part.text.includes('<background-research-result'),
+        (
+          part.text.includes('<background-research-result') ||
+          part.text.includes('<background-delegation-result')
+        ),
       )
 
     if (isBackgroundInput) {

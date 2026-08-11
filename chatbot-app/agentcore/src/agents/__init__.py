@@ -1,28 +1,37 @@
-"""Agent module.
+"""Lazy agent package exports.
 
-- ChatAgent: base text-streaming agent (used as a superclass).
-- SkillChatAgent: progressive skill disclosure (the default for text requests).
-- VoiceAgent: Nova Sonic bidirectional audio.
+Keeping package import side-effect free lets focused runtimes import
+``agents.model_factory`` without loading browser, voice, and connector stacks.
 """
-
-from agents.base import BaseAgent
-from agents.chat_agent import ChatAgent
-from agents.skill_chat_agent import SkillChatAgent
-from agents.factory import create_agent
-
-try:
-    from agent.voice_agent import VoiceAgent
-    _VOICE_AGENT_AVAILABLE = True
-except ImportError:
-    _VOICE_AGENT_AVAILABLE = False
-    VoiceAgent = None
 
 __all__ = [
     "BaseAgent",
     "ChatAgent",
     "SkillChatAgent",
     "create_agent",
+    "VoiceAgent",
 ]
 
-if _VOICE_AGENT_AVAILABLE:
-    __all__.append("VoiceAgent")
+
+def __getattr__(name):
+    if name == "BaseAgent":
+        from agents.base import BaseAgent
+
+        return BaseAgent
+    if name == "ChatAgent":
+        from agents.chat_agent import ChatAgent
+
+        return ChatAgent
+    if name == "SkillChatAgent":
+        from agents.skill_chat_agent import SkillChatAgent
+
+        return SkillChatAgent
+    if name == "create_agent":
+        from agents.factory import create_agent
+
+        return create_agent
+    if name == "VoiceAgent":
+        from agent.voice_agent import VoiceAgent
+
+        return VoiceAgent
+    raise AttributeError(name)

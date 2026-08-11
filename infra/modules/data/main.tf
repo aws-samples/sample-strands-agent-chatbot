@@ -101,6 +101,30 @@ resource "aws_dynamodb_table" "session_orchestration" {
     type = "S"
   }
 
+  attribute {
+    name = "workStatus"
+    type = "S"
+  }
+
+  attribute {
+    name = "heartbeatAt"
+    type = "S"
+  }
+
+  global_secondary_index {
+    name            = "DelegationWorkIndex"
+    hash_key        = "workStatus"
+    range_key       = "heartbeatAt"
+    projection_type = "INCLUDE"
+    non_key_attributes = [
+      "recordType",
+      "desiredState",
+      "userId",
+      "sessionId",
+      "jobId",
+    ]
+  }
+
   ttl {
     enabled        = true
     attribute_name = "ttl"

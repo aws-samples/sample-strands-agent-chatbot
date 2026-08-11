@@ -1,6 +1,7 @@
 """Shared workspace tools — read/write files across all skill namespaces.
 
 Path conventions (userId/sessionId are injected automatically from context):
+  uploads/<file>              →  code-interpreter-workspace/{userId}/{sessionId}/inputs/<file>
   code-agent/<file>           →  code-agent-workspace/{userId}/{sessionId}/<file>
   documents/<type>/<file>     →  documents/{userId}/{sessionId}/<type>/<file>
 
@@ -26,6 +27,7 @@ _BINARY_EXTENSIONS = {
     '.pdf', '.pptx', '.ppt', '.docx', '.doc', '.xlsx', '.xls',
     '.zip', '.tar', '.gz', '.mp4', '.mp3', '.wav',
 }
+_TEXT_READ_MAX_BYTES = 100_000
 
 
 def _get_ids(context: ToolContext):
@@ -35,6 +37,7 @@ def _get_ids(context: ToolContext):
 
 _NAMESPACE_MAP = [
     # (logical prefix, s3 prefix template)
+    ('uploads',             'code-interpreter-workspace/{user_id}/{session_id}/inputs/'),
     ('code-agent',          'code-agent-workspace/{user_id}/{session_id}/'),
     ('code-interpreter',    'code-interpreter-workspace/{user_id}/{session_id}/'),
     ('documents',           'documents/{user_id}/{session_id}/'),
@@ -45,7 +48,7 @@ def _to_s3_key(user_id: str, session_id: str, path: str) -> str:
     """Map logical path to S3 key."""
     path = path.lstrip('/')
     for prefix, template in _NAMESPACE_MAP:
-        if path.startswith(prefix):
+        if path == prefix or path.startswith(prefix + '/'):
             suffix = path[len(prefix):].lstrip('/')
             base = template.format(user_id=user_id, session_id=session_id)
             return base + suffix
@@ -78,6 +81,7 @@ def workspace_list(path: str = '', tool_context: ToolContext = None) -> str:
     Args:
         path: Optional prefix to filter results.
               ''                      — list all namespaces
+              'uploads/'              — files uploaded by the user
               'code-agent/'           — files created by the code agent
               'documents/'            — office/document files
               'documents/powerpoint/' — narrow to a specific type
@@ -92,6 +96,7 @@ def workspace_list(path: str = '', tool_context: ToolContext = None) -> str:
 
         if not path or path.strip('/') == '':
             s3_prefixes = [
+                f"code-interpreter-workspace/{user_id}/{session_id}/inputs/",
                 f"code-agent-workspace/{user_id}/{session_id}/",
                 f"code-interpreter-workspace/{user_id}/{session_id}/",
                 f"documents/{user_id}/{session_id}/",
@@ -100,14 +105,19 @@ def workspace_list(path: str = '', tool_context: ToolContext = None) -> str:
             s3_prefixes = [_to_s3_key(user_id, session_id, path.rstrip('/') + '/')]
 
         files = []
+        seen_paths = set()
         for prefix in s3_prefixes:
             paginator = s3.get_paginator('list_objects_v2')
             for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
                 for obj in page.get('Contents', []):
                     key = obj['Key']
                     if not key.endswith('/'):
+                        logical_path = _to_logical_path(user_id, session_id, key)
+                        if logical_path in seen_paths:
+                            continue
+                        seen_paths.add(logical_path)
                         files.append({
-                            'path': _to_logical_path(user_id, session_id, key),
+                            'path': logical_path,
                             'size': obj['Size'],
                             'last_modified': obj['LastModified'].isoformat(),
                         })
@@ -128,6 +138,7 @@ def workspace_read(path: str, tool_context: ToolContext = None) -> str:
 
     Args:
         path: Logical path, e.g.:
+              'uploads/data.jsonl'
               'code-agent/calculator.png'
               'documents/powerpoint/report.pptx'
               'documents/image/chart.png'
@@ -142,9 +153,8 @@ def workspace_read(path: str, tool_context: ToolContext = None) -> str:
 
         s3_key = _to_s3_key(user_id, session_id, path)
         response = s3.get_object(Bucket=bucket, Key=s3_key)
-        data = response['Body'].read()
-
         if _is_binary(path):
+            data = response['Body'].read()
             return json.dumps({
                 'path': path,
                 'encoding': 'base64',
@@ -153,11 +163,28 @@ def workspace_read(path: str, tool_context: ToolContext = None) -> str:
                 'status': 'ok',
             })
         else:
+            data = response['Body'].read(_TEXT_READ_MAX_BYTES + 1)
+            truncated = (
+                len(data) > _TEXT_READ_MAX_BYTES
+                or response.get('ContentLength', 0) > _TEXT_READ_MAX_BYTES
+            )
+            if len(data) > _TEXT_READ_MAX_BYTES:
+                data = data[:_TEXT_READ_MAX_BYTES]
             return json.dumps({
                 'path': path,
                 'encoding': 'text',
                 'content': data.decode('utf-8', errors='replace'),
                 'size': len(data),
+                'truncated': truncated,
+                **({
+                    'full_file': (
+                        'Use Code Interpreter to read the complete file. '
+                        f'With the workspace mount use '
+                        f'/mnt/workspace/inputs/{os.path.basename(path)}; '
+                        f'legacy sessions preload it as '
+                        f'{os.path.basename(path)} in the working directory.'
+                    ),
+                } if truncated and path.startswith('uploads/') else {}),
                 'status': 'ok',
             })
 

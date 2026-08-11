@@ -3,6 +3,7 @@ export type WorkspaceEntryKind = 'file' | 'directory'
 export type WorkspacePreviewKind =
   | 'text'
   | 'markdown'
+  | 'json'
   | 'image'
   | 'pdf'
   | 'office'
@@ -45,4 +46,13 @@ export interface WorkspaceRepository {
     sessionId: string,
     path: string,
   ): Promise<WorkspacePreview>
+  createUpload(
+    userId: string,
+    sessionId: string,
+    file: {
+      name: string
+      mimeType: string
+      size: number
+    },
+  ): Promise<{ entry: WorkspaceEntry; uploadUrl: string }>
 }

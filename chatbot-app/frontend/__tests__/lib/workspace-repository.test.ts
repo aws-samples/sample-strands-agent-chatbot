@@ -10,6 +10,7 @@ import {
   S3WorkspaceRepository,
   WorkspacePathError,
 } from '@/lib/workspace/s3-repository'
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 
 describe('S3WorkspaceRepository', () => {
   const send = vi.fn()
@@ -24,6 +25,7 @@ describe('S3WorkspaceRepository', () => {
     const page = await repository.list('user-1', 'session-1')
 
     expect(page.entries.map(entry => entry.path)).toEqual([
+      'uploads',
       'documents',
       'code-interpreter',
       'code-agent',
@@ -113,6 +115,31 @@ describe('S3WorkspaceRepository', () => {
     expect(send).not.toHaveBeenCalled()
   })
 
+  it('uploads files into the Code Interpreter inputs prefix', async () => {
+    send.mockResolvedValue({})
+
+    const result = await repository.createUpload('user-1', 'session-1', {
+      name: 'records.jsonl',
+      mimeType: 'application/x-ndjson',
+      size: 9,
+    })
+
+    expect(result).toMatchObject({
+      uploadUrl: 'https://example.test/preview',
+      entry: {
+      path: 'uploads/records.jsonl',
+      parentPath: 'uploads',
+      previewKind: 'json',
+      },
+    })
+    expect(vi.mocked(getSignedUrl).mock.calls[0][1].input).toMatchObject({
+      Bucket: 'workspace-bucket',
+      Key: 'code-interpreter-workspace/user-1/session-1/inputs/records.jsonl',
+      ContentType: 'application/x-ndjson',
+    })
+    expect(send).not.toHaveBeenCalled()
+  })
+
   it('rejects traversal and unknown namespaces', async () => {
     expect(() => normalizeWorkspacePath('documents/../secret')).toThrow(WorkspacePathError)
     await expect(
@@ -132,6 +159,9 @@ describe('S3WorkspaceRepository', () => {
 
   it('classifies common preview formats', () => {
     expect(getWorkspacePreviewKind('file.csv')).toBe('text')
+    expect(getWorkspacePreviewKind('file.json')).toBe('json')
+    expect(getWorkspacePreviewKind('file.jsonl')).toBe('json')
+    expect(getWorkspacePreviewKind('file.ndjson')).toBe('json')
     expect(getWorkspacePreviewKind('file.pdf')).toBe('pdf')
     expect(getWorkspacePreviewKind('file.xlsx')).toBe('office')
     expect(getWorkspacePreviewKind('file.zip')).toBe('unsupported')

@@ -30,6 +30,11 @@ Brief it like you'd brief a capable engineer: describe what you want to achieve,
 
 The code agent runs in an **isolated container** dedicated solely to this session. Its filesystem, running processes, and local ports are completely separate from your own environment — do not attempt to access its paths or local servers via browser or other tools.
 
+User-uploaded session files are synchronized from the canonical Workspace
+`inputs/` prefix before every Code Agent task and are available under
+`inputs/<filename>`. Treat `inputs/` as read-only; generated files belong
+elsewhere in the Code Agent workspace.
+
 Trust the code agent's reasoning and autonomy — delegate not just implementation but also testing, verification, and iteration. Only step in when there's a genuine constraint the agent cannot resolve on its own; in that case, surface it to the user and decide together.
 
 ## Your Role as Orchestrator

@@ -18,7 +18,7 @@ def build_task_with_files(task_text: str, file_descriptions: list) -> str:
         return task_text
     files_block = "\n".join(file_descriptions)
     return (
-        f"The following files have been downloaded to your workspace:\n"
+        f"The following session files are synchronized under `inputs/`:\n"
         f"{files_block}\n\n"
         f"{task_text}"
     )
@@ -106,7 +106,7 @@ class TestBuildTaskWithFiles:
 
     def test_prepends_file_context(self):
         result = build_task_with_files("fix the bug", ["app.py — main module"])
-        assert result.startswith("The following files have been downloaded")
+        assert result.startswith("The following session files are synchronized")
         assert "app.py — main module" in result
         assert result.endswith("fix the bug")
 

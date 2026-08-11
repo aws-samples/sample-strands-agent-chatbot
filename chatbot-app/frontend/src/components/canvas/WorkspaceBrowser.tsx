@@ -4,6 +4,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertCircle,
   ArrowLeft,
+  Braces,
   ChevronDown,
   ChevronRight,
   Download,
@@ -15,6 +16,7 @@ import {
   FolderOpen,
   Loader2,
   RefreshCw,
+  Upload,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -47,6 +49,7 @@ function formatSize(size?: number): string {
 
 function FileIcon({ entry }: { entry: WorkspaceEntry }) {
   if (entry.kind === 'directory') return <Folder className="h-4 w-4" />
+  if (entry.previewKind === 'json') return <Braces className="h-4 w-4" />
   if (entry.previewKind === 'image') return <FileImage className="h-4 w-4" />
   if (entry.previewKind === 'text' || entry.previewKind === 'markdown') {
     return <FileCode2 className="h-4 w-4" />
@@ -57,6 +60,28 @@ function FileIcon({ entry }: { entry: WorkspaceEntry }) {
   return <File className="h-4 w-4" />
 }
 
+function formatStructuredData(content: string, filename: string): string {
+  const extension = filename.split('.').pop()?.toLowerCase()
+  try {
+    if (extension === 'jsonl' || extension === 'ndjson') {
+      return content
+        .split(/\r?\n/)
+        .map(line => {
+          if (!line.trim()) return ''
+          try {
+            return JSON.stringify(JSON.parse(line), null, 2)
+          } catch {
+            return line
+          }
+        })
+        .join('\n')
+    }
+    return JSON.stringify(JSON.parse(content), null, 2)
+  } catch {
+    return content
+  }
+}
+
 export function WorkspaceBrowser({ sessionId }: WorkspaceBrowserProps) {
   const [directories, setDirectories] = useState<Record<string, DirectoryState>>({})
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
@@ -64,6 +89,8 @@ export function WorkspaceBrowser({ sessionId }: WorkspaceBrowserProps) {
   const [previewLoading, setPreviewLoading] = useState(false)
   const [previewError, setPreviewError] = useState<string | null>(null)
   const [downloading, setDownloading] = useState(false)
+  const [uploading, setUploading] = useState(false)
+  const uploadInputRef = useRef<HTMLInputElement>(null)
   const workspaceGeneration = useRef(0)
   const previewRequestId = useRef(0)
 
@@ -127,6 +154,7 @@ export function WorkspaceBrowser({ sessionId }: WorkspaceBrowserProps) {
     setPreviewLoading(false)
     setPreviewError(null)
     setDownloading(false)
+    setUploading(false)
     if (sessionId) void loadDirectory('')
   }, [loadDirectory, sessionId])
 
@@ -202,6 +230,54 @@ export function WorkspaceBrowser({ sessionId }: WorkspaceBrowserProps) {
     setDownloading(false)
     if (sessionId) void loadDirectory('')
   }, [loadDirectory, sessionId])
+
+  useEffect(() => {
+    const handleWorkspaceFilesChanged = () => refresh()
+    window.addEventListener('workspace-files-changed', handleWorkspaceFilesChanged)
+    return () => {
+      window.removeEventListener('workspace-files-changed', handleWorkspaceFilesChanged)
+    }
+  }, [refresh])
+
+  const uploadFiles = useCallback(async (files: FileList | null) => {
+    if (!sessionId || !files?.length) return
+    setUploading(true)
+    setPreviewError(null)
+    try {
+      for (const file of Array.from(files)) {
+        const ticketResponse = await apiFetch('workspace/upload', {
+          method: 'POST',
+          headers: { 'X-Session-ID': sessionId },
+          body: JSON.stringify({
+            name: file.name,
+            mimeType: file.type || 'application/octet-stream',
+            size: file.size,
+          }),
+        })
+        if (!ticketResponse.ok) {
+          const payload = await ticketResponse.json().catch(() => ({}))
+          throw new Error(payload.error || `Unable to upload ${file.name}`)
+        }
+        const { uploadUrl } = await ticketResponse.json()
+        const uploadResponse = await fetch(uploadUrl, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': file.type || 'application/octet-stream',
+          },
+          body: file,
+        })
+        if (!uploadResponse.ok) throw new Error(`Unable to upload ${file.name}`)
+      }
+      refresh()
+      setExpanded(new Set(['uploads']))
+      void loadDirectory('uploads')
+    } catch (error) {
+      setPreviewError(error instanceof Error ? error.message : 'Upload failed')
+    } finally {
+      setUploading(false)
+      if (uploadInputRef.current) uploadInputRef.current.value = ''
+    }
+  }, [loadDirectory, refresh, sessionId])
 
   const renderDirectory = useCallback((path: string, depth = 0): React.ReactNode => {
     const directory = directories[path]
@@ -312,6 +388,16 @@ export function WorkspaceBrowser({ sessionId }: WorkspaceBrowserProps) {
         </pre>
       )
     }
+    if (selected.kind === 'json') {
+      return (
+        <pre
+          data-testid="json-preview"
+          className="min-h-full overflow-auto p-4 font-mono text-xs leading-5 text-sidebar-foreground whitespace-pre"
+        >
+          {formatStructuredData(selected.content || '', selected.entry.name)}
+        </pre>
+      )
+    }
     if (selected.kind === 'image' && selected.url) {
       return (
         <div className="flex min-h-full items-start justify-center p-4">
@@ -409,15 +495,37 @@ export function WorkspaceBrowser({ sessionId }: WorkspaceBrowserProps) {
           <div className="text-sm font-medium">Session files</div>
           <div className="text-xs text-muted-foreground">Persistent workspace</div>
         </div>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-8 w-8 p-0"
-          onClick={refresh}
-          aria-label="Refresh workspace files"
-        >
-          <RefreshCw className="h-4 w-4" />
-        </Button>
+        <div className="flex items-center gap-1">
+          <input
+            ref={uploadInputRef}
+            type="file"
+            multiple
+            className="hidden"
+            onChange={event => void uploadFiles(event.target.files)}
+            aria-label="Choose workspace files"
+          />
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-8 w-8 p-0"
+            onClick={() => uploadInputRef.current?.click()}
+            disabled={uploading}
+            aria-label="Upload workspace files"
+          >
+            {uploading
+              ? <Loader2 className="h-4 w-4 animate-spin" />
+              : <Upload className="h-4 w-4" />}
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-8 w-8 p-0"
+            onClick={refresh}
+            aria-label="Refresh workspace files"
+          >
+            <RefreshCw className="h-4 w-4" />
+          </Button>
+        </div>
       </div>
       {previewLoading && (
         <div className="flex items-center gap-2 border-b border-sidebar-border/60 px-4 py-2 text-xs text-muted-foreground">

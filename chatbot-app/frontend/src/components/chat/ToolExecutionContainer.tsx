@@ -16,6 +16,7 @@ import { isCodeAgentExecution, CodeAgentDetails, CodeAgentResult, CodeAgentDownl
 
 import type { ImageData } from '@/utils/imageExtractor'
 import type { ResearchJob } from '@/lib/research-jobs'
+import type { DelegationJob } from '@/lib/delegation-jobs'
 
 // Word document tool names
 const WORD_DOCUMENT_TOOLS = ['create_word_document', 'modify_word_document']
@@ -39,6 +40,7 @@ interface ToolExecutionContainerProps {
   onOpenExtractedDataArtifact?: (artifactId: string) => void  // Open extracted data in Canvas
   onOpenExcalidrawArtifact?: (artifactId: string) => void  // Open Excalidraw diagram in Canvas
   researchJobs?: ResearchJob[]
+  delegationJobs?: DelegationJob[]
 }
 
 // Collapsible Markdown component for tool results
@@ -96,7 +98,7 @@ const CollapsibleMarkdown = React.memo<{
          prevProps.sessionId === nextProps.sessionId
 })
 
-export const ToolExecutionContainer = React.memo<ToolExecutionContainerProps>(({ toolExecutions, compact = false, sessionId, onOpenResearchArtifact, onOpenWordArtifact, onOpenExcelArtifact, onOpenPptArtifact, onOpenExtractedDataArtifact, onOpenExcalidrawArtifact, researchJobs = [] }) => {
+export const ToolExecutionContainer = React.memo<ToolExecutionContainerProps>(({ toolExecutions, compact = false, sessionId, onOpenResearchArtifact, onOpenWordArtifact, onOpenExcelArtifact, onOpenPptArtifact, onOpenExtractedDataArtifact, onOpenExcalidrawArtifact, researchJobs = [], delegationJobs = [] }) => {
   const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set())
   const [selectedImage, setSelectedImage] = useState<{ src: string; alt: string } | null>(null)
   const [downloadingFiles, setDownloadingFiles] = useState<Set<string>>(new Set())
@@ -183,28 +185,61 @@ export const ToolExecutionContainer = React.memo<ToolExecutionContainerProps>(({
   }
 
   const resolvedToolExecutions = useMemo(() => toolExecutions.map(execution => {
-    if (execution.toolName !== 'research_agent' || !execution.toolResult) return execution
-    try {
-      const receipt = JSON.parse(execution.toolResult)
-      if (receipt?.status !== 'started' || !receipt.job_id) return execution
-      const job = researchJobs.find(item => item.jobId === receipt.job_id)
-      const complete = !!job && ['completed', 'delivering', 'delivered'].includes(job.status)
-      const failed = job?.status === 'error'
-      return {
-        ...execution,
-        isComplete: complete || failed,
-        isCancelled: failed,
-        streamingResponse: job?.progress?.content || execution.streamingResponse,
-        toolResult: complete && job?.artifact?.content
-          ? job.artifact.content
-          : failed
-            ? `Error: ${job.error || 'Research failed'}`
-            : execution.toolResult,
+    if (execution.toolName === 'research_agent' && execution.toolResult) {
+      try {
+        const receipt = JSON.parse(execution.toolResult)
+        if (receipt?.status === 'started' && receipt.job_id) {
+          const job = researchJobs.find(item => item.jobId === receipt.job_id)
+          const complete = !!job && ['completed', 'delivering', 'delivered'].includes(job.status)
+          const failed = job?.status === 'error'
+          return {
+            ...execution,
+            isComplete: complete || failed,
+            isCancelled: failed,
+            streamingResponse: job?.progress?.content || execution.streamingResponse,
+            toolResult: complete && job?.artifact?.content
+              ? job.artifact.content
+              : failed
+                ? `Error: ${job.error || 'Research failed'}`
+                : execution.toolResult,
+          }
+        }
+      } catch {
+        return execution
       }
-    } catch {
-      return execution
     }
-  }), [toolExecutions, researchJobs])
+
+    if (execution.toolName !== 'delegate_task') return execution
+    const job = delegationJobs.find(item =>
+      item.parentToolUseId === execution.id,
+    )
+    if (!job) return execution
+
+    const active = ['queued', 'running'].includes(job.executionStatus)
+    const failed = ['failed', 'cancelled', 'timed_out'].includes(
+      job.executionStatus,
+    )
+    const result = active
+      ? undefined
+      : JSON.stringify({
+          status: job.executionStatus,
+          profile: job.profile,
+          summary: job.resultSummary || undefined,
+          artifacts: job.artifacts?.length ? job.artifacts : undefined,
+          error: job.error || undefined,
+          completedAt: job.completedAt,
+        }, null, 2)
+
+    return {
+      ...execution,
+      isComplete: !active,
+      isCancelled: failed,
+      streamingResponse:
+        job.progress?.content ||
+        (active ? job.request.goal : undefined),
+      toolResult: result,
+    }
+  }), [toolExecutions, researchJobs, delegationJobs])
 
   // Memoize parsed chart data (hooks must be called unconditionally)
   const toolExecutionsDeps = useMemo(() => {
@@ -798,7 +833,10 @@ export const ToolExecutionContainer = React.memo<ToolExecutionContainerProps>(({
     }
 
     // Special standalone tools (code agent, research agent) — never grouped
-    const isSpecial = isCodeAgentExecution(exec) || exec.toolName === 'research_agent'
+    const isSpecial =
+      isCodeAgentExecution(exec) ||
+      exec.toolName === 'research_agent' ||
+      exec.toolName === 'delegate_task'
 
     const effectiveId = resolveEffectiveToolId(exec.toolName, exec.toolInput)
     const imageSrc = getToolImageSrc(effectiveId)
@@ -943,6 +981,10 @@ export const ToolExecutionContainer = React.memo<ToolExecutionContainerProps>(({
   }
 
   if (prevProps.researchJobs !== nextProps.researchJobs) {
+    return false
+  }
+
+  if (prevProps.delegationJobs !== nextProps.delegationJobs) {
     return false
   }
 
