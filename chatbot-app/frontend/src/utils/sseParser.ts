@@ -4,7 +4,7 @@
  */
 
 import type { AGUIStreamEvent } from '@/types/events'
-import { EventType } from '@ag-ui/core'
+import { EventSchemas, EventType } from '@ag-ui/core'
 
 /**
  * Parse a single SSE line into event type and data
@@ -120,8 +120,18 @@ export function parseSSEChunk(chunk: string): ParsedSSEChunk {
  * Validate a AGUIStreamEvent has required fields based on its type
  */
 export function validateAGUIStreamEvent(event: AGUIStreamEvent): { valid: boolean; errors: string[] } {
-  const errors: string[] = []
+  const schemaResult = EventSchemas.safeParse(event)
+  if (!schemaResult.success) {
+    return {
+      valid: false,
+      errors: schemaResult.error.issues.map(issue => {
+        const path = issue.path.length > 0 ? `${issue.path.join('.')}: ` : ''
+        return `${path}${issue.message}`
+      }),
+    }
+  }
 
+  const errors: string[] = []
   switch (event.type) {
     case EventType.RUN_STARTED:
     case EventType.RUN_FINISHED:

@@ -7,6 +7,7 @@ import { extractUserFromRequest } from '@/lib/auth-utils'
 import { resumeExecution } from '@/lib/agentcore-runtime-client'
 
 export const runtime = 'nodejs'
+const IS_LOCAL = process.env.NEXT_PUBLIC_AGENTCORE_LOCAL === 'true'
 
 export async function GET(request: NextRequest) {
   const executionId = request.nextUrl.searchParams.get('executionId')
@@ -20,6 +21,12 @@ export async function GET(request: NextRequest) {
   }
 
   const user = await extractUserFromRequest(request)
+  if (!IS_LOCAL && user.userId === 'anonymous') {
+    return new Response(
+      JSON.stringify({ error: 'Authentication required' }),
+      { status: 401, headers: { 'Content-Type': 'application/json' } }
+    )
+  }
   const authToken = request.headers.get('authorization') || ''
 
   console.log(`[Resume] Proxying to backend: execution=${executionId}, cursor=${cursor}`)

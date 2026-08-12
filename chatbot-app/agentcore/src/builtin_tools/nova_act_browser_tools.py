@@ -3,7 +3,6 @@ Browser automation tools using AgentCore Browser + Nova Act.
 Each tool returns a screenshot to show current browser state.
 """
 
-import os
 import logging
 from typing import Dict, Any, Optional, List
 from strands import tool, ToolContext
@@ -588,8 +587,9 @@ def browser_save_screenshot(filename: str, tool_context: ToolContext) -> Dict[st
         else:
             raise ValueError("session_id not found in ToolContext")
 
-        # Get user_id (from environment or agent config)
-        user_id = os.environ.get('USER_ID', 'default_user')
+        user_id = tool_context.invocation_state.get("user_id")
+        if not user_id:
+            raise ValueError("user_id not found in ToolContext")
 
         # Get current browser controller
         controller = get_or_create_controller(session_id)

@@ -43,6 +43,138 @@ _WORKSPACE_UPLOAD_PATH = re.compile(
 )
 
 router = APIRouter(tags=["chat"])
+MAX_AGUI_REQUEST_BYTES = int(
+    os.environ.get("AGUI_MAX_REQUEST_BYTES", 20 * 1024 * 1024)
+)
+
+
+def _is_local_environment() -> bool:
+    return os.environ.get("ENVIRONMENT", "development").lower() in {
+        "development",
+        "local",
+        "test",
+    }
+
+
+def _decode_runtime_jwt_claims(http_request: Request) -> Optional[dict]:
+    """Decode claims from a JWT already verified by AgentCore Runtime."""
+    authorization = http_request.headers.get("authorization", "")
+    if not authorization.lower().startswith("bearer "):
+        return None
+
+    token = authorization.split(" ", 1)[1]
+    try:
+        encoded_payload = token.split(".")[1]
+        encoded_payload += "=" * (-len(encoded_payload) % 4)
+        claims = json.loads(
+            base64.urlsafe_b64decode(encoded_payload.encode("ascii"))
+        )
+    except (IndexError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
+        raise HTTPException(status_code=401, detail="Invalid bearer token")
+
+    expires_at = claims.get("exp")
+    if isinstance(expires_at, (int, float)) and expires_at <= time.time():
+        raise HTTPException(status_code=401, detail="Bearer token has expired")
+    return claims
+
+
+def _resolve_user_id(
+    http_request: Request,
+    claimed_user_id: object = None,
+    *,
+    allow_local_unauthenticated: bool = False,
+) -> Optional[str]:
+    """Resolve application identity from the Runtime-verified JWT subject."""
+    claimed = str(claimed_user_id or "").strip()
+    claims = _decode_runtime_jwt_claims(http_request)
+    if claims is None:
+        if not _is_local_environment():
+            raise HTTPException(status_code=401, detail="Authentication required")
+        if allow_local_unauthenticated and not claimed:
+            return None
+        return claimed or "anonymous"
+
+    subject = claims.get("sub")
+    if not isinstance(subject, str) or not subject:
+        expected_m2m_client = os.environ.get("M2M_CLIENT_ID")
+        if (
+            expected_m2m_client
+            and claims.get("client_id") == expected_m2m_client
+            and claimed
+        ):
+            return claimed
+        raise HTTPException(status_code=401, detail="Bearer token subject is required")
+    if claimed and claimed != subject:
+        raise HTTPException(status_code=403, detail="User identity mismatch")
+    return subject
+
+
+def _normalize_agui_input(raw_body: object) -> dict:
+    """Accept standard camelCase AG-UI input during the legacy transition."""
+    if not isinstance(raw_body, dict):
+        raise HTTPException(status_code=400, detail="JSON object required")
+
+    body = dict(raw_body)
+    for camel_case, snake_case in (
+        ("threadId", "thread_id"),
+        ("runId", "run_id"),
+        ("forwardedProps", "forwarded_props"),
+    ):
+        if snake_case not in body and camel_case in body:
+            body[snake_case] = body[camel_case]
+    return body
+
+
+def _validate_agui_input_limits(body: dict) -> None:
+    encoded_size = len(
+        json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    )
+    if encoded_size > MAX_AGUI_REQUEST_BYTES:
+        raise HTTPException(status_code=413, detail="AG-UI request is too large")
+
+    for field_name in ("thread_id", "run_id"):
+        value = body.get(field_name)
+        if value is None:
+            continue
+        if not isinstance(value, str) or not value:
+            raise HTTPException(
+                status_code=422,
+                detail=f"{field_name} must be a non-empty string",
+            )
+        max_length = 256 if field_name == "thread_id" else 128
+        if len(value) > max_length or any(ord(char) < 32 for char in value):
+            raise HTTPException(
+                status_code=422,
+                detail=f"Invalid {field_name}",
+            )
+
+    for field_name, max_items in (
+        ("messages", 500),
+        ("tools", 100),
+        ("context", 100),
+        ("resume", 100),
+    ):
+        value = body.get(field_name)
+        if value is not None and (
+            not isinstance(value, list)
+            or len(value) > max_items
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail=f"Invalid {field_name}",
+            )
+
+
+def _execution_belongs_to(
+    execution,
+    user_id: Optional[str],
+    thread_id: Optional[str] = None,
+) -> bool:
+    if user_id is not None and execution.user_id != user_id:
+        return False
+    if thread_id and execution.session_id != thread_id:
+        return False
+    return True
 
 
 def _workspace_attachment_prompt(raw_paths: object) -> Optional[str]:
@@ -204,14 +336,21 @@ def _inject_event_id(data: str, event_id: int) -> str:
 
 def _extract_event_type(sse_chunk: str) -> str:
     """Extract event type from an SSE data chunk for logging/tracking."""
+    event_types = _extract_event_types(sse_chunk)
+    return event_types[0] if event_types else "unknown"
+
+
+def _extract_event_types(sse_chunk: str) -> list[str]:
+    """Extract every AG-UI event type from a possibly batched SSE chunk."""
+    event_types = []
     try:
         for line in sse_chunk.strip().split("\n"):
             if line.startswith("data: "):
                 data = json.loads(line[6:])
-                return data.get("type", "unknown")
+                event_types.append(data.get("type", "unknown"))
     except (json.JSONDecodeError, AttributeError):
-        pass
-    return "unknown"
+        return event_types
+    return event_types
 
 
 async def _create_tail_stream(
@@ -282,10 +421,23 @@ async def invocations(http_request: Request):
     All requests use AG-UI RunAgentInput format (thread_id + run_id).
     Lifecycle actions (warmup, stop, elicitation) are indicated via state.action.
     """
-    body = await http_request.json()
+    content_length = http_request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > MAX_AGUI_REQUEST_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail="AG-UI request is too large",
+                )
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid Content-Length")
 
-    # AG-UI state에서 lifecycle action 확인
+    body = _normalize_agui_input(await http_request.json())
+    _validate_agui_input_limits(body)
+
     state = body.get("state") or {}
+    if not isinstance(state, dict):
+        raise HTTPException(status_code=422, detail="state must be an object")
     action = state.get("action")
     thread_id = body.get("thread_id", "")
 
@@ -413,16 +565,25 @@ async def invocations(http_request: Request):
 
     # Warmup — triggers container cold start, Python modules load (TOOL_REGISTRY, etc.)
     if action == "warmup":
-        user_id = state.get("user_id", "anonymous")
+        user_id = _resolve_user_id(
+            http_request,
+            state.get("user_id") or state.get("userId"),
+        )
         logger.info(f"[Warmup] Container warmed - session={thread_id}, user={user_id}")
         return {"status": "warm"}
 
     # Stop
     if action == "stop":
-        user_id = state.get("user_id", "anonymous")
-        run_id = state.get("run_id")
+        user_id = _resolve_user_id(
+            http_request,
+            state.get("user_id") or state.get("userId"),
+        )
+        run_id = state.get("run_id") or state.get("runId")
         if not run_id:
             raise HTTPException(status_code=400, detail="run_id required for stop")
+        execution = registry.get_execution(f"{thread_id}:{run_id}")
+        if execution and not _execution_belongs_to(execution, user_id, thread_id):
+            raise HTTPException(status_code=404, detail="Execution not found")
         from agent.stop_signal import get_stop_signal_provider
         provider = get_stop_signal_provider()
         if not provider:
@@ -434,22 +595,43 @@ async def invocations(http_request: Request):
 
     # Execution status — check if a buffered execution is still running
     if action == "execution_status":
-        execution_id = state.get("execution_id")
+        user_id = _resolve_user_id(
+            http_request,
+            state.get("user_id") or state.get("userId"),
+        )
+        execution_id = state.get("execution_id") or state.get("executionId")
         if not execution_id:
             return {"status": "not_found"}
         execution = registry.get_execution(execution_id)
-        if not execution:
+        if not execution or not _execution_belongs_to(
+            execution,
+            user_id,
+            thread_id,
+        ):
             return {"status": "not_found"}
         return {"status": execution.status.value}
 
     # Resume — reconnect to a running/completed execution's event buffer
     if action == "resume":
-        execution_id = state.get("execution_id")
-        cursor = int(state.get("cursor", 0))
+        user_id = _resolve_user_id(
+            http_request,
+            state.get("user_id") or state.get("userId"),
+        )
+        execution_id = state.get("execution_id") or state.get("executionId")
+        try:
+            cursor = int(state.get("cursor", 0))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="Invalid cursor")
+        if cursor < 0:
+            raise HTTPException(status_code=400, detail="Invalid cursor")
         if not execution_id:
             raise HTTPException(status_code=400, detail="execution_id required in state")
         execution = registry.get_execution(execution_id)
-        if not execution:
+        if not execution or not _execution_belongs_to(
+            execution,
+            user_id,
+            thread_id,
+        ):
             raise HTTPException(status_code=404, detail="Execution not found or expired")
         tail_stream = _create_tail_stream(execution, cursor, http_request)
         final_stream = keepalive_stream(tail_stream, execution.session_id)
@@ -464,7 +646,7 @@ async def invocations(http_request: Request):
             }
         )
 
-    # Normal agent execution — requires thread_id + run_id
+    # Normal agent execution — accepts standard camelCase and legacy snake_case.
     if "thread_id" not in body or "run_id" not in body:
         raise HTTPException(status_code=422, detail="AG-UI format required: thread_id and run_id are required")
 
@@ -472,10 +654,14 @@ async def invocations(http_request: Request):
 
 
 @router.get("/execution-status")
-async def get_execution_status(executionId: str):
+async def get_execution_status(executionId: str, request: Request):
     """Check execution status. Local-mode convenience endpoint."""
+    user_id = _resolve_user_id(
+        request,
+        allow_local_unauthenticated=True,
+    )
     execution = registry.get_execution(executionId)
-    if not execution:
+    if not execution or not _execution_belongs_to(execution, user_id):
         return {"status": "not_found"}
     return {"status": execution.status.value}
 
@@ -483,8 +669,12 @@ async def get_execution_status(executionId: str):
 @router.get("/resume")
 async def resume_execution(executionId: str, cursor: int = 0, request: Request = None):
     """Resume an execution stream from cursor. Local-mode convenience endpoint."""
+    user_id = _resolve_user_id(
+        request,
+        allow_local_unauthenticated=True,
+    )
     execution = registry.get_execution(executionId)
-    if not execution:
+    if not execution or not _execution_belongs_to(execution, user_id):
         raise HTTPException(status_code=404, detail="Execution not found or expired")
     tail_stream = _create_tail_stream(execution, cursor, request)
     final_stream = keepalive_stream(tail_stream, execution.session_id)
@@ -523,6 +713,28 @@ def _parse_message(message: str, request_type: str) -> tuple[str, dict]:
     return message, {}
 
 
+def _parse_resume_entries(resume_entries: object) -> Optional[list[dict]]:
+    """Convert standard AG-UI resume entries to Strands interrupt responses."""
+    if not resume_entries:
+        return None
+
+    responses = []
+    for entry in resume_entries:
+        interrupt_id = getattr(entry, "interrupt_id", None)
+        status = getattr(entry, "status", None)
+        payload = getattr(entry, "payload", None)
+        if not interrupt_id:
+            continue
+        response = payload if status == "resolved" else "declined"
+        responses.append({
+            "interruptResponse": {
+                "interruptId": interrupt_id,
+                "response": response,
+            },
+        })
+    return responses or None
+
+
 async def _handle_agui_invocation(body: dict, http_request: Request) -> StreamingResponse:
     """Handle AG-UI protocol RunAgentInput requests."""
     # forwarded_props is required by RunAgentInput but optional in practice; default to None
@@ -535,9 +747,13 @@ async def _handle_agui_invocation(body: dict, http_request: Request) -> Streamin
     run_id = input_data.run_id
 
     session_id = thread_id
-    user_id = "agui"
+    claimed_user_id = None
     if input_data.state and isinstance(input_data.state, dict):
-        user_id = input_data.state.get("user_id", "agui")
+        claimed_user_id = (
+            input_data.state.get("user_id")
+            or input_data.state.get("userId")
+        )
+    user_id = _resolve_user_id(http_request, claimed_user_id)
 
     message = ""
     image_content_parts = []  # Inline base64 images from AG-UI multimodal
@@ -690,9 +906,6 @@ async def _handle_agui_invocation(body: dict, http_request: Request) -> Streamin
 
         agui_processor = AGUIStreamEventProcessor(thread_id=thread_id, run_id=run_id)
 
-        os.environ["SESSION_ID"] = session_id
-        os.environ["USER_ID"] = user_id
-
         invocation_state = {
             "session_id": session_id,
             "user_id": user_id,
@@ -708,10 +921,19 @@ async def _handle_agui_invocation(body: dict, http_request: Request) -> Streamin
 
         # Create execution in registry
         execution = await registry.create_execution(session_id, user_id, run_id)
+        if execution is None:
+            raise HTTPException(
+                status_code=409,
+                detail="Execution identifier is already in use",
+            )
         execution.media_type = media_type
 
-        # Parse message for special cases (HITL interrupt response)
-        message_content, special_params = _parse_message(message, request_type)
+        # Standard AG-UI resume takes precedence over the legacy JSON message.
+        resume_message = _parse_resume_entries(input_data.resume)
+        if resume_message is not None:
+            message_content, special_params = resume_message, {}
+        else:
+            message_content, special_params = _parse_message(message, request_type)
 
         # Build multimodal message using build_prompt() (handles size checks, sanitization, workspace storage)
         if isinstance(message_content, list):
@@ -771,8 +993,13 @@ async def _handle_agui_invocation(body: dict, http_request: Request) -> Streamin
                         elicitation_bridge=getattr(agent, 'elicitation_bridge', None),
                     )
                     async for sse_chunk in stream:
-                        event_type = _extract_event_type(sse_chunk)
+                        if not sse_chunk:
+                            continue
+                        event_types = _extract_event_types(sse_chunk)
+                        event_type = event_types[0] if event_types else "unknown"
                         execution.append_event(sse_chunk, event_type)
+                        if "RUN_ERROR" in event_types:
+                            execution.status = ExecutionStatus.ERROR
 
                 if pending_research:
                     from agent.research_jobs import mark_delivered
@@ -786,16 +1013,27 @@ async def _handle_agui_invocation(body: dict, http_request: Request) -> Streamin
                             )
             except Exception as e:
                 logger.error(f"[Execution] AG-UI agent error for {execution.execution_id}: {e}", exc_info=True)
-                error_event = f'data: {json.dumps({"type": "error", "message": str(e)})}\n\n'
-                execution.append_event(error_event, "error")
+                error_event = agui_processor.formatter.format_event(
+                    "error",
+                    error_message="Agent processing failed",
+                )
+                if error_event:
+                    execution.append_event(error_event, "RUN_ERROR")
+                execution.status = ExecutionStatus.ERROR
             finally:
                 async_tasks.end(task_id)
-                agent.close()
-                if execution.status == ExecutionStatus.RUNNING:
-                    execution.status = ExecutionStatus.COMPLETED
-                execution.completed_at = time.time()
-                execution._new_event.set()
-                logger.info(f"[Execution] AG-UI completed {execution.execution_id}, {len(execution.events)} events buffered")
+                try:
+                    agent.close()
+                finally:
+                    if execution.status == ExecutionStatus.RUNNING:
+                        execution.status = ExecutionStatus.COMPLETED
+                    execution.completed_at = time.time()
+                    execution._new_event.set()
+                logger.info(
+                    f"[Execution] AG-UI ended {execution.execution_id} "
+                    f"with status={execution.status.value}, "
+                    f"{len(execution.events)} events buffered"
+                )
                 if use_mailbox_delivery:
                     # The foreground run has reached a safe boundary. A
                     # coordinator holding this session's lease may now append
@@ -826,6 +1064,8 @@ async def _handle_agui_invocation(body: dict, http_request: Request) -> Streamin
             }
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error in AG-UI invocation: {e}", exc_info=True)
         raise HTTPException(
@@ -933,6 +1173,8 @@ async def deliver_research_job(record: dict, artifact: dict) -> None:
                         elicitation_bridge=getattr(agent, "elicitation_bridge", None),
                     )
                     async for sse_chunk in stream:
+                        if not sse_chunk:
+                            continue
                         execution.append_event(
                             sse_chunk,
                             _extract_event_type(sse_chunk),
@@ -1072,6 +1314,8 @@ async def deliver_delegation_job(record: dict, result: dict) -> None:
                         ),
                     )
                     async for sse_chunk in stream:
+                        if not sse_chunk:
+                            continue
                         execution.append_event(
                             sse_chunk,
                             _extract_event_type(sse_chunk),

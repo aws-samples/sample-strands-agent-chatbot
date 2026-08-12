@@ -65,6 +65,16 @@ AUTH_JSON=$(aws cognito-idp initiate-auth \
   --region "$AWS_REGION")
 
 ACCESS_TOKEN=$(echo "$AUTH_JSON" | python3 -c "import json,sys;print(json.load(sys.stdin)['AuthenticationResult']['AccessToken'])")
+USER_ID=$(python3 - "$ACCESS_TOKEN" <<'PY'
+import base64
+import json
+import sys
+
+payload = sys.argv[1].split(".")[1]
+payload += "=" * (-len(payload) % 4)
+print(json.loads(base64.urlsafe_b64decode(payload))["sub"])
+PY
+)
 echo "   got access_token (${#ACCESS_TOKEN} chars)"
 
 # Gateway MCP probe — complete the stateful MCP handshake:
@@ -116,10 +126,29 @@ PY
 # Warmup is the lightest valid action — confirms auth + container readiness.
 echo ""
 echo ">>> Orchestrator: warmup"
+SESSION_ID="smoke-$(python3 -c 'import uuid; print(uuid.uuid4().hex)')"
 curl -sS -X POST "$ORCH_URL" \
   -H "Authorization: Bearer $ACCESS_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"thread_id":"smoke-1","run_id":"smoke-run-1","messages":[],"state":{"action":"warmup","user_id":"smoke-test"}}' \
+  -H "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id: $SESSION_ID" \
+  -d "$(python3 - "$SESSION_ID" "$USER_ID" <<'PY'
+import json
+import sys
+import uuid
+
+print(json.dumps({
+    "threadId": sys.argv[1],
+    "runId": str(uuid.uuid4()),
+    "messages": [],
+    "tools": [],
+    "context": [],
+    "state": {
+        "action": "warmup",
+        "user_id": sys.argv[2],
+    },
+}))
+PY
+)" \
   | head -c 500
 echo ""
 

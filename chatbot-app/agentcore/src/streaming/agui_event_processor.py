@@ -484,7 +484,10 @@ class AGUIStreamEventProcessor:
         self._active_streams.add(stream_id)
 
         if not agent:
-            yield self.formatter.format_event("error", error_message="Agent not available - please configure AWS credentials for Bedrock")
+            yield self.formatter.format_event(
+                "error",
+                error_message="Agent is unavailable",
+            )
             return
 
         # Register side-channel queue for skill executor events
@@ -1022,7 +1025,10 @@ class AGUIStreamEventProcessor:
                 yield self.formatter.format_event("tool_result", tool_result=error_tool_result)
             else:
                 # No pending tool, emit as error event (chat message)
-                yield self.formatter.format_event("error", error_message=f"Sorry, I encountered an error: {str(e)}")
+                yield self.formatter.format_event(
+                    "error",
+                    error_message="Agent processing failed",
+                )
 
         finally:
             # Cancel any pending next-event task to avoid leaks

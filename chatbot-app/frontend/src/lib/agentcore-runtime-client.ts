@@ -204,8 +204,8 @@ export async function getExecutionStatus(
     const runtimeUrl = await getAgentCoreRuntimeUrl()
     const sessionId = extractSessionId(executionId)
     const payload = {
-      thread_id: sessionId,
-      run_id: crypto.randomUUID(),
+      threadId: sessionId,
+      runId: crypto.randomUUID(),
       messages: [],
       tools: [],
       context: [],
@@ -261,8 +261,8 @@ export async function resumeExecution(
   const runtimeUrl = await getAgentCoreRuntimeUrl()
   const sessionId = extractSessionId(executionId)
   const payload = {
-    thread_id: sessionId,
-    run_id: crypto.randomUUID(),
+    threadId: sessionId,
+    runId: crypto.randomUUID(),
     messages: [],
     tools: [],
     context: [],
@@ -317,8 +317,8 @@ export async function pingAgentCoreRuntime(sessionId?: string, userId?: string, 
     console.log(`[AgentCore Warmup] Invoking with sessionId=${warmupSessionId}, userId=${warmupUserId}`)
 
     const payload = {
-      thread_id: warmupSessionId,
-      run_id: crypto.randomUUID(),
+      threadId: warmupSessionId,
+      runId: crypto.randomUUID(),
       messages: [],
       tools: [],
       context: [],

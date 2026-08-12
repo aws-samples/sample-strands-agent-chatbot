@@ -2,7 +2,7 @@ import { useCallback, useRef, startTransition, useEffect } from 'react'
 import { flushSync } from 'react-dom'
 import { EventType, type TextMessageStartEvent, type TextMessageContentEvent, type TextMessageEndEvent, type ToolCallStartEvent, type ToolCallArgsEvent, type ToolCallEndEvent, type ToolCallResultEvent, type RunFinishedEvent, type RunErrorEvent, type CustomEvent } from '@ag-ui/core'
 import { Message, ToolExecution } from '@/types/chat'
-import { AGUIStreamEvent, ChatSessionState, ChatUIState, WorkspaceFile, SWARM_AGENT_DISPLAY_NAMES, SwarmAgentStep, TokenUsage } from '@/types/events'
+import { AGUIStreamEvent, ChatSessionState, ChatUIState, InterruptState, WorkspaceFile, SWARM_AGENT_DISPLAY_NAMES, SwarmAgentStep, TokenUsage } from '@/types/events'
 import { useMetadataTracking } from './useMetadataTracking'
 import { useTextBuffer } from './useTextBuffer'
 import { A2A_TOOLS_REQUIRING_POLLING, isA2ATool, getAgentStatusForTool } from './usePolling'
@@ -153,6 +153,33 @@ export const useStreamEvents = ({
     setSessionState(prev => ({
       ...prev,
       reasoning: { text: ev.text, isActive: true }
+    }))
+  }, [setSessionState, setUIState])
+
+  const handleReasoningContentEvent = useCallback((delta: string) => {
+    if (!delta) return
+    if (swarmModeRef.current.isActive) {
+      const stepIndex = swarmModeRef.current.agentSteps.length - 1
+      if (stepIndex >= 0) {
+        const currentStep = swarmModeRef.current.agentSteps[stepIndex]
+        swarmModeRef.current.agentSteps[stepIndex] = {
+          ...currentStep,
+          reasoningText: (currentStep.reasoningText || '') + delta,
+        }
+      }
+      return
+    }
+    setUIState(prev => ({
+      ...prev,
+      isTyping: true,
+      turnPhase: 'reasoning',
+    }))
+    setSessionState(prev => ({
+      ...prev,
+      reasoning: {
+        text: (prev.reasoning?.text || '') + delta,
+        isActive: true,
+      },
     }))
   }, [setSessionState, setUIState])
 
@@ -1625,7 +1652,49 @@ export const useStreamEvents = ({
         case EventType.TOOL_CALL_RESULT:
           handleToolCallResultEvent(event)
           break
+        case EventType.REASONING_START:
+        case EventType.REASONING_MESSAGE_START:
+          setSessionState(prev => ({
+            ...prev,
+            reasoning: { text: '', isActive: true },
+          }))
+          break
+        case EventType.REASONING_MESSAGE_CONTENT:
+          handleReasoningContentEvent(event.delta)
+          break
+        case EventType.REASONING_MESSAGE_END:
+        case EventType.REASONING_END:
+          setSessionState(prev => ({
+            ...prev,
+            reasoning: prev.reasoning
+              ? { ...prev.reasoning, isActive: false }
+              : null,
+          }))
+          break
         case EventType.RUN_FINISHED:
+          if (event.outcome?.type === 'interrupt') {
+            const interrupts = event.outcome.interrupts.map(interrupt => ({
+              id: interrupt.id,
+              name: String(interrupt.metadata?.name || interrupt.message || 'interrupt'),
+              reason: (
+                interrupt.metadata?.reason
+                && typeof interrupt.metadata.reason === 'object'
+              )
+                ? interrupt.metadata.reason as InterruptState['interrupts'][number]['reason']
+                : undefined,
+            }))
+            setSessionState(prev => ({
+              ...prev,
+              interrupt: { interrupts },
+            }))
+            setUIState(prev => ({
+              ...prev,
+              isTyping: false,
+              agentStatus: 'idle',
+              turnPhase: 'waiting_for_user',
+            }))
+            break
+          }
           // Return the cleanup promise so buffered background executions can
           // serialize complete runs. Live stream callers may ignore it.
           return handleCompleteEvent(event).catch(err => {
@@ -1733,6 +1802,7 @@ export const useStreamEvents = ({
     }
   }, [
     handleReasoningEvent,
+    handleReasoningContentEvent,
     handleTextMessageStartEvent,
     handleTextMessageContentEvent,
     handleTextMessageEndEvent,

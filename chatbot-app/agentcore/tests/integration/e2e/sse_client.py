@@ -1,7 +1,7 @@
 """SSE client that POSTs to the BFF /api/stream/chat endpoint and collects events.
 
 The BFF accepts AG-UI RunAgentInput (camelCase `threadId`/`runId`) and forwards
-to the AgentCore runtime as snake_case. See
+the standard wire shape to the AgentCore runtime. See
 `chatbot-app/frontend/src/app/api/stream/chat/route.ts`.
 
 Event shape (subset used here): each `data: {...}` frame is a JSON object with a
