@@ -151,6 +151,7 @@ export async function POST(request: NextRequest) {
 
     const threadIdFromBody: string | undefined = body.threadId
     const runIdFromBody: string | undefined = body.runId
+    const resume = Array.isArray(body.resume) ? body.resume : undefined
     const aguiMessages: Array<{ id?: string; role?: string; content?: unknown }> = body.messages ?? []
 
     // Per-request config lives in body.state (replaces former top-level fields)
@@ -190,6 +191,12 @@ export async function POST(request: NextRequest) {
     // Extract user from Cognito JWT token in Authorization header
     const user = await extractUserFromRequest(request)
     const userId = user.userId
+    if (!IS_LOCAL && userId === 'anonymous') {
+      return new Response(
+        JSON.stringify({ error: 'Authentication required' }),
+        { status: 401, headers: { 'Content-Type': 'application/json' } }
+      )
+    }
 
     // Forward the verified caller token only as the Runtime Authorization header.
     const authHeader = request.headers.get('authorization') || ''
@@ -411,11 +418,12 @@ export async function POST(request: NextRequest) {
           }
 
           const aguiBody = {
-            thread_id: sessionId,
-            run_id: runIdFromBody || crypto.randomUUID(),
+            threadId: sessionId,
+            runId: runIdFromBody || crypto.randomUUID(),
             messages: aguiMessages,
             tools: [],
             context: [],
+            ...(resume && resume.length > 0 && { resume }),
             state: enrichedState,
           }
 
@@ -458,9 +466,8 @@ export async function POST(request: NextRequest) {
           }
           console.error('[BFF] Error:', error)
           const errorEvent = `data: ${JSON.stringify({
-            type: 'error',
-            message: error instanceof Error ? error.message : 'Unknown error',
-            metadata: { session_id: sessionId }
+            type: 'RUN_ERROR',
+            message: 'Agent stream failed'
           })}\n\n`
           try {
             if (!clientDisconnected) {

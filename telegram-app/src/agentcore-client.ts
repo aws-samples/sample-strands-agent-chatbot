@@ -109,6 +109,11 @@ function buildPayload(
   chatId: number,
   content: string | ContentPart[],
   sessionId: string,
+  resume?: Array<{
+    interruptId: string;
+    status: "resolved" | "cancelled";
+    payload?: unknown;
+  }>,
 ) {
   const runId = randomUUID();
   const messages =
@@ -117,11 +122,12 @@ function buildPayload(
       : [{ id: "msg-1", role: "user", content }];
 
   return {
-    thread_id: sessionId,
-    run_id: runId,
+    threadId: sessionId,
+    runId,
     messages,
     tools: [],
     context: [],
+    ...(resume && resume.length > 0 ? { resume } : {}),
     state: {
       user_id: resolveUserId(chatId),
       channel: "telegram",
@@ -135,10 +141,15 @@ export async function invokeAgent(
   chatId: number,
   content: string | ContentPart[],
   onProgress?: ProgressCallback,
+  resume?: Array<{
+    interruptId: string;
+    status: "resolved" | "cancelled";
+    payload?: unknown;
+  }>,
 ): Promise<AgentResponse> {
   const sessionId = buildSessionId(chatId);
   const token = await getAccessToken();
-  const payload = buildPayload(chatId, content, sessionId);
+  const payload = buildPayload(chatId, content, sessionId, resume);
 
   logger.info({ chatId, sessionId }, "Invoking AgentCore");
 

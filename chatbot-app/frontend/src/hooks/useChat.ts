@@ -539,7 +539,7 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
 
     try {
       await apiSendMessage(
-        JSON.stringify([{ interruptResponse: { interruptId, response } }]),
+        '',
         undefined,
         // The resumed turn is the one that finishes the work the queue is waiting
         // on, so it has to settle the turn like any other. Without this the queue
@@ -549,6 +549,14 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
           setTurnSettled({ outcome: 'error' })
           setUIState(prev => ({ ...prev, isTyping: false, agentStatus: 'idle', turnPhase: 'idle' }))
         },
+        undefined,
+        undefined,
+        undefined,
+        [{
+          interruptId,
+          status: response === 'declined' ? 'cancelled' : 'resolved',
+          payload: response,
+        }],
       )
     } catch (error) {
       console.error('[Interrupt] Failed to respond to interrupt:', error)

@@ -10,6 +10,11 @@ import {
   type ToolCallArgsEvent,
   type ToolCallEndEvent,
   type ToolCallResultEvent,
+  type ReasoningStartEvent,
+  type ReasoningMessageStartEvent,
+  type ReasoningMessageContentEvent,
+  type ReasoningMessageEndEvent,
+  type ReasoningEndEvent,
   type CustomEvent,
   EventType,
 } from '@ag-ui/core';
@@ -85,6 +90,11 @@ export const AGUI_EVENT_TYPES = [
   EventType.TOOL_CALL_ARGS,
   EventType.TOOL_CALL_END,
   EventType.TOOL_CALL_RESULT,
+  EventType.REASONING_START,
+  EventType.REASONING_MESSAGE_START,
+  EventType.REASONING_MESSAGE_CONTENT,
+  EventType.REASONING_MESSAGE_END,
+  EventType.REASONING_END,
   EventType.CUSTOM,
 ] as const;
 
@@ -102,6 +112,11 @@ export type AGUIStreamEvent =
   | ToolCallArgsEvent
   | ToolCallEndEvent
   | ToolCallResultEvent
+  | ReasoningStartEvent
+  | ReasoningMessageStartEvent
+  | ReasoningMessageContentEvent
+  | ReasoningMessageEndEvent
+  | ReasoningEndEvent
   | CustomEvent;
 
 // Swarm mode types

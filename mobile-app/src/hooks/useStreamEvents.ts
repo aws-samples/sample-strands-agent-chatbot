@@ -315,7 +315,48 @@ export function useStreamEvents(opts?: UseStreamEventsOpts) {
           break
         }
 
-        case 'RUN_FINISHED':
+        case 'REASONING_START':
+        case 'REASONING_MESSAGE_START':
+          setAgentStatus('thinking')
+          break
+
+        case 'REASONING_MESSAGE_CONTENT':
+          setMessages(prev => {
+            const lastIndex = prev.length - 1
+            const last = prev[lastIndex]
+            if (last?.role === 'assistant') {
+              return prev.map((message, index) =>
+                index === lastIndex
+                  ? {
+                      ...message,
+                      reasoningText: message.reasoningText + event.delta,
+                    }
+                  : message,
+              )
+            }
+            const carrier = makeEmptyMessage(uuidv4(), 'assistant')
+            return [
+              ...prev,
+              { ...carrier, reasoningText: event.delta },
+            ]
+          })
+          break
+
+        case 'REASONING_MESSAGE_END':
+        case 'REASONING_END':
+          break
+
+        case 'RUN_FINISHED': {
+          if (event.outcome?.type === 'interrupt') {
+            const interrupts = (event.outcome.interrupts ?? []).map(interrupt => ({
+              id: interrupt.id,
+              name: interrupt.metadata?.name ?? interrupt.message ?? 'interrupt',
+              reason: interrupt.metadata?.reason,
+            }))
+            if (interrupts.length > 0) {
+              setPendingInterrupt({ interrupts })
+            }
+          }
           stopTextBuffer()
           // Fire run_finished signal with all completed tools
           if (completedToolsRef.current.length > 0) {
@@ -327,6 +368,7 @@ export function useStreamEvents(opts?: UseStreamEventsOpts) {
           completedToolsRef.current = []
           setAgentStatus('idle')
           break
+        }
 
         case 'RUN_ERROR': {
           stopTextBuffer()

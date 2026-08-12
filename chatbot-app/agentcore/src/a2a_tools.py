@@ -406,11 +406,6 @@ def create_a2a_tool(agent_id: str):
 
             _auth_token = tool_context.invocation_state.get("auth_token")
 
-        if not session_id:
-            session_id = os.environ.get('SESSION_ID')
-        if not user_id:
-            user_id = os.environ.get('USER_ID')
-
         return session_id, user_id, model_id, _auth_token
 
     # Generate correct tool name BEFORE creating function

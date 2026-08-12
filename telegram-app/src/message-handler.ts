@@ -169,8 +169,17 @@ async function handleCallbackQuery(ctx: Context): Promise<void> {
   };
   onProgress("start");
 
-  const content = JSON.stringify([{ interruptResponse: { interruptId, response: approved ? "approved" : "declined" } }]);
-  const agentResponse = await invokeAgent(chatId, content, onProgress);
+  const response = approved ? "approved" : "declined";
+  const agentResponse = await invokeAgent(
+    chatId,
+    "",
+    onProgress,
+    [{
+      interruptId,
+      status: approved ? "resolved" : "cancelled",
+      payload: response,
+    }],
+  );
   await sendAgentResponse(ctx.api, chatId, agentResponse);
 }
 

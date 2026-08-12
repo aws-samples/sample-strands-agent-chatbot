@@ -9,6 +9,8 @@ from ag_ui.core import (
     RunStartedEvent,
     RunFinishedEvent,
     RunErrorEvent,
+    RunFinishedInterruptOutcome,
+    Interrupt,
     TextMessageStartEvent,
     TextMessageContentEvent,
     TextMessageEndEvent,
@@ -16,6 +18,11 @@ from ag_ui.core import (
     ToolCallArgsEvent,
     ToolCallEndEvent,
     ToolCallResultEvent,
+    ReasoningStartEvent,
+    ReasoningMessageStartEvent,
+    ReasoningMessageContentEvent,
+    ReasoningMessageEndEvent,
+    ReasoningEndEvent,
     CustomEvent,
     EventType,
 )
@@ -360,6 +367,9 @@ class AGUIStreamEventFormatter:
         self._started_tool_calls: set[str] = set()
         self._ended_tool_calls: set[str] = set()
         self._tool_call_names: Dict[str, str] = {}
+        self._terminal_emitted: bool = False
+        self._reasoning_open: bool = False
+        self._reasoning_message_id: Optional[str] = None
 
     # ------------------------------------------------------------------ #
     # Internal helpers                                                     #
@@ -379,6 +389,23 @@ class AGUIStreamEventFormatter:
             self._current_message_id = None
             return encoded
         return ""
+
+    def _close_open_reasoning(self) -> str:
+        if not self._reasoning_open or not self._reasoning_message_id:
+            return ""
+        message_id = self._reasoning_message_id
+        self._reasoning_open = False
+        self._reasoning_message_id = None
+        return (
+            self._encode(ReasoningMessageEndEvent(
+                type=EventType.REASONING_MESSAGE_END,
+                message_id=message_id,
+            ))
+            + self._encode(ReasoningEndEvent(
+                type=EventType.REASONING_END,
+                message_id=message_id,
+            ))
+        )
 
     # ------------------------------------------------------------------ #
     # Public dispatch                                                      #
@@ -402,10 +429,14 @@ class AGUIStreamEventFormatter:
           error               -> RunErrorEvent
           <all others>        -> CustomEvent(name=<original_type>, value=<payload>)
         """
+        if self._terminal_emitted and event_type != "init":
+            return ""
+
         _dispatch: Dict[str, Any] = {
             "init":        self._format_init,
             "thinking":    self._format_thinking,
             "reasoning":   self._format_reasoning,
+            "interrupt":   self._format_interrupt,
             "response":    self._format_response,
             "complete":    self._format_complete,
             "stop":        self._format_stop,
@@ -418,7 +449,10 @@ class AGUIStreamEventFormatter:
             "error":       self._format_error,
         }
         handler = _dispatch.get(event_type, self._format_custom)
-        return handler(event_type=event_type, **kwargs)
+        prefix = ""
+        if event_type != "reasoning":
+            prefix = self._close_open_reasoning()
+        return prefix + handler(event_type=event_type, **kwargs)
 
     # ------------------------------------------------------------------ #
     # Core AG-UI event formatters                                          #
@@ -427,6 +461,9 @@ class AGUIStreamEventFormatter:
     def _format_init(self, event_type: str = "init", **kwargs) -> str:
         self._run_id = self._initial_run_id or str(uuid.uuid4())
         self._initial_run_id = None  # consume once; subsequent calls (shouldn't happen) get a fresh uuid
+        self._terminal_emitted = False
+        self._reasoning_open = False
+        self._reasoning_message_id = None
         self._message_open = False
         self._current_message_id = None
         self._started_tool_calls.clear()
@@ -446,14 +483,71 @@ class AGUIStreamEventFormatter:
         ))
 
     def _format_reasoning(self, event_type: str = "reasoning", **kwargs) -> str:
-        return self._encode(CustomEvent(
+        if self._terminal_emitted:
+            return ""
+        text = kwargs.get("reasoning_text", kwargs.get("text", ""))
+        result = ""
+        if not self._reasoning_open:
+            self._reasoning_message_id = str(uuid.uuid4())
+            self._reasoning_open = True
+            result += self._encode(ReasoningStartEvent(
+                type=EventType.REASONING_START,
+                message_id=self._reasoning_message_id,
+            ))
+            result += self._encode(ReasoningMessageStartEvent(
+                type=EventType.REASONING_MESSAGE_START,
+                message_id=self._reasoning_message_id,
+                role="reasoning",
+            ))
+        if text:
+            result += self._encode(ReasoningMessageContentEvent(
+                type=EventType.REASONING_MESSAGE_CONTENT,
+                message_id=self._reasoning_message_id,
+                delta=text,
+            ))
+        return result
+
+    def _format_interrupt(self, event_type: str = "interrupt", **kwargs) -> str:
+        if self._terminal_emitted:
+            return ""
+
+        raw_interrupts = kwargs.get("interrupts") or []
+        standard_interrupts = []
+        for raw in raw_interrupts:
+            raw_reason = raw.get("reason")
+            reason = (
+                raw_reason
+                if isinstance(raw_reason, str)
+                else json.dumps(raw_reason or {}, ensure_ascii=False)
+            )
+            standard_interrupts.append(Interrupt(
+                id=str(raw.get("id") or uuid.uuid4()),
+                reason=reason,
+                message=raw.get("name"),
+                tool_call_id=raw.get("toolCallId"),
+                metadata={
+                    "name": raw.get("name"),
+                    "reason": raw_reason,
+                },
+            ))
+
+        result = self._close_open_message()
+        result += self._encode(CustomEvent(
             type=EventType.CUSTOM,
-            name="reasoning",
-            value={
-                "text": kwargs.get("reasoning_text", kwargs.get("text", "")),
-                "step": kwargs.get("step", "thinking"),
-            },
+            name="interrupt",
+            value={"interrupts": raw_interrupts},
         ))
+        run_id = self._run_id or str(uuid.uuid4())
+        result += self._encode(RunFinishedEvent(
+            type=EventType.RUN_FINISHED,
+            thread_id=self._thread_id,
+            run_id=run_id,
+            outcome=RunFinishedInterruptOutcome(
+                interrupts=standard_interrupts,
+            ),
+        ))
+        self._terminal_emitted = True
+        return result
 
     def _format_response(self, event_type: str = "response", **kwargs) -> str:
         text = kwargs.get("text", "")
@@ -474,6 +568,9 @@ class AGUIStreamEventFormatter:
         return result
 
     def _format_complete(self, event_type: str = "complete", **kwargs) -> str:
+        if self._terminal_emitted:
+            return ""
+
         message: str = kwargs.get("message", "")
         result = ""
 
@@ -499,14 +596,8 @@ class AGUIStreamEventFormatter:
             # Close any message that was built up through incremental response events.
             result += self._close_open_message()
 
-        run_id = self._run_id or str(uuid.uuid4())
-        result += self._encode(RunFinishedEvent(
-            type=EventType.RUN_FINISHED,
-            thread_id=self._thread_id,
-            run_id=run_id,
-        ))
         # Images and usage have no standard AG-UI home; relay as a CustomEvent
-        # so consumers that understand the schema can still act on them.
+        # before the terminal event so every consumer can observe them.
         images = kwargs.get("images")
         usage = kwargs.get("usage")
         if images or usage:
@@ -520,6 +611,13 @@ class AGUIStreamEventFormatter:
                 name="complete_metadata",
                 value=extra,
             ))
+        run_id = self._run_id or str(uuid.uuid4())
+        result += self._encode(RunFinishedEvent(
+            type=EventType.RUN_FINISHED,
+            thread_id=self._thread_id,
+            run_id=run_id,
+        ))
+        self._terminal_emitted = True
         return result
 
     def _format_tool_use(self, event_type: str = "tool_use", **kwargs) -> str:
@@ -705,26 +803,34 @@ class AGUIStreamEventFormatter:
 
     def _format_stop(self, event_type: str = "stop", **kwargs) -> str:
         """Emitted when the stream is gracefully stopped by the user."""
+        if self._terminal_emitted:
+            return ""
+
         result = self._close_open_message()
+        result += self._encode(CustomEvent(
+            type=EventType.CUSTOM,
+            name="stream_stopped",
+            value={"message": "Stream stopped by user"},
+        ))
         run_id = self._run_id or str(uuid.uuid4())
         result += self._encode(RunFinishedEvent(
             type=EventType.RUN_FINISHED,
             thread_id=self._thread_id,
             run_id=run_id,
         ))
-        result += self._encode(CustomEvent(
-            type=EventType.CUSTOM,
-            name="stream_stopped",
-            value={"message": "Stream stopped by user"},
-        ))
+        self._terminal_emitted = True
         return result
 
     def _format_error(self, event_type: str = "error", **kwargs) -> str:
+        if self._terminal_emitted:
+            return ""
+
         result = self._close_open_message()
         result += self._encode(RunErrorEvent(
             type=EventType.RUN_ERROR,
             message=kwargs.get("error_message", kwargs.get("message", "Unknown error")),
         ))
+        self._terminal_emitted = True
         return result
 
     # ------------------------------------------------------------------ #

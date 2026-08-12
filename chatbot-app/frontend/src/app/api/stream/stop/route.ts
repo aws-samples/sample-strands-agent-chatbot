@@ -22,6 +22,12 @@ export async function POST(request: NextRequest) {
     // Extract user from request
     const user = await extractUserFromRequest(request)
     const userId = user.userId
+    if (!IS_LOCAL && userId === 'anonymous') {
+      return NextResponse.json(
+        { error: 'Authentication required' },
+        { status: 401 }
+      )
+    }
 
     // Get session ID from request body or header
     const body = await request.json().catch(() => ({}))
@@ -63,8 +69,8 @@ export async function POST(request: NextRequest) {
     if (IS_LOCAL) {
       // Local mode: Call local AgentCore /invocations with AG-UI stop action
       const payload = {
-        thread_id: sessionId,
-        run_id: crypto.randomUUID(),
+        threadId: sessionId,
+        runId: crypto.randomUUID(),
         messages: [],
         tools: [],
         context: [],

@@ -9,6 +9,8 @@ SSE connections tail the buffer, enabling reconnection with cursor-based replay.
 import asyncio
 import time
 import logging
+import os
+import json
 from enum import Enum
 from dataclasses import dataclass, field
 from typing import Optional
@@ -38,6 +40,7 @@ class Execution:
     user_id: str
     status: ExecutionStatus
     events: list[SSEEvent] = field(default_factory=list)
+    buffered_bytes: int = 0
     next_event_id: int = 1
     created_at: float = field(default_factory=time.time)
     completed_at: Optional[float] = None
@@ -49,17 +52,51 @@ class Execution:
     media_type: str = "text/event-stream"
 
     MAX_EVENTS = 10000
+    MAX_BUFFER_BYTES = int(os.environ.get("AGUI_MAX_BUFFER_BYTES", 16 * 1024 * 1024))
     TRUNCATE_RATIO = 0.2  # Remove oldest 20% when overflow
 
     def append_event(self, data: str, event_type: str = "unknown") -> SSEEvent:
         """Append an event to the buffer and notify subscribers."""
-        # Overflow protection
+        data_size = len(data.encode("utf-8"))
+        marker_reserve = min(1024, max(128, self.MAX_BUFFER_BYTES // 4))
+        if data_size > self.MAX_BUFFER_BYTES - marker_reserve:
+            data = "data: " + json.dumps({
+                "type": "CUSTOM",
+                "name": "event_dropped",
+                "value": {
+                    "eventType": event_type,
+                    "bytes": data_size,
+                },
+            }) + "\n\n"
+            event_type = "event_dropped"
+            data_size = len(data.encode("utf-8"))
+
+        truncated = False
         if len(self.events) >= self.MAX_EVENTS:
             trim_count = int(self.MAX_EVENTS * self.TRUNCATE_RATIO)
+            removed = self.events[:trim_count]
             self.events = self.events[trim_count:]
-            first_retained_id = self.events[0].event_id
-            # The marker represents the gap immediately before the retained
-            # window, so its id must preserve chronological cursor ordering.
+            self.buffered_bytes -= sum(
+                len(event.data.encode("utf-8"))
+                for event in removed
+            )
+            truncated = True
+
+        while (
+            self.events
+            and self.buffered_bytes + data_size + marker_reserve
+            > self.MAX_BUFFER_BYTES
+        ):
+            removed = self.events.pop(0)
+            self.buffered_bytes -= len(removed.data.encode("utf-8"))
+            truncated = True
+
+        if truncated:
+            first_retained_id = (
+                self.events[0].event_id
+                if self.events
+                else self.next_event_id
+            )
             marker = SSEEvent(
                 event_id=first_retained_id - 1,
                 data=(
@@ -70,6 +107,7 @@ class Execution:
                 event_type="buffer_truncated",
             )
             self.events.insert(0, marker)
+            self.buffered_bytes += len(marker.data.encode("utf-8"))
 
         event = SSEEvent(
             event_id=self.next_event_id,
@@ -79,6 +117,7 @@ class Execution:
         )
         self.next_event_id += 1
         self.events.append(event)
+        self.buffered_bytes += data_size
 
         # Wake up all subscribers waiting for new events.
         # Do NOT clear here — subscribers clear after waking to avoid race.
@@ -120,7 +159,8 @@ class ExecutionRegistry:
         supersede_running: bool = True,
     ) -> Optional[Execution]:
         async with self._lock:
-            latest_id = self._session_latest.get(session_id)
+            session_key = (user_id, session_id)
+            latest_id = self._session_latest.get(session_key)
             if latest_id:
                 latest = self._executions.get(latest_id)
                 if latest and latest.status == ExecutionStatus.RUNNING:
@@ -137,6 +177,14 @@ class ExecutionRegistry:
                         latest.task.cancel()
 
             execution_id = f"{session_id}:{run_id}"
+            existing = self._executions.get(execution_id)
+            if existing and existing.user_id != user_id:
+                logger.warning(
+                    "[ExecutionRegistry] Rejected cross-user execution id "
+                    "collision for %s",
+                    execution_id,
+                )
+                return None
             execution = Execution(
                 execution_id=execution_id,
                 session_id=session_id,
@@ -144,15 +192,19 @@ class ExecutionRegistry:
                 status=ExecutionStatus.RUNNING,
             )
             self._executions[execution_id] = execution
-            self._session_latest[session_id] = execution_id
+            self._session_latest[session_key] = execution_id
             logger.info(f"[ExecutionRegistry] Created execution {execution_id}")
             return execution
 
     def get_execution(self, execution_id: str) -> Optional[Execution]:
         return self._executions.get(execution_id)
 
-    def get_latest_execution(self, session_id: str) -> Optional[Execution]:
-        execution_id = self._session_latest.get(session_id)
+    def get_latest_execution(
+        self,
+        session_id: str,
+        user_id: str,
+    ) -> Optional[Execution]:
+        execution_id = self._session_latest.get((user_id, session_id))
         if execution_id:
             return self._executions.get(execution_id)
         return None
@@ -175,8 +227,9 @@ class ExecutionRegistry:
                 execution = self._executions.pop(eid, None)
                 if execution:
                     # Clean up session_latest if it points to this execution
-                    if self._session_latest.get(execution.session_id) == eid:
-                        del self._session_latest[execution.session_id]
+                    session_key = (execution.user_id, execution.session_id)
+                    if self._session_latest.get(session_key) == eid:
+                        del self._session_latest[session_key]
 
             if to_remove:
                 logger.info(f"[ExecutionRegistry] Cleaned up {len(to_remove)} expired executions")

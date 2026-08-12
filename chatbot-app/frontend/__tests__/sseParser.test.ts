@@ -242,12 +242,12 @@ describe('sseParser', () => {
       expect(validateAGUIStreamEvent(missingName).errors[0]).toContain('name')
     })
 
-    it('should allow unknown event types for forward compatibility', () => {
+    it('should reject unknown event types at the protocol boundary', () => {
       const unknown = { type: 'unknown_type' } as unknown as AGUIStreamEvent
 
       const result = validateAGUIStreamEvent(unknown)
-      expect(result.valid).toBe(true)
-      expect(result.errors).toHaveLength(0)
+      expect(result.valid).toBe(false)
+      expect(result.errors.length).toBeGreaterThan(0)
     })
   })
 
@@ -344,7 +344,7 @@ describe('sseParser', () => {
     })
 
 
-    it('should allow legacy interrupt event (falls through to default, always valid)', () => {
+    it('should reject legacy lowercase interrupt events', () => {
       // interrupt is a legacy/custom type — validator allows all unknown types
       const missingInterrupts = { type: 'interrupt' } as unknown as AGUIStreamEvent
       const withInterrupts = {
@@ -352,8 +352,8 @@ describe('sseParser', () => {
         interrupts: [{ id: 'int-1', name: 'chatbot-research-approval' }]
       } as unknown as AGUIStreamEvent
 
-      expect(validateAGUIStreamEvent(missingInterrupts).valid).toBe(true)
-      expect(validateAGUIStreamEvent(withInterrupts).valid).toBe(true)
+      expect(validateAGUIStreamEvent(missingInterrupts).valid).toBe(false)
+      expect(validateAGUIStreamEvent(withInterrupts).valid).toBe(false)
     })
 
     it('should create mock interrupt event', () => {

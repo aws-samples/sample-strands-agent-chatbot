@@ -76,11 +76,48 @@ export interface RunFinishedEvent {
   type: 'RUN_FINISHED'
   threadId: string
   runId: string
+  outcome?: {
+    type: 'success' | 'interrupt'
+    interrupts?: Array<{
+      id: string
+      message?: string
+      metadata?: {
+        name?: string
+        reason?: InterruptReason
+      }
+    }>
+  }
 }
 
 export interface RunErrorEvent {
   type: 'RUN_ERROR'
   message: string
+}
+
+export interface ReasoningStartEvent {
+  type: 'REASONING_START'
+  messageId: string
+}
+
+export interface ReasoningMessageStartEvent {
+  type: 'REASONING_MESSAGE_START'
+  messageId: string
+}
+
+export interface ReasoningMessageContentEvent {
+  type: 'REASONING_MESSAGE_CONTENT'
+  messageId: string
+  delta: string
+}
+
+export interface ReasoningMessageEndEvent {
+  type: 'REASONING_MESSAGE_END'
+  messageId: string
+}
+
+export interface ReasoningEndEvent {
+  type: 'REASONING_END'
+  messageId: string
 }
 
 // ─── CUSTOM event subtypes ────────────────────────────────────────────────────
@@ -210,6 +247,11 @@ export type AGUIEvent =
   | ToolCallArgsEvent
   | ToolCallEndEvent
   | ToolCallResultEvent
+  | ReasoningStartEvent
+  | ReasoningMessageStartEvent
+  | ReasoningMessageContentEvent
+  | ReasoningMessageEndEvent
+  | ReasoningEndEvent
   | RunFinishedEvent
   | RunErrorEvent
   | AnyCustomEvent
@@ -217,5 +259,7 @@ export type AGUIEvent =
 export const AGUI_STANDARD_TYPES = new Set([
   'RUN_STARTED', 'TEXT_MESSAGE_START', 'TEXT_MESSAGE_CONTENT', 'TEXT_MESSAGE_END',
   'TOOL_CALL_START', 'TOOL_CALL_ARGS', 'TOOL_CALL_END', 'TOOL_CALL_RESULT',
+  'REASONING_START', 'REASONING_MESSAGE_START', 'REASONING_MESSAGE_CONTENT',
+  'REASONING_MESSAGE_END', 'REASONING_END',
   'RUN_FINISHED', 'RUN_ERROR', 'CUSTOM',
 ])

@@ -8,6 +8,7 @@ import { buildToolMaps, createToolExecution } from '@/utils/messageParser'
 import { isSessionTimedOut, getLastActivity, updateLastActivity, clearSessionData, triggerWarmup, generateSessionId } from '@/config/session'
 import { isA2ATool } from './usePolling'
 import { useSSEReconnect } from './useSSEReconnect'
+import { validateAGUIStreamEvent } from '@/utils/sseParser'
 import { arrayBufferToBase64 } from '@/lib/base64'
 
 /**
@@ -193,6 +194,11 @@ interface UseChatAPIReturn {
     systemPrompt?: string,
     selectedArtifactId?: string | null,
     workspaceFiles?: WorkspaceAttachment[],
+    resume?: Array<{
+      interruptId: string
+      status: 'resolved' | 'cancelled'
+      payload?: unknown
+    }>,
   ) => Promise<void>
   replayExecution: (
     executionId: string,
@@ -495,6 +501,11 @@ export const useChatAPI = ({
     systemPrompt?: string,
     selectedArtifactId?: string | null,
     workspaceFiles?: WorkspaceAttachment[],
+    resume?: Array<{
+      interruptId: string
+      status: 'resolved' | 'cancelled'
+      payload?: unknown
+    }>,
   ) => {
     // Update last activity timestamp (for session timeout tracking)
     updateLastActivity()
@@ -559,6 +570,7 @@ export const useChatAPI = ({
           messages: [{ id: crypto.randomUUID(), role: 'user', content: contentParts }],
           tools: [],
           context: [],
+          ...(resume && resume.length > 0 && { resume }),
           state: {
             model_id: currentModelId,
             temperature: currentTemperature,
@@ -723,6 +735,12 @@ export const useChatAPI = ({
                 // Inject eventId for deduplication
                 if (currentEventId !== null && currentEventId > 0) {
                   eventData._eventId = currentEventId
+                  if (streamExecutionId) {
+                    reconnect.onEventReceived(
+                      streamExecutionId,
+                      currentEventId,
+                    )
+                  }
                 }
                 if (streamExecutionId) {
                   eventData._executionId = streamExecutionId
@@ -739,7 +757,16 @@ export const useChatAPI = ({
                 }
 
                 if (eventData.type && (AGUI_EVENT_TYPES as readonly string[]).includes(eventData.type)) {
-                  await handleStreamEvent(eventData as AGUIStreamEvent)
+                  const event = eventData as AGUIStreamEvent
+                  const validation = validateAGUIStreamEvent(event)
+                  if (!validation.valid) {
+                    logger.warn(
+                      '[useChatAPI] Rejected invalid AG-UI event:',
+                      validation.errors,
+                    )
+                    continue
+                  }
+                  await handleStreamEvent(event)
                 }
               } catch (error) {
                 logger.error('Error processing SSE event:', error)

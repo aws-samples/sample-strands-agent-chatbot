@@ -1,9 +1,11 @@
 import { useCallback, useRef, useState } from 'react'
 import { getApiUrl } from '@/config/environment'
 import { AGUI_EVENT_TYPES, AGUIStreamEvent } from '@/types/events'
+import { validateAGUIStreamEvent } from '@/utils/sseParser'
 
 interface ReconnectState {
   executionId: string | null
+  cursor: number
   isReconnecting: boolean
   reconnectAttempt: number
 }
@@ -14,18 +16,19 @@ const MAX_DELAY_MS = 16000
 const FETCH_TIMEOUT_MS = 10000
 const STORAGE_KEY_PREFIX = 'sse_exec_'
 
-/** Persist executionId to sessionStorage. */
-function persistExecutionId(executionId: string) {
+/** Persist execution identity and the last processed event cursor. */
+function persistExecution(executionId: string, cursor: number) {
   try {
     sessionStorage.setItem(
       `${STORAGE_KEY_PREFIX}${executionId}`,
-      JSON.stringify({ executionId, ts: Date.now() })
+      JSON.stringify({ executionId, cursor, ts: Date.now() })
     )
   } catch { /* quota exceeded or unavailable */ }
 }
 
-/** Load persisted executionId for a given session. */
-function loadPersistedExecutionId(sessionId: string): string | null {
+function loadPersistedExecution(
+  sessionId: string,
+): { executionId: string; cursor: number } | null {
   try {
     for (let i = 0; i < sessionStorage.length; i++) {
       const key = sessionStorage.key(i)
@@ -40,7 +43,12 @@ function loadPersistedExecutionId(sessionId: string): string | null {
           sessionStorage.removeItem(key)
           continue
         }
-        return data.executionId
+        return {
+          executionId: data.executionId,
+          cursor: Number.isInteger(data.cursor) && data.cursor > 0
+            ? data.cursor
+            : 0,
+        }
       }
     }
   } catch { /* unavailable */ }
@@ -57,6 +65,7 @@ function clearPersistedExecutionId(executionId: string) {
 export function useSSEReconnect() {
   const stateRef = useRef<ReconnectState>({
     executionId: null,
+    cursor: 0,
     isReconnecting: false,
     reconnectAttempt: 0,
   })
@@ -68,10 +77,11 @@ export function useSSEReconnect() {
   const onStreamStart = useCallback((executionId: string) => {
     stateRef.current = {
       executionId,
+      cursor: 0,
       isReconnecting: false,
       reconnectAttempt: 0,
     }
-    persistExecutionId(executionId)
+    persistExecution(executionId, 0)
     setIsReconnecting(false)
     setReconnectAttempt(0)
   }, [])
@@ -96,6 +106,7 @@ export function useSSEReconnect() {
     }
     stateRef.current = {
       executionId: null,
+      cursor: 0,
       isReconnecting: false,
       reconnectAttempt: 0,
     }
@@ -106,14 +117,30 @@ export function useSSEReconnect() {
   /** Restore execution state from sessionStorage (for page refresh). */
   const restoreFromSession = useCallback((sessionId: string): boolean => {
     detach()
-    const executionId = loadPersistedExecutionId(sessionId)
+    const persisted = loadPersistedExecution(sessionId)
     stateRef.current = {
-      executionId,
+      executionId: persisted?.executionId ?? null,
+      cursor: persisted?.cursor ?? 0,
       isReconnecting: false,
       reconnectAttempt: 0,
     }
-    return executionId !== null
+    return persisted !== null
   }, [detach])
+
+  const onEventReceived = useCallback((
+    executionId: string,
+    eventId: number,
+  ) => {
+    if (
+      stateRef.current.executionId !== executionId
+      || !Number.isInteger(eventId)
+      || eventId <= stateRef.current.cursor
+    ) {
+      return
+    }
+    stateRef.current.cursor = eventId
+    persistExecution(executionId, eventId)
+  }, [])
 
   const attemptReconnect = useCallback(async (
     onEvent: (event: AGUIStreamEvent) => void | Promise<void>,
@@ -204,11 +231,12 @@ export function useSSEReconnect() {
           break
         }
 
-        // 2. Resume SSE stream from cursor=0 (full replay from BFF buffer)
+        // 2. Resume from the last event successfully processed by the client.
+        const resumeCursor = stateRef.current.cursor
         const resumeController = new AbortController()
         activeControllerRef.current = resumeController
         const resumeTimeout = setTimeout(() => resumeController.abort(), FETCH_TIMEOUT_MS)
-        const resumeUrl = `${getApiUrl('stream/resume')}?executionId=${encodeURIComponent(executionId)}&cursor=0`
+        const resumeUrl = `${getApiUrl('stream/resume')}?executionId=${encodeURIComponent(executionId)}&cursor=${resumeCursor}`
         let response: Response
         try {
           response = await fetch(resumeUrl, {
@@ -235,8 +263,8 @@ export function useSSEReconnect() {
           continue
         }
 
-        // 3. Parse SSE stream (full replay)
-        console.log(`[SSEReconnect] Resumed from cursor 0 (full replay)`)
+        // 3. Parse the resumed SSE stream.
+        console.log(`[SSEReconnect] Resumed from cursor ${resumeCursor}`)
         const reader = response.body.getReader()
         const decoder = new TextDecoder()
         let buffer = ''
@@ -279,12 +307,22 @@ export function useSSEReconnect() {
                       : null
                   if (eventId !== null) {
                     eventData._eventId = eventId
+                    onEventReceived(executionId, eventId)
                   }
                   eventData._executionId = executionId
                   currentEventId = null
                   // Dispatch event
                   if (eventData.type && AGUI_EVENT_TYPES.includes(eventData.type)) {
-                    await onEvent(eventData as AGUIStreamEvent)
+                    const event = eventData as AGUIStreamEvent
+                    const validation = validateAGUIStreamEvent(event)
+                    if (!validation.valid) {
+                      console.warn(
+                        '[SSEReconnect] Rejected invalid AG-UI event:',
+                        validation.errors,
+                      )
+                      continue
+                    }
+                    await onEvent(event)
                     // Clear reconnecting badge on first real event
                     if (!connectedFired) {
                       connectedFired = true
@@ -338,10 +376,11 @@ export function useSSEReconnect() {
     setIsReconnecting(false)
     setReconnectAttempt(0)
     onFail()
-  }, [])
+  }, [onEventReceived])
 
   return {
     onStreamStart,
+    onEventReceived,
     attemptReconnect,
     restoreFromSession,
     reset,

@@ -120,7 +120,7 @@ class TestExecutionRegistry:
         found = registry.get_execution("sess1:run1")
         assert found is execution
 
-        latest = registry.get_latest_execution("sess1")
+        latest = registry.get_latest_execution("sess1", "user1")
         assert latest is execution
 
     @pytest.mark.asyncio
@@ -139,7 +139,49 @@ class TestExecutionRegistry:
 
         assert background is None
         assert foreground.status == ExecutionStatus.RUNNING
-        assert registry.get_latest_execution("sess-busy") is foreground
+        assert registry.get_latest_execution("sess-busy", "user1") is foreground
+
+    @pytest.mark.asyncio
+    async def test_same_session_id_is_isolated_by_user(self):
+        from streaming.execution_registry import ExecutionRegistry, ExecutionStatus
+
+        ExecutionRegistry.reset()
+        registry = ExecutionRegistry()
+        first = await registry.create_execution(
+            "shared-session",
+            "user-a",
+            "run-a",
+        )
+        second = await registry.create_execution(
+            "shared-session",
+            "user-b",
+            "run-b",
+        )
+
+        assert first.status == ExecutionStatus.RUNNING
+        assert second.status == ExecutionStatus.RUNNING
+        assert registry.get_latest_execution("shared-session", "user-a") is first
+        assert registry.get_latest_execution("shared-session", "user-b") is second
+
+    @pytest.mark.asyncio
+    async def test_cross_user_execution_id_collision_is_rejected(self):
+        from streaming.execution_registry import ExecutionRegistry
+
+        ExecutionRegistry.reset()
+        registry = ExecutionRegistry()
+        first = await registry.create_execution(
+            "shared-session",
+            "user-a",
+            "same-run",
+        )
+        second = await registry.create_execution(
+            "shared-session",
+            "user-b",
+            "same-run",
+        )
+
+        assert first is not None
+        assert second is None
 
     @pytest.mark.asyncio
     async def test_append_and_get_events(self):
@@ -186,6 +228,51 @@ class TestExecutionRegistry:
         assert event_ids == sorted(event_ids)
         assert execution.events[0].event_type == "buffer_truncated"
         assert '"type":"CUSTOM"' in execution.events[0].data
+
+    @pytest.mark.asyncio
+    async def test_buffer_enforces_byte_limit(self):
+        from streaming.execution_registry import ExecutionRegistry
+
+        ExecutionRegistry.reset()
+        execution = await ExecutionRegistry().create_execution(
+            "byte-limit-session",
+            "user1",
+            "run1",
+        )
+        execution.MAX_BUFFER_BYTES = 2048
+
+        for index in range(20):
+            execution.append_event(
+                'data: {"type":"CUSTOM","name":"payload",'
+                f'"value":"{index}-{"x" * 300}"}}\n\n',
+                "CUSTOM",
+            )
+
+        assert execution.buffered_bytes <= execution.MAX_BUFFER_BYTES
+        assert execution.events[0].event_type == "buffer_truncated"
+
+    @pytest.mark.asyncio
+    async def test_oversized_event_is_replaced_with_marker(self):
+        from streaming.execution_registry import ExecutionRegistry
+
+        ExecutionRegistry.reset()
+        execution = await ExecutionRegistry().create_execution(
+            "oversized-session",
+            "user1",
+            "run1",
+        )
+        execution.MAX_BUFFER_BYTES = 1024
+
+        event = execution.append_event(
+            f'data: {{"type":"CUSTOM","value":"{"x" * 2000}"}}\n\n',
+            'CUSTOM"with-quote',
+        )
+        payload = json.loads(event.data.removeprefix("data: ").strip())
+
+        assert event.event_type == "event_dropped"
+        assert payload["name"] == "event_dropped"
+        assert payload["value"]["eventType"] == 'CUSTOM"with-quote'
+        assert execution.buffered_bytes <= execution.MAX_BUFFER_BYTES
 
     @pytest.mark.asyncio
     async def test_cleanup_expired(self):
@@ -508,6 +595,149 @@ class TestInvocationsEndpoint:
 
         assert response.status_code == 422
 
+    @patch('routers.chat.create_agent')
+    def test_accepts_standard_camel_case_run_input(
+        self,
+        mock_factory,
+        mock_agent,
+    ):
+        mock_factory.return_value = mock_agent
+
+        from routers.chat import router
+        from fastapi import FastAPI
+
+        app = FastAPI()
+        app.include_router(router)
+        client = TestClient(app)
+        payload = _agui_payload(session_id="camel-session")
+        payload["threadId"] = payload.pop("thread_id")
+        payload["runId"] = payload.pop("run_id")
+
+        response = client.post("/invocations", json=payload)
+
+        assert response.status_code == 200
+        assert response.headers["x-thread-id"] == "camel-session"
+
+    def test_rejects_claimed_user_that_differs_from_runtime_subject(
+        self,
+        monkeypatch,
+    ):
+        from routers.chat import router
+        from fastapi import FastAPI
+
+        monkeypatch.setenv("ENVIRONMENT", "production")
+        app = FastAPI()
+        app.include_router(router)
+        client = TestClient(app)
+
+        response = client.post(
+            "/invocations",
+            headers={
+                "Authorization": (
+                    f"Bearer {_unsigned_test_token({'sub': 'authenticated-user'})}"
+                )
+            },
+            json=_agui_payload(user_id="different-user"),
+        )
+
+        assert response.status_code == 403
+
+    def test_allows_trusted_m2m_client_to_delegate_user_identity(
+        self,
+        monkeypatch,
+    ):
+        from routers.chat import router
+        from fastapi import FastAPI
+
+        monkeypatch.setenv("ENVIRONMENT", "production")
+        monkeypatch.setenv("M2M_CLIENT_ID", "trusted-service")
+        app = FastAPI()
+        app.include_router(router)
+        client = TestClient(app)
+
+        response = client.post(
+            "/invocations",
+            headers={
+                "Authorization": (
+                    f"Bearer {_unsigned_test_token({'client_id': 'trusted-service'})}"
+                )
+            },
+            json={
+                "threadId": "m2m-session",
+                "runId": str(uuid.uuid4()),
+                "state": {
+                    "action": "warmup",
+                    "user_id": "delegated-user",
+                },
+            },
+        )
+
+        assert response.status_code == 200
+
+    def test_rejects_untrusted_client_without_subject(
+        self,
+        monkeypatch,
+    ):
+        from routers.chat import router
+        from fastapi import FastAPI
+
+        monkeypatch.setenv("ENVIRONMENT", "production")
+        monkeypatch.setenv("M2M_CLIENT_ID", "trusted-service")
+        app = FastAPI()
+        app.include_router(router)
+        client = TestClient(app)
+
+        response = client.post(
+            "/invocations",
+            headers={
+                "Authorization": (
+                    f"Bearer {_unsigned_test_token({'client_id': 'other-service'})}"
+                )
+            },
+            json={
+                "threadId": "m2m-session",
+                "runId": str(uuid.uuid4()),
+                "state": {
+                    "action": "warmup",
+                    "user_id": "delegated-user",
+                },
+            },
+        )
+
+        assert response.status_code == 401
+
+    def test_rejects_excessive_message_count(self):
+        from routers.chat import router
+        from fastapi import FastAPI
+
+        app = FastAPI()
+        app.include_router(router)
+        client = TestClient(app)
+        payload = _agui_payload()
+        payload["messages"] = [
+            {"id": str(index), "role": "user", "content": "message"}
+            for index in range(501)
+        ]
+
+        response = client.post("/invocations", json=payload)
+
+        assert response.status_code == 422
+
+    def test_rejects_control_characters_in_thread_id(self):
+        from routers.chat import router
+        from fastapi import FastAPI
+
+        app = FastAPI()
+        app.include_router(router)
+        client = TestClient(app)
+
+        response = client.post(
+            "/invocations",
+            json=_agui_payload(session_id="bad\nsession"),
+        )
+
+        assert response.status_code == 422
+
 
 # ============================================================
 # Lifecycle Action Tests (warmup, stop, elicitation)
@@ -772,9 +1002,13 @@ class TestLifecycleActions:
         response = client.post(
             "/invocations",
             json={
-                "thread_id": "status-session",
+                "thread_id": "sess-status",
                 "run_id": str(uuid.uuid4()),
-                "state": {"action": "execution_status", "execution_id": "sess-status:run-1"}
+                "state": {
+                    "action": "execution_status",
+                    "execution_id": "sess-status:run-1",
+                    "user_id": "user-1",
+                }
             }
         )
 
@@ -783,6 +1017,71 @@ class TestLifecycleActions:
 
         # Cleanup
         execution.status = __import__('streaming.execution_registry', fromlist=['ExecutionStatus']).ExecutionStatus.COMPLETED
+        execution.completed_at = __import__('time').time()
+
+    @pytest.mark.asyncio
+    async def test_execution_status_hides_other_users_execution(self):
+        from routers.chat import router, registry
+        from streaming.execution_registry import ExecutionStatus
+        from fastapi import FastAPI
+
+        execution = await registry.create_execution(
+            "owned-session",
+            "owner-user",
+            "owned-run",
+        )
+        app = FastAPI()
+        app.include_router(router)
+        client = TestClient(app)
+
+        response = client.post(
+            "/invocations",
+            json={
+                "thread_id": "owned-session",
+                "run_id": str(uuid.uuid4()),
+                "state": {
+                    "action": "execution_status",
+                    "execution_id": execution.execution_id,
+                    "user_id": "other-user",
+                },
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "not_found"}
+        execution.status = ExecutionStatus.COMPLETED
+        execution.completed_at = __import__('time').time()
+
+    @pytest.mark.asyncio
+    async def test_resume_hides_other_users_execution(self):
+        from routers.chat import router, registry
+        from streaming.execution_registry import ExecutionStatus
+        from fastapi import FastAPI
+
+        execution = await registry.create_execution(
+            "resume-owned-session",
+            "owner-user",
+            "owned-run",
+        )
+        app = FastAPI()
+        app.include_router(router)
+        client = TestClient(app)
+
+        response = client.post(
+            "/invocations",
+            json={
+                "thread_id": "resume-owned-session",
+                "run_id": str(uuid.uuid4()),
+                "state": {
+                    "action": "resume",
+                    "execution_id": execution.execution_id,
+                    "user_id": "other-user",
+                },
+            },
+        )
+
+        assert response.status_code == 404
+        execution.status = ExecutionStatus.COMPLETED
         execution.completed_at = __import__('time').time()
 
     def test_resume_missing_execution_id(self):
@@ -824,6 +1123,29 @@ class TestLifecycleActions:
         )
 
         assert response.status_code == 404
+
+    def test_resume_rejects_negative_cursor(self):
+        from routers.chat import router
+        from fastapi import FastAPI
+
+        app = FastAPI()
+        app.include_router(router)
+        client = TestClient(app)
+
+        response = client.post(
+            "/invocations",
+            json={
+                "thread_id": "resume-session",
+                "run_id": str(uuid.uuid4()),
+                "state": {
+                    "action": "resume",
+                    "execution_id": "resume-session:run",
+                    "cursor": -1,
+                },
+            },
+        )
+
+        assert response.status_code == 400
 
     def test_get_execution_status_endpoint(self):
         """Test standalone GET /execution-status endpoint."""
@@ -934,6 +1256,38 @@ class TestInterruptResponseHandling:
 
         assert response.status_code == 200
 
+    def test_parses_standard_resume_entries(self):
+        from ag_ui.core import ResumeEntry
+        from routers.chat import _parse_resume_entries
+
+        result = _parse_resume_entries([
+            ResumeEntry(
+                interruptId="interrupt-123",
+                status="resolved",
+                payload="approved",
+            ),
+        ])
+
+        assert result == [{
+            "interruptResponse": {
+                "interruptId": "interrupt-123",
+                "response": "approved",
+            },
+        }]
+
+    def test_cancelled_resume_maps_to_declined(self):
+        from ag_ui.core import ResumeEntry
+        from routers.chat import _parse_resume_entries
+
+        result = _parse_resume_entries([
+            ResumeEntry(
+                interruptId="interrupt-123",
+                status="cancelled",
+            ),
+        ])
+
+        assert result[0]["interruptResponse"]["response"] == "declined"
+
 
 # ============================================================
 # Error Handling Tests
@@ -961,6 +1315,20 @@ class TestInvocationsErrorHandling:
 
         assert response.status_code == 500
         assert "Agent processing failed" in response.json()["detail"]
+
+    def test_extracts_run_error_from_batched_sse_chunk(self):
+        from routers.chat import _extract_event_type, _extract_event_types
+
+        chunk = (
+            'data: {"type":"TEXT_MESSAGE_END","messageId":"message-1"}\n\n'
+            'data: {"type":"RUN_ERROR","message":"failed"}\n\n'
+        )
+
+        assert _extract_event_type(chunk) == "TEXT_MESSAGE_END"
+        assert _extract_event_types(chunk) == [
+            "TEXT_MESSAGE_END",
+            "RUN_ERROR",
+        ]
 
 
 # ============================================================
