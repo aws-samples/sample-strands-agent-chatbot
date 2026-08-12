@@ -1,18 +1,24 @@
 import fs from 'fs'
 import path from 'path'
-import { createHash } from 'crypto'
+import { createHash, randomUUID } from 'crypto'
 import {
+  BatchGetItemCommand,
   DynamoDBClient,
   GetItemCommand,
   QueryCommand,
+  UpdateItemCommand,
 } from '@aws-sdk/client-dynamodb'
-import { unmarshall } from '@aws-sdk/util-dynamodb'
+import { marshall, unmarshall } from '@aws-sdk/util-dynamodb'
+import {
+  SESSION_EVENT_CURSOR_PREFIX,
+  sessionEventCursor,
+} from '@/lib/session-event-cursor'
 
 const IS_LOCAL = process.env.NEXT_PUBLIC_AGENTCORE_LOCAL === 'true'
 const AWS_REGION =
   process.env.AWS_REGION || process.env.NEXT_PUBLIC_AWS_REGION || 'us-west-2'
 const TABLE_NAME = process.env.SESSION_ORCHESTRATION_TABLE || ''
-const STREAM_PREFIX = 'OUTBOX_V2#'
+const STREAM_PREFIX = SESSION_EVENT_CURSOR_PREFIX
 const LEGACY_PREFIX = 'OUTBOX#'
 const PAGE_SIZE = 100
 
@@ -36,6 +42,13 @@ export interface SessionEventPage {
   hasMore: boolean
 }
 
+export interface SessionAttentionState {
+  latestAttentionCursor?: string
+  latestAttentionAt?: string
+  lastSeenAttentionCursor?: string
+  lastSeenAttentionAt?: string
+}
+
 function sessionKey(userId: string, sessionId: string): string {
   return `USER#${userId}#SESSION#${sessionId}`
 }
@@ -52,10 +65,6 @@ function localMailboxPath(userId: string, sessionId: string): string {
     'mailbox',
     `${digest}.json`,
   )
-}
-
-function projectionCursor(event: SessionEventProjection): string {
-  return `${STREAM_PREFIX}${event.createdAt}#${event.eventId}`
 }
 
 function readLocalPage(
@@ -90,21 +99,21 @@ function readLocalPage(
     )
     const page = sorted
       .filter(event =>
-        !effectiveCursor || projectionCursor(event) > effectiveCursor,
+        !effectiveCursor || sessionEventCursor(event) > effectiveCursor,
       )
       .slice(0, PAGE_SIZE)
     return {
       events: page,
       cursor:
         page.length > 0
-          ? projectionCursor(page[page.length - 1])
+          ? sessionEventCursor(page[page.length - 1])
           : effectiveCursor || STREAM_PREFIX,
       conversationEpoch,
       hasMore:
         sorted.some(event =>
-          projectionCursor(event) >
+          sessionEventCursor(event) >
           (page.length > 0
-            ? projectionCursor(page[page.length - 1])
+            ? sessionEventCursor(page[page.length - 1])
             : effectiveCursor || STREAM_PREFIX),
         ),
     }
@@ -249,7 +258,7 @@ async function readCloudPage(
     events,
     cursor:
       lastStreamEvent
-        ? projectionCursor(lastStreamEvent)
+        ? sessionEventCursor(lastStreamEvent)
         : effectiveCursor || STREAM_PREFIX,
     conversationEpoch,
     hasMore: Boolean(streamPage.lastKey),
@@ -277,4 +286,161 @@ export async function listSessionEvents(
         options.cursor,
         options.knownEpoch,
       )
+}
+
+function attentionStateFromRecord(
+  record: Record<string, any> | undefined,
+): SessionAttentionState {
+  if (!record) return {}
+  return {
+    latestAttentionCursor:
+      typeof record.latestAttentionCursor === 'string'
+        ? record.latestAttentionCursor
+        : undefined,
+    latestAttentionAt:
+      typeof record.latestAttentionAt === 'string'
+        ? record.latestAttentionAt
+        : undefined,
+    lastSeenAttentionCursor:
+      typeof record.lastSeenAttentionCursor === 'string'
+        ? record.lastSeenAttentionCursor
+        : undefined,
+    lastSeenAttentionAt:
+      typeof record.lastSeenAttentionAt === 'string'
+        ? record.lastSeenAttentionAt
+        : undefined,
+  }
+}
+
+export function hasUnseenSessionAttention(
+  state: SessionAttentionState,
+): boolean {
+  return Boolean(
+    state.latestAttentionCursor &&
+    state.latestAttentionCursor >
+      (state.lastSeenAttentionCursor || STREAM_PREFIX),
+  )
+}
+
+export async function getSessionAttentionStates(
+  userId: string,
+  sessionIds: string[],
+): Promise<Map<string, SessionAttentionState>> {
+  const result = new Map<string, SessionAttentionState>()
+  if (sessionIds.length === 0) return result
+
+  if (IS_LOCAL || userId === 'anonymous') {
+    for (const sessionId of sessionIds) {
+      const targetPath = localMailboxPath(userId, sessionId)
+      if (!fs.existsSync(targetPath)) {
+        result.set(sessionId, {})
+        continue
+      }
+      try {
+        const data = JSON.parse(fs.readFileSync(targetPath, 'utf-8'))
+        result.set(sessionId, attentionStateFromRecord(data.state))
+      } catch {
+        result.set(sessionId, {})
+      }
+    }
+    return result
+  }
+
+  if (!TABLE_NAME) {
+    sessionIds.forEach(sessionId => result.set(sessionId, {}))
+    return result
+  }
+
+  const client = new DynamoDBClient({ region: AWS_REGION })
+  let pendingKeys = sessionIds.map(sessionId => marshall({
+    sessionKey: sessionKey(userId, sessionId),
+    recordKey: 'STATE',
+  }))
+  let attempts = 0
+  while (pendingKeys.length > 0 && attempts < 3) {
+    attempts += 1
+    const response = await client.send(new BatchGetItemCommand({
+      RequestItems: {
+        [TABLE_NAME]: {
+          Keys: pendingKeys,
+          ConsistentRead: true,
+          ProjectionExpression:
+            'sessionKey, latestAttentionCursor, latestAttentionAt, ' +
+            'lastSeenAttentionCursor, lastSeenAttentionAt',
+        },
+      },
+    }))
+    for (const raw of response.Responses?.[TABLE_NAME] || []) {
+      const record = unmarshall(raw)
+      const prefix = `USER#${userId}#SESSION#`
+      const id = String(record.sessionKey || '').startsWith(prefix)
+        ? String(record.sessionKey).slice(prefix.length)
+        : ''
+      if (id) result.set(id, attentionStateFromRecord(record))
+    }
+    pendingKeys = response.UnprocessedKeys?.[TABLE_NAME]?.Keys || []
+  }
+  sessionIds.forEach(sessionId => {
+    if (!result.has(sessionId)) result.set(sessionId, {})
+  })
+  return result
+}
+
+export async function markSessionAttentionSeen(
+  userId: string,
+  sessionId: string,
+  seenThroughCursor: string,
+): Promise<void> {
+  if (!seenThroughCursor.startsWith(STREAM_PREFIX)) {
+    throw new Error('Invalid session attention cursor')
+  }
+  const seenAt = new Date().toISOString()
+
+  if (IS_LOCAL || userId === 'anonymous') {
+    const targetPath = localMailboxPath(userId, sessionId)
+    if (!fs.existsSync(targetPath)) return
+    const data = JSON.parse(fs.readFileSync(targetPath, 'utf-8'))
+    const state = data.state || {}
+    const latest = state.latestAttentionCursor
+    const previous = state.lastSeenAttentionCursor || STREAM_PREFIX
+    if (
+      typeof latest !== 'string' ||
+      latest < seenThroughCursor ||
+      previous >= seenThroughCursor ||
+      state.deletedAt
+    ) {
+      return
+    }
+    state.lastSeenAttentionCursor = seenThroughCursor
+    state.lastSeenAttentionAt = seenAt
+    data.state = state
+    const temporaryPath = `${targetPath}.${randomUUID()}.tmp`
+    fs.writeFileSync(temporaryPath, JSON.stringify(data, null, 2))
+    fs.renameSync(temporaryPath, targetPath)
+    return
+  }
+
+  if (!TABLE_NAME) return
+  const client = new DynamoDBClient({ region: AWS_REGION })
+  try {
+    await client.send(new UpdateItemCommand({
+      TableName: TABLE_NAME,
+      Key: marshall({
+        sessionKey: sessionKey(userId, sessionId),
+        recordKey: 'STATE',
+      }),
+      UpdateExpression:
+        'SET lastSeenAttentionCursor = :cursor, lastSeenAttentionAt = :seenAt',
+      ConditionExpression:
+        'attribute_not_exists(deletedAt) AND latestAttentionCursor >= :cursor ' +
+        'AND (attribute_not_exists(lastSeenAttentionCursor) ' +
+        'OR lastSeenAttentionCursor < :cursor)',
+      ExpressionAttributeValues: marshall({
+        ':cursor': seenThroughCursor,
+        ':seenAt': seenAt,
+      }),
+    }))
+  } catch (error: any) {
+    if (error?.name !== 'ConditionalCheckFailedException') throw error
+  }
 }

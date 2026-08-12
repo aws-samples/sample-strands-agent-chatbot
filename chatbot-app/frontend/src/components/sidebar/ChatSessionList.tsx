@@ -42,7 +42,9 @@ function groupSessionsByDate(sessions: ChatSession[]): DateGroup[] {
   };
 
   for (const session of sessions) {
-    const date = new Date(session.lastMessageAt || session.createdAt);
+    const date = new Date(
+      session.lastActivityAt || session.lastMessageAt || session.createdAt,
+    );
     if (date >= today) {
       groups['Today'].push(session);
     } else if (date >= yesterday) {
@@ -119,6 +121,8 @@ export function ChatSessionList({
             <div className="space-y-1">
               {group.sessions.map((session) => {
                 const isCurrentSession = session.sessionId === currentSessionId;
+                const showUnseen =
+                  session.hasUnseenUpdate === true && !isCurrentSession;
                 const { display, isTruncated } = truncateTitle(session.title);
 
                 const row = (
@@ -135,13 +139,26 @@ export function ChatSessionList({
                     <span className="text-[13px] text-sidebar-foreground leading-snug flex-1 min-w-0">
                       {display}
                     </span>
-                    <button
-                      onClick={(e) => handleDeleteSession(session.sessionId, e)}
-                      className="opacity-0 group-hover/session:opacity-100 transition-opacity p-1 rounded-sm hover:bg-destructive/10 text-sidebar-foreground/40 hover:text-destructive flex-shrink-0"
-                      title="Delete"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
+                    <span className="relative h-5 w-5 flex-shrink-0">
+                      {showUnseen && (
+                        <span
+                          className="absolute inset-0 flex items-center justify-center opacity-100 group-hover/session:opacity-0 transition-opacity"
+                          role="status"
+                          aria-label="New activity"
+                          title="New activity"
+                        >
+                          <span className="h-1.5 w-1.5 rounded-full bg-sky-500 dark:bg-sky-400" />
+                        </span>
+                      )}
+                      <button
+                        onClick={(e) => handleDeleteSession(session.sessionId, e)}
+                        className="absolute inset-0 flex items-center justify-center opacity-0 group-hover/session:opacity-100 transition-opacity rounded-sm hover:bg-destructive/10 text-sidebar-foreground/40 hover:text-destructive"
+                        title="Delete"
+                        aria-label={`Delete ${session.title}`}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </span>
                   </div>
                 );
 

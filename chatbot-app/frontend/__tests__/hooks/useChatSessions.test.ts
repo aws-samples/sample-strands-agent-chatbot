@@ -213,6 +213,31 @@ describe('useChatSessions', () => {
       expect(mockApiGet).toHaveBeenCalled()
       expect(result.current.chatSessions[0].title).toBe('Updated Title')
     })
+
+    it('should poll the session list while the page is visible', async () => {
+      vi.useFakeTimers()
+      Object.defineProperty(document, 'visibilityState', {
+        configurable: true,
+        value: 'visible',
+      })
+      const { unmount } = renderHook(() => useChatSessions(defaultProps))
+
+      await act(async () => {
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+      expect(mockApiGet).toHaveBeenCalledTimes(1)
+
+      await act(async () => {
+        vi.advanceTimersByTime(10_000)
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+
+      expect(mockApiGet).toHaveBeenCalledTimes(2)
+      unmount()
+      vi.useRealTimers()
+    })
   })
 
   describe('Deleting Sessions', () => {

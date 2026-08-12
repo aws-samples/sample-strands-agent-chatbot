@@ -295,6 +295,87 @@ def test_acknowledge_atomically_publishes_session_events(tmp_path):
 
     stored = repository.list_session_events("user-1", "session-1")
     assert stored == [projection]
+    state = repository._load("user-1", "session-1")["state"]
+    assert state["latestAttentionCursor"] == (
+        "OUTBOX_V2#2026-08-06T12:00:00+00:00#event-1:assistant"
+    )
+    assert state["latestAttentionAt"] == "2026-08-06T12:00:00+00:00"
+
+
+def test_non_assistant_projection_does_not_create_attention(tmp_path):
+    repository = FileMailboxRepository(tmp_path)
+    repository.enqueue(event("event-1"))
+    lease = repository.acquire_lease(
+        "user-1", "session-1", "worker-1", lease_seconds=30, now=NOW
+    )
+    claimed = repository.claim_next(
+        "user-1",
+        "session-1",
+        lease,
+        event_lease_seconds=30,
+        now=NOW,
+    )
+    projection = SessionEvent.create(
+        event_id="event-1:artifact",
+        event_type="artifact.upserted",
+        session_id="session-1",
+        user_id="user-1",
+        origin_event_id="event-1",
+        now=NOW,
+    )
+
+    assert repository.acknowledge(
+        claimed,
+        lease,
+        session_events=[projection],
+        now=NOW,
+    )
+    state = repository._load("user-1", "session-1")["state"]
+    assert "latestAttentionCursor" not in state
+
+
+def test_truncate_clears_attention_state(tmp_path):
+    repository = FileMailboxRepository(tmp_path)
+    repository.enqueue(event("event-1"))
+    lease = repository.acquire_lease(
+        "user-1", "session-1", "worker-1", lease_seconds=30, now=NOW
+    )
+    claimed = repository.claim_next(
+        "user-1",
+        "session-1",
+        lease,
+        event_lease_seconds=30,
+        now=NOW,
+    )
+    projection = SessionEvent.create(
+        event_id="event-1:assistant",
+        event_type="assistant.turn.completed",
+        session_id="session-1",
+        user_id="user-1",
+        origin_event_id="event-1",
+        now=NOW,
+    )
+    assert repository.acknowledge(
+        claimed,
+        lease,
+        session_events=[projection],
+        now=NOW,
+    )
+    data = repository._load("user-1", "session-1")
+    data["state"]["lastSeenAttentionCursor"] = data["state"][
+        "latestAttentionCursor"
+    ]
+    repository._save("user-1", "session-1", data)
+
+    repository.advance_conversation_epoch(
+        "user-1",
+        "session-1",
+        now=NOW + timedelta(seconds=1),
+    )
+
+    state = repository._load("user-1", "session-1")["state"]
+    assert "latestAttentionCursor" not in state
+    assert "lastSeenAttentionCursor" not in state
 
 
 def test_retry_then_dead_letter(tmp_path):
@@ -501,6 +582,17 @@ def test_dynamodb_ack_writes_projections_in_fenced_transaction():
 
     transaction = client.transact_write_items.call_args.kwargs["TransactItems"]
     assert len(transaction) == 3
+    state_update = transaction[0]["Update"]
+    assert state_update["Key"] == repository._key(
+        "user-1", "session-1", "STATE"
+    )
+    assert "leaseEpoch = :epoch" in state_update["ConditionExpression"]
+    attention_values = repository._deserialize(
+        state_update["ExpressionAttributeValues"]
+    )
+    assert attention_values[":cursor"] == (
+        "OUTBOX_V2#2026-08-06T12:00:00+00:00#event-1:assistant"
+    )
     stored = repository._deserialize(transaction[2]["Put"]["Item"])
     assert stored["recordKey"] == (
         "OUTBOX_V2#2026-08-06T12:00:00+00:00#event-1:assistant"

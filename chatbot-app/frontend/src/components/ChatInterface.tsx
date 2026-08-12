@@ -33,6 +33,8 @@ import type { WorkspaceAttachment } from "@/types/chat"
 import { useTheme } from "next-themes"
 import { useVoiceIntegration } from "@/hooks/useVoiceIntegration"
 import { TurnActivityIndicator } from "@/components/chat/TurnActivityIndicator"
+import { apiPost } from "@/lib/api-client"
+import { sessionEventCursor } from "@/lib/session-event-cursor"
 
 
 // Custom throttle hook
@@ -68,10 +70,22 @@ export function ChatInterface() {
   const { theme, setTheme } = useTheme()
   const [mounted, setMounted] = useState(false)
   const [isMobileView, setIsMobileView] = useState(false)
+  const [isPageVisible, setIsPageVisible] = useState(true)
 
   // Prevent hydration mismatch by only rendering theme-dependent UI after mount
   useEffect(() => {
     setMounted(true)
+  }, [])
+
+  useEffect(() => {
+    const updateVisibility = () => {
+      setIsPageVisible(document.visibilityState === 'visible')
+    }
+    updateVisibility()
+    document.addEventListener('visibilitychange', updateVisibility)
+    return () => {
+      document.removeEventListener('visibilitychange', updateVisibility)
+    }
   }, [])
 
   // Detect mobile viewport
@@ -292,10 +306,16 @@ export function ChatInterface() {
   }, [groupedMessages])
   const reloadedDeliveriesRef = useRef<Set<string>>(new Set())
   const researchArtifactVersionsRef = useRef<Map<string, string>>(new Map())
+  const acknowledgedAttentionRef = useRef<string | null>(null)
+  const attentionRequestRef = useRef<string | null>(null)
+  const activeSessionIdRef = useRef(sessionId)
+  activeSessionIdRef.current = sessionId
 
   useEffect(() => {
     reloadedDeliveriesRef.current.clear()
     researchArtifactVersionsRef.current.clear()
+    acknowledgedAttentionRef.current = null
+    attentionRequestRef.current = null
   }, [sessionId])
 
   // A completed report is readable from the durable job store even before the
@@ -370,6 +390,60 @@ export function ChatInterface() {
     representedOriginEventIds,
     replayExecution,
     sessionEvents,
+  ])
+
+  const renderedAttentionCursor = useMemo(() => {
+    let latest: string | null = null
+    for (const event of sessionEvents) {
+      if (
+        event.eventType !== 'assistant.turn.completed' ||
+        !representedOriginEventIds.has(event.originEventId)
+      ) {
+        continue
+      }
+      const cursor = sessionEventCursor(event)
+      if (!latest || cursor > latest) latest = cursor
+    }
+    return latest
+  }, [representedOriginEventIds, sessionEvents])
+
+  useEffect(() => {
+    if (
+      !sessionId ||
+      !renderedAttentionCursor ||
+      isLoadingMessages ||
+      !isPageVisible ||
+      (acknowledgedAttentionRef.current &&
+        acknowledgedAttentionRef.current >= renderedAttentionCursor) ||
+      attentionRequestRef.current === renderedAttentionCursor
+    ) {
+      return
+    }
+
+    const requestedSessionId = sessionId
+    const requestedCursor = renderedAttentionCursor
+    attentionRequestRef.current = requestedCursor
+    void apiPost(
+      `session/${encodeURIComponent(requestedSessionId)}/seen`,
+      { seenThroughCursor: requestedCursor },
+    ).then(() => {
+      if (activeSessionIdRef.current !== requestedSessionId) return
+      acknowledgedAttentionRef.current = requestedCursor
+      if (typeof (window as any).__refreshSessionList === 'function') {
+        void (window as any).__refreshSessionList()
+      }
+    }).catch((error) => {
+      console.warn('[ChatInterface] Failed to mark session activity seen:', error)
+    }).finally(() => {
+      if (attentionRequestRef.current === requestedCursor) {
+        attentionRequestRef.current = null
+      }
+    })
+  }, [
+    isLoadingMessages,
+    isPageVisible,
+    renderedAttentionCursor,
+    sessionId,
   ])
 
   // Keep reloadFromStorage ref in sync for the onSessionLoaded callback
