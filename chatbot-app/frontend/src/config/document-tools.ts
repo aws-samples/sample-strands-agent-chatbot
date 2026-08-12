@@ -52,10 +52,6 @@ export const TOOL_TO_DOC_TYPE: Record<string, DocumentType> = {
   'generate_chart': 'diagram',
   'create_visual_design': 'diagram',
 
-  // Code Interpreter tools (from code_interpreter_tool)
-  'execute_code': 'code-output',
-  'ci_push_to_workspace': 'code-output',
-
   // Browser tools (screenshots saved as images)
   'browser_save_screenshot': 'image',
 }

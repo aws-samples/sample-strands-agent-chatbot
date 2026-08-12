@@ -34,7 +34,10 @@ class TestPathRouting:
     def test_code_interpreter_prefix_maps_correctly(self):
         from local_tools.workspace import _to_s3_key
         key = _to_s3_key("u1", "s1", "code-interpreter/chart.png")
-        assert key == "code-interpreter-workspace/u1/s1/chart.png"
+        assert key == (
+            "code-interpreter-workspace/"
+            "4bbb6a0cadc45672cce19f083c25006dc9dd503fa17461d2/chart.png"
+        )
 
     def test_documents_prefix_maps_correctly(self):
         from local_tools.workspace import _to_s3_key
@@ -58,7 +61,12 @@ class TestPathRouting:
 
     def test_logical_path_from_code_interpreter_s3_key(self):
         from local_tools.workspace import _to_logical_path
-        logical = _to_logical_path("u1", "s1", "code-interpreter-workspace/u1/s1/chart.png")
+        logical = _to_logical_path(
+            "u1",
+            "s1",
+            "code-interpreter-workspace/"
+            "4bbb6a0cadc45672cce19f083c25006dc9dd503fa17461d2/chart.png",
+        )
         assert logical == "code-interpreter/chart.png"
 
     def test_logical_path_from_mounted_input_key(self):
@@ -66,7 +74,8 @@ class TestPathRouting:
         logical = _to_logical_path(
             "u1",
             "s1",
-            "code-interpreter-workspace/u1/s1/inputs/data.json",
+            "code-interpreter-workspace/"
+            "4bbb6a0cadc45672cce19f083c25006dc9dd503fa17461d2/inputs/data.json",
         )
         assert logical == "uploads/data.json"
 
@@ -128,7 +137,10 @@ class TestWorkspaceList:
         paginator = MagicMock()
         paginator.paginate.return_value = [
             {'Contents': [
-                {'Key': 'code-interpreter-workspace/u1/s1/chart.png', 'Size': 5000,
+                {'Key': (
+                    'code-interpreter-workspace/'
+                    '4bbb6a0cadc45672cce19f083c25006dc9dd503fa17461d2/chart.png'
+                ), 'Size': 5000,
                  'LastModified': datetime(2024, 1, 1)},
             ]},
         ]
@@ -398,7 +410,10 @@ class TestWorkspaceWrite:
         )
 
         call_kwargs = mock_s3.put_object.call_args[1]
-        assert call_kwargs['Key'] == 'code-interpreter-workspace/alice/sess1/result.json'
+        assert call_kwargs['Key'] == (
+            'code-interpreter-workspace/'
+            'e0fba2dec7cc6f707ae0530f028bb3de98c5652a1913e090/result.json'
+        )
 
     @patch('local_tools.workspace._s3_client')
     @patch('local_tools.workspace.get_workspace_bucket', return_value='my-bucket')
@@ -521,4 +536,7 @@ class TestResponseFormat:
     def test_uploads_prefix_maps_to_mounted_inputs(self):
         from local_tools.workspace import _to_s3_key
         key = _to_s3_key("u1", "s1", "uploads/data.jsonl")
-        assert key == "code-interpreter-workspace/u1/s1/inputs/data.jsonl"
+        assert key == (
+            "code-interpreter-workspace/"
+            "4bbb6a0cadc45672cce19f083c25006dc9dd503fa17461d2/inputs/data.jsonl"
+        )

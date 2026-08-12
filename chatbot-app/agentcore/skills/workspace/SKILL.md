@@ -19,11 +19,9 @@ Provides unified read/write access to all files in the current session. The `use
 | `documents/excel/<file>` | Excel spreadsheets |
 | `documents/image/<file>` | Images from other tools |
 
-> **Note:** When the S3 Files mount is active, files written under
-> `/mnt/workspace` persist for the chat session and user uploads are available
-> under `/mnt/workspace/inputs`. Legacy Code Interpreter sessions preload the
-> same uploads into their working directory by filename. Code Agent downloads
-> session uploads into its own working directory when delegated.
+> **Note:** Files written under `/mnt/workspace` persist for the chat session,
+> and user uploads are available under `/mnt/workspace/inputs`. Code Agent
+> downloads session uploads into its own working directory when delegated.
 
 ## Usage
 
@@ -52,8 +50,7 @@ workspace_write("code-agent/data.xlsx", result["content"], encoding="base64")
 - Text files return `encoding: "text"` with plain string content. Large text
   reads are bounded; when `truncated` is true, use Code Interpreter for the
   complete file instead of repeatedly reading it into model context. Code
-  Interpreter uses `/mnt/workspace/inputs/<file>` with the mount, or `<file>`
-  in its working directory in legacy fallback mode.
+  Interpreter uses `/mnt/workspace/inputs/<file>`.
 - JSON, JSONL, and NDJSON uploads are text files; large chat attachments may
   be truncated in model context, but the complete file remains under `uploads/`
 - Binary files (images, Office docs, PDF, etc.) return `encoding: "base64"`

@@ -27,7 +27,7 @@ const POWERPOINT_TOOLS = ['create_presentation', 'update_slide_content', 'add_sl
 // Workspace file tools (download button on read/write)
 const WORKSPACE_FILE_TOOLS = ['workspace_read', 'workspace_write']
 // Code Interpreter tools that save files to workspace
-const CI_WORKSPACE_TOOLS = ['execute_code', 'ci_push_to_workspace']
+const CI_WORKSPACE_TOOLS = ['execute_code']
 
 interface ToolExecutionContainerProps {
   toolExecutions: ToolExecution[]
@@ -532,17 +532,10 @@ export const ToolExecutionContainer = React.memo<ToolExecutionContainerProps>(({
 
       let paths: string[] = []
 
-      if (toolName === 'ci_push_to_workspace') {
-        const parsed = JSON.parse(toolResult)
-        if (parsed.status === 'ok' && parsed.files_saved?.length) {
-          paths = parsed.files_saved.map((f: string) => `documents/${f}`)
-        }
-      } else if (toolName === 'execute_code') {
+      if (toolName === 'execute_code') {
         const match = toolResult.match(/File saved:\s*(\S+)/)
         if (match) {
-          const filename = match[1]
-          const docType = /\.(png|jpg|jpeg|gif|webp)$/i.test(filename) ? 'image' : 'code-output'
-          paths = [`documents/${docType}/${filename}`]
+          paths = [match[1]]
         }
       } else {
         const parsed = JSON.parse(toolResult)
@@ -643,9 +636,6 @@ export const ToolExecutionContainer = React.memo<ToolExecutionContainerProps>(({
       )}
       {CI_WORKSPACE_TOOLS.includes(toolExecution.toolName) &&
         toolExecution.isComplete && !toolExecution.isCancelled && toolExecution.toolResult && (() => {
-          if (toolExecution.toolName === 'ci_push_to_workspace') {
-            try { const p = JSON.parse(toolExecution.toolResult || ''); return p.status === 'ok' && p.files_saved?.length > 0 } catch { return false }
-          }
           return /File saved:\s*\S+/.test(toolExecution.toolResult || '')
         })() && (
         <button

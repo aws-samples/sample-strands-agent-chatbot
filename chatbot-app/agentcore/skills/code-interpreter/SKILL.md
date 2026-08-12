@@ -11,8 +11,7 @@ A general-purpose code execution environment powered by AWS Bedrock AgentCore Co
 
 - **execute_code(code, language, output_filename)**: Execute Python, JavaScript, or TypeScript code.
 - **execute_command(command)**: Execute shell commands.
-- **file_operations(operation, paths, content)**: Read, write, list, or remove files in the sandbox.
-- **ci_push_to_workspace(paths)**: Compatibility helper for environments without a mounted workspace. Do not call it when `/mnt/workspace` is available.
+- **file_operations(operation, paths, content)**: Read, write, list, or remove files in the mounted session workspace.
 
 ## Tool Parameters
 
@@ -144,6 +143,9 @@ Files written there are immediately available in the Workspace panel under the
 `code-interpreter/` namespace and remain available when the interpreter session
 is restarted.
 
+The mount is required. If it cannot be configured or attached, Code Interpreter
+returns an error instead of starting an isolated non-persistent session.
+
 **Create persistent files directly:**
 
 ```json
@@ -154,9 +156,7 @@ is restarted.
 ```
 
 `output_filename` may still be used when a generated file should be surfaced as
-an explicit artifact. It is not required for persistence. Do not call
-`ci_push_to_workspace` when the mount is available; that tool remains only for
-legacy fallback deployments.
+an explicit artifact. It is not required for persistence.
 
 **Uploaded files:**
 
@@ -164,10 +164,6 @@ Files uploaded by the user are available in the mounted workspace without
 manual loading or base64 transfer under `/mnt/workspace/inputs`. JSON, JSONL,
 and NDJSON attachments may be represented by a bounded text excerpt in the
 conversation; use the mounted file when the full dataset is needed.
-
-If the session reports that the S3 Files mount is unavailable, the legacy
-fallback preloads the same uploads into the Code Interpreter working directory
-by filename. Use `ls` to confirm the path, then read `<filename>` directly.
 
 **Read saved files via workspace skill:**
 ```

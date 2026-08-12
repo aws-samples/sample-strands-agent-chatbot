@@ -1,33 +1,24 @@
-"""
-Tests for CI workspace sync tools (ci_push_to_workspace)
-and the shared CI session helper (get_ci_session / _get_ci_from_context).
+"""Tests for the required mounted Code Interpreter workspace."""
 
-The original helpers _is_text_file, _ws_path_to_s3_key, _extract_file_list,
-and the ci_pull_from_workspace tool were removed in a refactor that simplified
-the CI tools to use ci.invoke() directly.  These tests cover the current API.
-"""
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
 
-def _make_context(user_id="user1", session_id="sess1"):
+
+def _make_context(user_id="user1", session_id="sess1", state_values=None):
+    values = dict(state_values or {})
+    state = MagicMock()
+    state.get.side_effect = values.get
+    state.set.side_effect = values.__setitem__
+
     ctx = MagicMock()
     ctx.invocation_state = {"user_id": user_id, "session_id": session_id}
-    return ctx
+    ctx.agent.state = state
+    return ctx, values
 
 
-def _text_invoke_response(text: str) -> dict:
-    """Build a ci.invoke() response carrying a text content block."""
-    return {"stream": [{"result": {"content": [{"text": text}]}}]}
-
-
-def _binary_invoke_response(data: bytes) -> dict:
-    """Build a ci.invoke() response carrying a binary data content block."""
-    return {"stream": [{"result": {"content": [{"data": data}]}}]}
-
-
-def _exec_code_invoke_response(stdout: str) -> dict:
-    """Build a ci.invoke('executeCode') response via _parse_stream format."""
+def _exec_response(stdout: str = "") -> dict:
     return {
         "stream": [{
             "result": {
@@ -36,6 +27,15 @@ def _exec_code_invoke_response(stdout: str) -> dict:
             }
         }]
     }
+
+
+@pytest.fixture(autouse=True)
+def _clear_ci_clients():
+    from builtin_tools import code_interpreter_tool
+
+    code_interpreter_tool._ci_clients.clear()
+    yield
+    code_interpreter_tool._ci_clients.clear()
 
 
 def test_mounted_javascript_runs_from_workspace(monkeypatch):
@@ -65,162 +65,187 @@ def test_mounted_python_code_is_not_rewritten():
     ) == "open('output.txt', 'w').write('ok')"
 
 
-def test_legacy_sync_includes_workspace_panel_uploads():
-    from builtin_tools.code_interpreter_tool import _get_workspace_s3_prefixes
+def test_mounted_path_resolves_relative_paths_and_rejects_escape(monkeypatch):
+    monkeypatch.setenv("S3_FILES_MOUNT_PATH", "/mnt/workspace")
 
-    assert (
-        "code-interpreter-workspace/user1/sess1/inputs/"
-        in _get_workspace_s3_prefixes("user1", "sess1")
+    from builtin_tools.code_interpreter_tool import _mounted_path
+
+    assert _mounted_path("reports/result.md") == "/mnt/workspace/reports/result.md"
+    assert _mounted_path("/mnt/workspace/result.md") == "/mnt/workspace/result.md"
+    with pytest.raises(ValueError, match="inside the session workspace"):
+        _mounted_path("../other-session/result.md")
+    with pytest.raises(ValueError, match="inside the session workspace"):
+        _mounted_path("/tmp/result.md")
+
+
+@patch("workspace.s3_files.get_or_create_session_access_point")
+@patch("bedrock_agentcore.tools.code_interpreter_client.CodeInterpreter")
+@patch("builtin_tools.code_interpreter_tool._get_code_interpreter_id")
+def test_starts_session_with_required_filesystem_configuration(
+    mock_get_identifier,
+    mock_code_interpreter,
+    mock_access_point,
+):
+    mock_get_identifier.return_value = "ci-123"
+    mock_access_point.return_value = {
+        "file_system_arn": "arn:aws:s3files:us-west-2:123:file-system/fs-123",
+        "access_point_arn": "arn:aws:s3files:us-west-2:123:access-point/ap-123",
+        "mount_path": "/mnt/workspace",
+    }
+    ci = mock_code_interpreter.return_value
+    ci.data_plane_client.start_code_interpreter_session.return_value = {
+        "codeInterpreterIdentifier": "ci-123",
+        "sessionId": "session-123",
+    }
+    ci.invoke.return_value = _exec_response()
+    ctx, values = _make_context()
+
+    from builtin_tools.code_interpreter_tool import get_ci_session
+
+    assert get_ci_session(ctx) is ci
+    request = ci.data_plane_client.start_code_interpreter_session.call_args.kwargs
+    assert request["filesystemConfigurations"] == [{
+        "s3FilesConfiguration": {
+            "fileSystemArn": "arn:aws:s3files:us-west-2:123:file-system/fs-123",
+            "accessPointArn": "arn:aws:s3files:us-west-2:123:access-point/ap-123",
+            "mountPath": "/mnt/workspace",
+        },
+    }]
+    ci.start.assert_not_called()
+    assert values["ci_mounted_workspace"] is True
+    assert values["ci_session_id"] == "session-123"
+
+
+@patch("workspace.s3_files.get_or_create_session_access_point")
+@patch("bedrock_agentcore.tools.code_interpreter_client.CodeInterpreter")
+@patch("builtin_tools.code_interpreter_tool._get_code_interpreter_id")
+def test_mount_start_failure_does_not_start_unmounted_session(
+    mock_get_identifier,
+    mock_code_interpreter,
+    mock_access_point,
+):
+    mock_get_identifier.return_value = "ci-123"
+    mock_access_point.return_value = {
+        "file_system_arn": "fs-arn",
+        "access_point_arn": "ap-arn",
+        "mount_path": "/mnt/workspace",
+    }
+    ci = mock_code_interpreter.return_value
+    ci.data_plane_client.start_code_interpreter_session.side_effect = RuntimeError(
+        "mount rejected"
+    )
+    ctx, _ = _make_context()
+
+    from builtin_tools.code_interpreter_tool import get_ci_session
+
+    with pytest.raises(RuntimeError, match="S3 Files workspace"):
+        get_ci_session(ctx)
+    ci.start.assert_not_called()
+
+
+@patch("workspace.s3_files.get_or_create_session_access_point")
+@patch("bedrock_agentcore.tools.code_interpreter_client.CodeInterpreter")
+def test_missing_workspace_configuration_fails_fast(
+    mock_code_interpreter,
+    mock_access_point,
+):
+    mock_access_point.side_effect = RuntimeError("S3 Files workspace is not configured")
+    ctx, _ = _make_context(state_values={"ci_identifier": "ci-123"})
+
+    from builtin_tools.code_interpreter_tool import get_ci_session
+
+    with pytest.raises(RuntimeError, match="not configured"):
+        get_ci_session(ctx)
+    mock_code_interpreter.return_value.start.assert_not_called()
+
+
+@patch("workspace.s3_files.get_or_create_session_access_point")
+@patch("bedrock_agentcore.tools.code_interpreter_client.CodeInterpreter")
+def test_non_mounted_stored_session_is_not_reattached(
+    mock_code_interpreter,
+    mock_access_point,
+):
+    mock_access_point.return_value = {
+        "file_system_arn": "fs-arn",
+        "access_point_arn": "ap-arn",
+        "mount_path": "/mnt/workspace",
+    }
+    ci = mock_code_interpreter.return_value
+    ci.data_plane_client.start_code_interpreter_session.return_value = {
+        "codeInterpreterIdentifier": "ci-123",
+        "sessionId": "new-mounted-session",
+    }
+    ci.invoke.return_value = _exec_response()
+    ctx, values = _make_context(state_values={
+        "ci_identifier": "ci-123",
+        "ci_session_id": "old-unmounted-session",
+        "ci_mounted_workspace": False,
+    })
+
+    from builtin_tools.code_interpreter_tool import get_ci_session
+
+    get_ci_session(ctx)
+
+    ci.get_session.assert_not_called()
+    ci.data_plane_client.start_code_interpreter_session.assert_called_once()
+    assert values["ci_session_id"] == "new-mounted-session"
+    assert values["ci_mounted_workspace"] is True
+
+
+@patch("builtin_tools.code_interpreter_tool._get_ci_from_context")
+def test_file_operations_writes_only_to_mounted_workspace(mock_get_ci):
+    ci = MagicMock()
+    ci.invoke.return_value = _exec_response("Written: /mnt/workspace/result.md\n")
+    mock_get_ci.return_value = ci
+    ctx, _ = _make_context()
+
+    from builtin_tools.code_interpreter_tool import file_operations
+
+    result = file_operations(
+        operation="write",
+        content=[{"path": "result.md", "text": "# Result"}],
+        tool_context=ctx,
     )
 
-
-# ============================================================
-# ci_push_to_workspace Tests
-# ============================================================
-
-class TestCiPushToWorkspace:
-    """Tests for ci_push_to_workspace tool (current implementation)."""
-
-    @patch('builtin_tools.code_interpreter_tool._get_ci_from_context')
-    @patch('builtin_tools.code_interpreter_tool._save_to_workspace')
-    def test_pushes_specific_text_file(self, mock_save, mock_get_ci):
-        ci = MagicMock()
-        mock_get_ci.return_value = ci
-        mock_save.return_value = {'doc_type': 'code-output', 's3_key': 'k', 'bucket': 'b'}
-        ci.invoke.return_value = _text_invoke_response("x = 1\n")
-
-        from builtin_tools.code_interpreter_tool import ci_push_to_workspace
-        result = ci_push_to_workspace(paths=["script.py"], tool_context=_make_context())
-        data = json.loads(result)
-
-        assert data['status'] == 'ok'
-        assert data['count'] == 1
-        assert "code-output/script.py" in data['files_saved']
-        mock_save.assert_called_once()
-
-    @patch('builtin_tools.code_interpreter_tool._get_ci_from_context')
-    @patch('builtin_tools.code_interpreter_tool._save_to_workspace')
-    def test_pushes_binary_blob_file(self, mock_save, mock_get_ci):
-        ci = MagicMock()
-        mock_get_ci.return_value = ci
-        mock_save.return_value = {'doc_type': 'image', 's3_key': 'k', 'bucket': 'b'}
-        png_bytes = b'\x89PNG\r\n\x1a\n'
-        ci.invoke.return_value = _binary_invoke_response(png_bytes)
-
-        from builtin_tools.code_interpreter_tool import ci_push_to_workspace
-        result = ci_push_to_workspace(paths=["chart.png"], tool_context=_make_context())
-        data = json.loads(result)
-
-        assert data['status'] == 'ok'
-        assert data['count'] == 1
-        mock_save.assert_called_once()
-        saved_bytes = mock_save.call_args[0][2]
-        assert saved_bytes == png_bytes
-
-    @patch('builtin_tools.code_interpreter_tool._get_ci_from_context')
-    @patch('builtin_tools.code_interpreter_tool._save_to_workspace')
-    def test_auto_discovers_files_when_no_paths(self, mock_save, mock_get_ci):
-        ci = MagicMock()
-        mock_get_ci.return_value = ci
-        mock_save.return_value = {'doc_type': 'code-output', 's3_key': 'k', 'bucket': 'b'}
-
-        def invoke_side_effect(operation, params):
-            if operation == "executeCode":
-                return _exec_code_invoke_response('["auto_file.csv"]')
-            return _text_invoke_response("a,b\n1,2\n")
-
-        ci.invoke.side_effect = invoke_side_effect
-
-        from builtin_tools.code_interpreter_tool import ci_push_to_workspace
-        result = ci_push_to_workspace(paths=None, tool_context=_make_context())
-        data = json.loads(result)
-
-        assert data['status'] == 'ok'
-        assert data['count'] == 1
-        # First call should be the file-listing executeCode
-        first_call = ci.invoke.call_args_list[0]
-        assert first_call[0][0] == "executeCode"
-
-    @patch('builtin_tools.code_interpreter_tool._get_ci_from_context')
-    def test_returns_empty_when_no_files_discovered(self, mock_get_ci):
-        ci = MagicMock()
-        mock_get_ci.return_value = ci
-        ci.invoke.return_value = _exec_code_invoke_response("[]")
-
-        from builtin_tools.code_interpreter_tool import ci_push_to_workspace
-        result = ci_push_to_workspace(paths=None, tool_context=_make_context())
-        data = json.loads(result)
-
-        assert data['status'] == 'ok'
-        assert data['count'] == 0
-        assert data['files_saved'] == []
-
-    @patch('builtin_tools.code_interpreter_tool._get_ci_from_context')
-    @patch('builtin_tools.code_interpreter_tool._save_to_workspace')
-    def test_skips_failed_file_and_continues(self, mock_save, mock_get_ci):
-        ci = MagicMock()
-        mock_get_ci.return_value = ci
-        mock_save.return_value = {'doc_type': 'code-output', 's3_key': 'k', 'bucket': 'b'}
-
-        def invoke_side_effect(operation, params):
-            if operation == "readFiles" and "fail.py" in params.get("paths", []):
-                raise Exception("read error")
-            return _text_invoke_response("ok")
-
-        ci.invoke.side_effect = invoke_side_effect
-
-        from builtin_tools.code_interpreter_tool import ci_push_to_workspace
-        result = ci_push_to_workspace(
-            paths=["ok.py", "fail.py"],
-            tool_context=_make_context(),
-        )
-        data = json.loads(result)
-
-        assert data['status'] == 'ok'
-        assert data['count'] == 1
-        assert any("ok.py" in p for p in data['files_saved'])
-
-    @patch('builtin_tools.code_interpreter_tool._get_ci_from_context')
-    def test_returns_error_when_ci_not_available(self, mock_get_ci):
-        mock_get_ci.return_value = None
-
-        from builtin_tools.code_interpreter_tool import ci_push_to_workspace
-        result = ci_push_to_workspace(paths=["file.py"], tool_context=_make_context())
-        data = json.loads(result)
-
-        assert data['status'] == 'error'
-        assert 'not available' in data['error'].lower()
+    assert "Written: /mnt/workspace/result.md" in result
+    code = ci.invoke.call_args.args[1]["code"]
+    assert "os.makedirs(os.path.dirname('/mnt/workspace/result.md')" in code
+    assert "open('/mnt/workspace/result.md', 'w', encoding='utf-8')" in code
 
 
-# ============================================================
-# Response Format Tests
-# ============================================================
+@patch("builtin_tools.code_interpreter_tool._get_ci_from_context")
+def test_file_operations_reads_mounted_files_via_python(mock_get_ci):
+    ci = MagicMock()
+    ci.invoke.return_value = _exec_response(json.dumps([{
+        "path": "/mnt/workspace/smoke/result.txt",
+        "text": "MOUNTED_WORKSPACE_SMOKE_OK",
+        "truncated": False,
+    }]))
+    mock_get_ci.return_value = ci
+    ctx, _ = _make_context()
 
-class TestCiSyncResponseFormat:
-    """Tests that sync tools always return valid JSON."""
+    from builtin_tools.code_interpreter_tool import file_operations
 
-    @patch('builtin_tools.code_interpreter_tool._get_ci_from_context')
-    def test_push_error_returns_valid_json(self, mock_get_ci):
-        ci = MagicMock()
-        mock_get_ci.return_value = ci
-        # Make auto-discovery (executeCode) raise so the outer except fires
-        ci.invoke.side_effect = Exception("CI exploded")
+    result = file_operations(
+        operation="read",
+        paths=["smoke/result.txt"],
+        tool_context=ctx,
+    )
 
-        from builtin_tools.code_interpreter_tool import ci_push_to_workspace
-        result = ci_push_to_workspace(paths=None, tool_context=_make_context())
-        data = json.loads(result)
-        assert isinstance(data, dict)
-        assert data['status'] == 'error'
+    assert result == "MOUNTED_WORKSPACE_SMOKE_OK"
+    method, request = ci.invoke.call_args.args
+    assert method == "executeCode"
+    assert "/mnt/workspace/smoke/result.txt" in request["code"]
 
-    @patch('builtin_tools.code_interpreter_tool._get_ci_from_context')
-    def test_push_unavailable_returns_valid_json(self, mock_get_ci):
-        mock_get_ci.return_value = None
 
-        from builtin_tools.code_interpreter_tool import ci_push_to_workspace
-        result = ci_push_to_workspace(
-            paths=["code-output/x.csv"],
-            tool_context=_make_context(),
-        )
-        data = json.loads(result)
-        assert isinstance(data, dict)
-        assert 'status' in data
+@patch("builtin_tools.code_interpreter_tool._get_ci_from_context")
+def test_session_initialization_errors_are_returned_by_tools(mock_get_ci):
+    mock_get_ci.side_effect = RuntimeError("S3 Files workspace is not configured")
+    ctx, _ = _make_context()
+
+    from builtin_tools.code_interpreter_tool import execute_code
+
+    result = json.loads(execute_code("print('hello')", tool_context=ctx))
+
+    assert result["status"] == "error"
+    assert "S3 Files workspace is not configured" in result["error"]

@@ -1,5 +1,10 @@
 data "aws_caller_identity" "current" {}
 
+moved {
+  from = module.session_workspace[0]
+  to   = module.session_workspace
+}
+
 locals {
   account_id    = data.aws_caller_identity.current.account_id
   root_dir      = abspath("${path.module}/../../..")
@@ -52,26 +57,14 @@ module "data" {
 module "agentcore_shared" {
   source = "../../modules/agentcore-shared"
 
-  project_name           = var.project_name
-  environment            = var.environment
-  aws_region             = var.aws_region
-  account_id             = local.account_id
-  nova_act_workflow_name = var.nova_act_workflow_name
-  code_interpreter_execution_role_arn = (
-    var.enable_s3_files_workspace
-    ? module.session_workspace[0].code_interpreter_execution_role_arn
-    : ""
-  )
-  code_interpreter_subnet_ids = (
-    var.enable_s3_files_workspace
-    ? module.session_workspace[0].code_interpreter_subnet_ids
-    : []
-  )
-  code_interpreter_security_group_ids = (
-    var.enable_s3_files_workspace
-    ? [module.session_workspace[0].mount_target_security_group_id]
-    : []
-  )
+  project_name                        = var.project_name
+  environment                         = var.environment
+  aws_region                          = var.aws_region
+  account_id                          = local.account_id
+  nova_act_workflow_name              = var.nova_act_workflow_name
+  code_interpreter_execution_role_arn = module.session_workspace.code_interpreter_execution_role_arn
+  code_interpreter_subnet_ids         = module.session_workspace.code_interpreter_subnet_ids
+  code_interpreter_security_group_ids = [module.session_workspace.mount_target_security_group_id]
 
   depends_on = [module.session_workspace]
 }
@@ -271,16 +264,8 @@ module "runtime_code_agent" {
   secret_arns = var.enable_mantle_models ? [
     data.aws_secretsmanager_secret.bedrock_api_key[0].arn
   ] : []
-  workspace_file_system_id = (
-    var.enable_s3_files_workspace
-    ? module.session_workspace[0].file_system_id
-    : ""
-  )
-  workspace_file_system_arn = (
-    var.enable_s3_files_workspace
-    ? module.session_workspace[0].file_system_arn
-    : ""
-  )
+  workspace_file_system_id  = module.session_workspace.file_system_id
+  workspace_file_system_arn = module.session_workspace.file_system_arn
 
   extra_env_vars = {
     CLAUDE_CODE_USE_BEDROCK = "1"
@@ -356,23 +341,16 @@ module "runtime_general_subagent" {
   secret_arns = var.enable_mantle_models ? [
     data.aws_secretsmanager_secret.bedrock_api_key[0].arn
   ] : []
-  workspace_file_system_id = (
-    var.enable_s3_files_workspace
-    ? module.session_workspace[0].file_system_id
-    : ""
-  )
-  workspace_file_system_arn = (
-    var.enable_s3_files_workspace
-    ? module.session_workspace[0].file_system_arn
-    : ""
-  )
+  workspace_file_system_id       = module.session_workspace.file_system_id
+  workspace_file_system_arn      = module.session_workspace.file_system_arn
+  enable_workspace_access_points = true
 
   extra_env_vars = merge(
     {
       CODE_INTERPRETER_ID      = module.agentcore_shared.code_interpreter_id
       MODEL_ID                 = local.general_subagent_default_model_id
-      S3_FILES_FILE_SYSTEM_ID  = var.enable_s3_files_workspace ? module.session_workspace[0].file_system_id : ""
-      S3_FILES_FILE_SYSTEM_ARN = var.enable_s3_files_workspace ? module.session_workspace[0].file_system_arn : ""
+      S3_FILES_FILE_SYSTEM_ID  = module.session_workspace.file_system_id
+      S3_FILES_FILE_SYSTEM_ARN = module.session_workspace.file_system_arn
       S3_FILES_MOUNT_PATH      = "/mnt/workspace"
     },
     var.enable_mantle_models ? {
@@ -421,18 +399,11 @@ module "runtime_orchestrator" {
   orchestration_table_arn  = module.data.session_orchestration_table_arn
   orchestration_table_name = module.data.session_orchestration_table_name
 
-  artifact_bucket_arn  = aws_s3_bucket.artifacts.arn
-  artifact_bucket_name = aws_s3_bucket.artifacts.id
-  workspace_file_system_id = (
-    var.enable_s3_files_workspace
-    ? module.session_workspace[0].file_system_id
-    : ""
-  )
-  workspace_file_system_arn = (
-    var.enable_s3_files_workspace
-    ? module.session_workspace[0].file_system_arn
-    : ""
-  )
+  artifact_bucket_arn            = aws_s3_bucket.artifacts.arn
+  artifact_bucket_name           = aws_s3_bucket.artifacts.id
+  workspace_file_system_id       = module.session_workspace.file_system_id
+  workspace_file_system_arn      = module.session_workspace.file_system_arn
+  enable_workspace_access_points = true
 
   extra_env_vars = merge(
     {
@@ -447,8 +418,8 @@ module "runtime_orchestrator" {
       GENERAL_SUBAGENT_RUNTIME_URL          = module.runtime_general_subagent.runtime_invocation_url
       MCP_3LO_RUNTIME_ARN                   = module.runtime_mcp_3lo.runtime_arn
       CODE_INTERPRETER_ID                   = module.agentcore_shared.code_interpreter_id
-      S3_FILES_FILE_SYSTEM_ID               = var.enable_s3_files_workspace ? module.session_workspace[0].file_system_id : ""
-      S3_FILES_FILE_SYSTEM_ARN              = var.enable_s3_files_workspace ? module.session_workspace[0].file_system_arn : ""
+      S3_FILES_FILE_SYSTEM_ID               = module.session_workspace.file_system_id
+      S3_FILES_FILE_SYSTEM_ARN              = module.session_workspace.file_system_arn
       S3_FILES_MOUNT_PATH                   = "/mnt/workspace"
       BROWSER_ID                            = module.agentcore_shared.browser_id
       BROWSER_NAME                          = module.agentcore_shared.browser_name
@@ -584,10 +555,7 @@ data "aws_subnets" "default" {
 
 check "code_interpreter_has_supported_subnet" {
   assert {
-    condition = (
-      !var.enable_s3_files_workspace ||
-      length(var.code_interpreter_private_subnets) > 0
-    )
+    condition     = length(var.code_interpreter_private_subnets) > 0
     error_message = "code_interpreter_private_subnets must configure at least one supported availability zone."
   }
 }
@@ -605,21 +573,16 @@ check "code_interpreter_private_subnets_match_supported_azs" {
 
 module "session_workspace" {
   source = "../../modules/session-workspace"
-  count  = var.enable_s3_files_workspace ? 1 : 0
 
-  project_name         = var.project_name
-  environment          = var.environment
-  aws_region           = var.aws_region
-  account_id           = local.account_id
-  artifact_bucket_arn  = aws_s3_bucket.artifacts.arn
-  artifact_bucket_name = aws_s3_bucket.artifacts.id
-  vpc_id               = data.aws_vpc.default.id
-  subnet_ids           = data.aws_subnets.default.ids
-  code_interpreter_private_subnets = (
-    var.enable_s3_files_workspace
-    ? var.code_interpreter_private_subnets
-    : {}
-  )
+  project_name                     = var.project_name
+  environment                      = var.environment
+  aws_region                       = var.aws_region
+  account_id                       = local.account_id
+  artifact_bucket_arn              = aws_s3_bucket.artifacts.arn
+  artifact_bucket_name             = aws_s3_bucket.artifacts.id
+  vpc_id                           = data.aws_vpc.default.id
+  subnet_ids                       = data.aws_subnets.default.ids
+  code_interpreter_private_subnets = var.code_interpreter_private_subnets
 
   depends_on = [aws_s3_bucket_versioning.artifacts]
 }
@@ -647,20 +610,12 @@ module "chat" {
   session_orchestration_table_name = module.data.session_orchestration_table_name
   session_orchestration_table_arn  = module.data.session_orchestration_table_arn
 
-  memory_id            = module.memory.memory_id
-  gateway_url          = module.gateway.gateway_url
-  artifact_bucket_arn  = aws_s3_bucket.artifacts.arn
-  artifact_bucket_name = aws_s3_bucket.artifacts.id
-  workspace_file_system_arn = (
-    var.enable_s3_files_workspace
-    ? module.session_workspace[0].file_system_arn
-    : ""
-  )
-  workspace_access_point_arn = (
-    var.enable_s3_files_workspace
-    ? module.session_workspace[0].frontend_access_point_arn
-    : ""
-  )
+  memory_id                  = module.memory.memory_id
+  gateway_url                = module.gateway.gateway_url
+  artifact_bucket_arn        = aws_s3_bucket.artifacts.arn
+  artifact_bucket_name       = aws_s3_bucket.artifacts.id
+  workspace_file_system_arn  = module.session_workspace.file_system_arn
+  workspace_access_point_arn = module.session_workspace.frontend_access_point_arn
 
   orchestrator_runtime_arn = module.runtime_orchestrator.runtime_arn
   orchestrator_runtime_url = module.runtime_orchestrator.runtime_invocation_url

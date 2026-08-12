@@ -362,24 +362,21 @@ resource "aws_iam_role_policy" "ecs_task" {
         },
       ],
       [
-        for statement in [
-          {
-            Effect   = "Allow"
-            Action   = ["s3files:ClientMount", "s3files:GetAccessPoint"]
-            Resource = var.workspace_file_system_arn
-            Condition = {
-              ArnEquals = {
-                "s3files:AccessPointArn" = var.workspace_access_point_arn
-              }
+        {
+          Effect   = "Allow"
+          Action   = ["s3files:ClientMount", "s3files:GetAccessPoint"]
+          Resource = var.workspace_file_system_arn
+          Condition = {
+            ArnEquals = {
+              "s3files:AccessPointArn" = var.workspace_access_point_arn
             }
-          },
-          {
-            Effect   = "Allow"
-            Action   = ["s3files:DeleteAccessPoint", "s3files:GetAccessPoint"]
-            Resource = "${var.workspace_file_system_arn}/access-point/*"
-          },
-        ] : statement
-        if var.workspace_file_system_arn != "" && var.workspace_access_point_arn != ""
+          }
+        },
+        {
+          Effect   = "Allow"
+          Action   = ["s3files:DeleteAccessPoint", "s3files:GetAccessPoint"]
+          Resource = "${var.workspace_file_system_arn}/access-point/*"
+        },
       ],
       [
         {
@@ -419,8 +416,8 @@ resource "aws_ecs_task_definition" "frontend" {
       { name = "DYNAMODB_SESSIONS_TABLE", value = var.sessions_table_name },
       { name = "SESSION_ORCHESTRATION_TABLE", value = var.session_orchestration_table_name },
       { name = "ARTIFACT_BUCKET", value = var.artifact_bucket_name },
-      { name = "S3_FILES_MOUNT_PATH", value = var.workspace_file_system_arn != "" ? "/mnt/session-workspaces" : "" },
-      { name = "S3_FILES_FILE_SYSTEM_ID", value = var.workspace_file_system_arn != "" ? split("/", var.workspace_file_system_arn)[1] : "" },
+      { name = "S3_FILES_MOUNT_PATH", value = "/mnt/session-workspaces" },
+      { name = "S3_FILES_FILE_SYSTEM_ID", value = split("/", var.workspace_file_system_arn)[1] },
       { name = "MEMORY_ID", value = var.memory_id },
       { name = "MCP_GATEWAY_URL", value = var.gateway_url },
       { name = "ORCHESTRATOR_RUNTIME_ARN", value = var.orchestrator_runtime_arn },
@@ -432,11 +429,11 @@ resource "aws_ecs_task_definition" "frontend" {
       name      = "AWS_BEARER_TOKEN_BEDROCK"
       valueFrom = var.bedrock_api_key_secret_arn
     }] : []
-    mountPoints = var.workspace_file_system_arn != "" ? [{
+    mountPoints = [{
       sourceVolume  = "session-workspace"
       containerPath = "/mnt/session-workspaces"
       readOnly      = true
-    }] : []
+    }]
     logConfiguration = {
       logDriver = "awslogs"
       options = {
@@ -447,15 +444,12 @@ resource "aws_ecs_task_definition" "frontend" {
     }
   }])
 
-  dynamic "volume" {
-    for_each = var.workspace_file_system_arn != "" ? [1] : []
-    content {
-      name = "session-workspace"
+  volume {
+    name = "session-workspace"
 
-      s3files_volume_configuration {
-        file_system_arn  = var.workspace_file_system_arn
-        access_point_arn = var.workspace_access_point_arn
-      }
+    s3files_volume_configuration {
+      file_system_arn  = var.workspace_file_system_arn
+      access_point_arn = var.workspace_access_point_arn
     }
   }
 

@@ -41,17 +41,14 @@ resource "aws_iam_role_policy" "browser" {
 resource "aws_bedrockagentcore_code_interpreter" "this" {
   name               = "${local.name_prefix}_ci_${local.code_interpreter_config_suffix}"
   description        = "Shared Code Interpreter for ${var.project_name} ${var.environment}"
-  execution_role_arn = var.code_interpreter_execution_role_arn != "" ? var.code_interpreter_execution_role_arn : null
+  execution_role_arn = var.code_interpreter_execution_role_arn
 
   network_configuration {
-    network_mode = length(var.code_interpreter_subnet_ids) > 0 ? "VPC" : "PUBLIC"
+    network_mode = "VPC"
 
-    dynamic "vpc_config" {
-      for_each = length(var.code_interpreter_subnet_ids) > 0 ? [1] : []
-      content {
-        subnets         = var.code_interpreter_subnet_ids
-        security_groups = var.code_interpreter_security_group_ids
-      }
+    vpc_config {
+      subnets         = var.code_interpreter_subnet_ids
+      security_groups = var.code_interpreter_security_group_ids
     }
   }
 }

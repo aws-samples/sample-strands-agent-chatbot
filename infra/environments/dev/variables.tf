@@ -37,12 +37,6 @@ variable "enable_mantle_models" {
   default     = false
 }
 
-variable "enable_s3_files_workspace" {
-  description = "Mount the artifact bucket through S3 Files for session Code Interpreter workspaces."
-  type        = bool
-  default     = true
-}
-
 variable "code_interpreter_supported_az_ids" {
   description = "Stable availability zone IDs supported by AgentCore Code Interpreter VPC mode. Empty uses every subnet in the selected VPC."
   type        = list(string)
