@@ -4,6 +4,11 @@ import { ChatInterface } from '@/components/ChatInterface'
 import type { Message } from '@/types/chat'
 import type { AgentStatus, TurnPhase } from '@/types/events'
 
+const attentionMocks = vi.hoisted(() => ({
+  events: [] as any[],
+  apiPost: vi.fn(),
+}))
+
 // Type for grouped messages
 interface GroupedMessage {
   type: 'user' | 'assistant_turn'
@@ -46,6 +51,7 @@ const mockUseChat: {
   toggleConciseMode: ReturnType<typeof vi.fn>
   newChat: ReturnType<typeof vi.fn>
   sessionId: string | null
+  isLoadingMessages: boolean
   loadSession: ReturnType<typeof vi.fn>
   browserSession: { sessionId: string | null; browserId: string | null } | null
   browserProgress: any
@@ -86,6 +92,7 @@ const mockUseChat: {
   toggleConciseMode: vi.fn(),
   newChat: vi.fn().mockResolvedValue(undefined),
   sessionId: null,
+  isLoadingMessages: false,
   loadSession: vi.fn().mockResolvedValue(undefined),
   browserSession: null,
   browserProgress: undefined,
@@ -96,6 +103,13 @@ const mockUseChat: {
 
 vi.mock('@/hooks/useChat', () => ({
   useChat: () => mockUseChat
+}))
+
+vi.mock('@/hooks/useSessionEvents', () => ({
+  useSessionEvents: () => ({
+    events: attentionMocks.events,
+    refresh: vi.fn(),
+  }),
 }))
 
 // Mock useIframeAuth
@@ -133,7 +147,12 @@ vi.mock('next-themes', () => ({
 
 // Mock api-client
 vi.mock('@/lib/api-client', () => ({
-  apiGet: vi.fn().mockResolvedValue({ success: true, config: {}, models: [] })
+  apiGet: vi.fn().mockResolvedValue({ success: true, config: {}, models: [] }),
+  apiPost: attentionMocks.apiPost,
+  apiFetch: vi.fn().mockResolvedValue({
+    ok: true,
+    json: async () => ({ jobs: [] }),
+  }),
 }))
 
 // Mock child components
@@ -205,6 +224,11 @@ describe('ChatInterface', () => {
     mockUseChat.pendingOAuth = null
     mockUseChat.queuedMessages = []
     mockUseChat.queueHoldReason = null
+    mockUseChat.sessionId = null
+    mockUseChat.isLoadingMessages = false
+    attentionMocks.events = []
+    attentionMocks.apiPost.mockResolvedValue({ success: true })
+    delete (window as any).__refreshSessionList
   })
 
   afterEach(() => {
@@ -287,6 +311,50 @@ describe('ChatInterface', () => {
 
       expect(screen.getByTestId('assistant-turn')).toBeInTheDocument()
       expect(screen.getByText('Hi there!')).toBeInTheDocument()
+    })
+
+    it('marks a durable completion seen only after it is represented', async () => {
+      mockUseChat.sessionId = 'session-1'
+      mockUseChat.groupedMessages = [
+        {
+          type: 'assistant_turn',
+          id: 'turn_1',
+          messages: [{
+            id: '2',
+            text: 'Research completed',
+            sender: 'bot',
+            timestamp: '12:01',
+            originEventId: 'research-result:job-1',
+          }]
+        }
+      ]
+      attentionMocks.events = [{
+        eventId: 'research-result:job-1:assistant',
+        eventType: 'assistant.turn.completed',
+        sessionId: 'session-1',
+        userId: 'user-1',
+        createdAt: '2026-08-11T12:01:00Z',
+        originEventId: 'research-result:job-1',
+        correlation: {},
+        payload: {},
+      }]
+      const refreshSessions = vi.fn()
+      ;(window as any).__refreshSessionList = refreshSessions
+
+      render(<ChatInterface />)
+
+      await waitFor(() => {
+        expect(attentionMocks.apiPost).toHaveBeenCalledWith(
+          'session/session-1/seen',
+          {
+            seenThroughCursor:
+              'OUTBOX_V2#2026-08-11T12:01:00Z#research-result:job-1:assistant',
+          },
+        )
+      })
+      await waitFor(() => {
+        expect(refreshSessions).toHaveBeenCalled()
+      })
     })
   })
 

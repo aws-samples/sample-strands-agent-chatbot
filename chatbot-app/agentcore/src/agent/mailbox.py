@@ -577,7 +577,8 @@ class DynamoDBMailboxRepository(MailboxRepository):
                 "SET conversationEpoch = if_not_exists(conversationEpoch, :zero) + :one, "
                 "leaseEpoch = if_not_exists(leaseEpoch, :zero) + :one, "
                 "truncatedAt = :updated, updatedAt = :updated "
-                "REMOVE leaseOwner, leaseUntil"
+                "REMOVE leaseOwner, leaseUntil, latestAttentionCursor, "
+                "latestAttentionAt, lastSeenAttentionCursor, lastSeenAttentionAt"
             ),
             ConditionExpression="attribute_not_exists(deletedAt)",
             ExpressionAttributeValues=self._serialize({
@@ -931,8 +932,20 @@ class DynamoDBMailboxRepository(MailboxRepository):
     ) -> bool:
         current = now or utc_now()
         now_epoch = int(current.timestamp())
+        attention_events = [
+            item
+            for item in session_events
+            if item.event_type == "assistant.turn.completed"
+        ]
+        latest_attention = max(
+            attention_events,
+            key=lambda item: _session_event_key(item.created_at, item.event_id),
+            default=None,
+        )
         if len(session_events) > 98:
-            raise ValueError("A mailbox acknowledgement supports at most 98 session events")
+            raise ValueError(
+                "A mailbox acknowledgement supports at most 98 session events"
+            )
         projection_ttl = int(
             (current + timedelta(days=SESSION_EVENT_TTL_DAYS)).timestamp()
         )
@@ -945,10 +958,49 @@ class DynamoDBMailboxRepository(MailboxRepository):
             }
             for item in session_events
         ]
+        state_operation = self._lease_condition(
+            event.user_id,
+            event.session_id,
+            lease,
+            now_epoch,
+        )
+        if latest_attention:
+            state_operation = {
+                "Update": {
+                    "TableName": self.table_name,
+                    "Key": self._key(
+                        event.user_id,
+                        event.session_id,
+                        "STATE",
+                    ),
+                    "UpdateExpression": (
+                        "SET latestAttentionCursor = :cursor, "
+                        "latestAttentionAt = :created_at"
+                    ),
+                    "ConditionExpression": (
+                        "leaseOwner = :owner AND leaseEpoch = :epoch "
+                        "AND leaseUntil >= :now "
+                        "AND conversationEpoch = :conversation_epoch"
+                    ),
+                    "ExpressionAttributeValues": self._serialize({
+                        ":cursor": _session_event_key(
+                            latest_attention.created_at,
+                            latest_attention.event_id,
+                        ),
+                        ":created_at": latest_attention.created_at,
+                        ":owner": lease.owner,
+                        ":epoch": lease.epoch,
+                        ":now": now_epoch,
+                        ":conversation_epoch": int(
+                            getattr(lease, "conversation_epoch", 0)
+                        ),
+                    }),
+                }
+            }
         try:
             self.client.transact_write_items(
                 TransactItems=[
-                    self._lease_condition(event.user_id, event.session_id, lease, now_epoch),
+                    state_operation,
                     {
                         "Update": {
                             "TableName": self.table_name,
@@ -1208,6 +1260,10 @@ class FileMailboxRepository(MailboxRepository):
             state["updatedAt"] = _iso(current)
             state.pop("leaseOwner", None)
             state.pop("leaseUntil", None)
+            state.pop("latestAttentionCursor", None)
+            state.pop("latestAttentionAt", None)
+            state.pop("lastSeenAttentionCursor", None)
+            state.pop("lastSeenAttentionAt", None)
             for record in data["events"].values():
                 if (
                     int(record.get("conversationEpoch", 0))
@@ -1430,6 +1486,24 @@ class FileMailboxRepository(MailboxRepository):
                 data["sessionEvents"][item.event_id] = item.to_record(
                     ttl=projection_ttl
                 )
+            attention_events = [
+                item
+                for item in session_events
+                if item.event_type == "assistant.turn.completed"
+            ]
+            if attention_events:
+                latest_attention = max(
+                    attention_events,
+                    key=lambda item: _session_event_key(
+                        item.created_at,
+                        item.event_id,
+                    ),
+                )
+                data["state"]["latestAttentionCursor"] = _session_event_key(
+                    latest_attention.created_at,
+                    latest_attention.event_id,
+                )
+                data["state"]["latestAttentionAt"] = latest_attention.created_at
             self._save(event.user_id, event.session_id, data)
             return True
 

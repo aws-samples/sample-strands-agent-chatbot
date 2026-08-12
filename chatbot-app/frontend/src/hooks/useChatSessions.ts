@@ -1,10 +1,16 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { apiGet, apiDelete } from '@/lib/api-client';
+
+const SESSION_POLL_INTERVAL_MS = 10_000;
 
 export interface ChatSession {
   sessionId: string;
   title: string;
   lastMessageAt: string;
+  lastActivityAt?: string;
+  latestAttentionCursor?: string;
+  lastSeenAttentionCursor?: string;
+  hasUnseenUpdate?: boolean;
   messageCount: number;
   starred?: boolean;
   status: string;
@@ -20,10 +26,15 @@ interface UseChatSessionsProps {
 export function useChatSessions({ sessionId, onNewChat }: UseChatSessionsProps) {
   const [chatSessions, setChatSessions] = useState<ChatSession[]>([]);
   const [isLoadingSessions, setIsLoadingSessions] = useState(false);
+  const hasLoadedRef = useRef(false);
+  const isRefreshingRef = useRef(false);
 
   // Load chat sessions
   const loadSessions = useCallback(async () => {
-    setIsLoadingSessions(true);
+    if (isRefreshingRef.current) return;
+    isRefreshingRef.current = true;
+    const showLoading = !hasLoadedRef.current;
+    if (showLoading) setIsLoadingSessions(true);
     try {
       const data = await apiGet<{ success: boolean; sessions: ChatSession[] }>(
         'session/list?limit=100&status=active'
@@ -35,9 +46,11 @@ export function useChatSessions({ sessionId, onNewChat }: UseChatSessionsProps) 
     } catch (error) {
       console.error('Failed to load chat sessions:', error);
     } finally {
-      setIsLoadingSessions(false);
+      hasLoadedRef.current = true;
+      isRefreshingRef.current = false;
+      if (showLoading) setIsLoadingSessions(false);
     }
-  }, [sessionId]);
+  }, []);
 
   // Delete a session
   const deleteSession = useCallback(async (sessionIdToDelete: string) => {
@@ -111,7 +124,26 @@ export function useChatSessions({ sessionId, onNewChat }: UseChatSessionsProps) 
 
   // Load sessions on mount and when sessionId changes
   useEffect(() => {
-    loadSessions();
+    void loadSessions();
+  }, [loadSessions, sessionId]);
+
+  useEffect(() => {
+    const refreshIfVisible = () => {
+      if (document.visibilityState === 'visible') {
+        void loadSessions();
+      }
+    };
+    const interval = window.setInterval(
+      refreshIfVisible,
+      SESSION_POLL_INTERVAL_MS,
+    );
+    document.addEventListener('visibilitychange', refreshIfVisible);
+    window.addEventListener('focus', refreshIfVisible);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener('visibilitychange', refreshIfVisible);
+      window.removeEventListener('focus', refreshIfVisible);
+    };
   }, [loadSessions]);
 
   // Expose loadSessions globally for external refresh

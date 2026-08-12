@@ -87,6 +87,10 @@ function advanceLocalConversationEpoch(
   }
   delete data.state.leaseOwner
   delete data.state.leaseUntil
+  delete data.state.latestAttentionCursor
+  delete data.state.latestAttentionAt
+  delete data.state.lastSeenAttentionCursor
+  delete data.state.lastSeenAttentionAt
 
   const terminalTtl = Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60
   for (const event of Object.values(data.events || {}) as Record<string, any>[]) {
@@ -300,7 +304,8 @@ export async function advanceSessionConversationEpoch(
       'SET conversationEpoch = if_not_exists(conversationEpoch, :zero) + :one, ' +
       'leaseEpoch = if_not_exists(leaseEpoch, :zero) + :one, ' +
       'truncatedAt = :updated, updatedAt = :updated ' +
-      'REMOVE leaseOwner, leaseUntil',
+      'REMOVE leaseOwner, leaseUntil, latestAttentionCursor, ' +
+      'latestAttentionAt, lastSeenAttentionCursor, lastSeenAttentionAt',
     ConditionExpression: 'attribute_not_exists(deletedAt)',
     ExpressionAttributeValues: marshall({
       ':zero': 0,
