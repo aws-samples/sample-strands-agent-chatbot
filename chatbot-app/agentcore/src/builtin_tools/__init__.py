@@ -87,10 +87,6 @@ _EXPORTS = {
     "execute_code": (".code_interpreter_tool", "execute_code"),
     "execute_command": (".code_interpreter_tool", "execute_command"),
     "file_operations": (".code_interpreter_tool", "file_operations"),
-    "ci_push_to_workspace": (
-        ".code_interpreter_tool",
-        "ci_push_to_workspace",
-    ),
 }
 
 __all__ = list(_EXPORTS)

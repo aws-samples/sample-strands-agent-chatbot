@@ -88,13 +88,21 @@ variable "artifact_bucket_name" {
 }
 
 variable "workspace_file_system_arn" {
-  type    = string
-  default = ""
+  type = string
+
+  validation {
+    condition     = var.workspace_file_system_arn != ""
+    error_message = "workspace_file_system_arn is required."
+  }
 }
 
 variable "workspace_access_point_arn" {
-  type    = string
-  default = ""
+  type = string
+
+  validation {
+    condition     = var.workspace_access_point_arn != ""
+    error_message = "workspace_access_point_arn is required."
+  }
 }
 
 variable "orchestrator_runtime_arn" {

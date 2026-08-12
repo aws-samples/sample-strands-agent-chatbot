@@ -398,28 +398,10 @@
         {
           "id": "file_operations",
           "name": "File Operations",
-          "description": "Read, write, list, or remove files in the sandbox",
+          "description": "Read, write, list, or remove files in the mounted session workspace",
           "displayName": {
             "running": "Managing files",
             "complete": "Managed files"
-          }
-        },
-        {
-          "id": "ci_push_to_workspace",
-          "name": "Push to Workspace",
-          "description": "Save sandbox files to the shared workspace (S3)",
-          "displayName": {
-            "running": "Saving to workspace",
-            "complete": "Saved to workspace"
-          }
-        },
-        {
-          "id": "ci_pull_from_workspace",
-          "name": "Pull from Workspace",
-          "description": "Load workspace files into the sandbox",
-          "displayName": {
-            "running": "Loading from workspace",
-            "complete": "Loaded from workspace"
           }
         }
       ]

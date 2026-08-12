@@ -1,7 +1,7 @@
 """Shared workspace tools — read/write files across all skill namespaces.
 
 Path conventions (userId/sessionId are injected automatically from context):
-  uploads/<file>              →  code-interpreter-workspace/{userId}/{sessionId}/inputs/<file>
+  uploads/<file>              →  code-interpreter-workspace/{workspaceId}/inputs/<file>
   code-agent/<file>           →  code-agent-workspace/{userId}/{sessionId}/<file>
   documents/<type>/<file>     →  documents/{userId}/{sessionId}/<type>/<file>
 
@@ -18,6 +18,7 @@ import botocore.exceptions
 from strands import tool, ToolContext
 from skill import register_skill
 from workspace.config import get_workspace_bucket
+from workspace.paths import code_interpreter_prefix
 
 logger = logging.getLogger(__name__)
 
@@ -35,22 +36,22 @@ def _get_ids(context: ToolContext):
     return state.get('user_id', 'default_user'), state.get('session_id', 'default_session')
 
 
-_NAMESPACE_MAP = [
-    # (logical prefix, s3 prefix template)
-    ('uploads',             'code-interpreter-workspace/{user_id}/{session_id}/inputs/'),
-    ('code-agent',          'code-agent-workspace/{user_id}/{session_id}/'),
-    ('code-interpreter',    'code-interpreter-workspace/{user_id}/{session_id}/'),
-    ('documents',           'documents/{user_id}/{session_id}/'),
-]
+def _namespace_map(user_id: str, session_id: str):
+    ci_prefix = code_interpreter_prefix(user_id, session_id)
+    return [
+        ('uploads',          f'{ci_prefix}inputs/'),
+        ('code-agent',       f'code-agent-workspace/{user_id}/{session_id}/'),
+        ('code-interpreter', ci_prefix),
+        ('documents',        f'documents/{user_id}/{session_id}/'),
+    ]
 
 
 def _to_s3_key(user_id: str, session_id: str, path: str) -> str:
     """Map logical path to S3 key."""
     path = path.lstrip('/')
-    for prefix, template in _NAMESPACE_MAP:
+    for prefix, base in _namespace_map(user_id, session_id):
         if path == prefix or path.startswith(prefix + '/'):
             suffix = path[len(prefix):].lstrip('/')
-            base = template.format(user_id=user_id, session_id=session_id)
             return base + suffix
     # default: documents namespace
     return f"documents/{user_id}/{session_id}/{path}"
@@ -58,8 +59,7 @@ def _to_s3_key(user_id: str, session_id: str, path: str) -> str:
 
 def _to_logical_path(user_id: str, session_id: str, s3_key: str) -> str:
     """Convert S3 key back to logical path."""
-    for prefix, template in _NAMESPACE_MAP:
-        s3_base = template.format(user_id=user_id, session_id=session_id)
+    for prefix, s3_base in _namespace_map(user_id, session_id):
         if s3_key.startswith(s3_base):
             return prefix + '/' + s3_key[len(s3_base):]
     return s3_key
@@ -95,10 +95,11 @@ def workspace_list(path: str = '', tool_context: ToolContext = None) -> str:
         s3 = _s3_client()
 
         if not path or path.strip('/') == '':
+            ci_prefix = code_interpreter_prefix(user_id, session_id)
             s3_prefixes = [
-                f"code-interpreter-workspace/{user_id}/{session_id}/inputs/",
+                f"{ci_prefix}inputs/",
                 f"code-agent-workspace/{user_id}/{session_id}/",
-                f"code-interpreter-workspace/{user_id}/{session_id}/",
+                ci_prefix,
                 f"documents/{user_id}/{session_id}/",
             ]
         else:

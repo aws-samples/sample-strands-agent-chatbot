@@ -12,11 +12,13 @@ from typing import Any, Dict, Optional
 
 import boto3
 
+from workspace.paths import code_interpreter_prefix
+
 logger = logging.getLogger(__name__)
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9_-]+$")
-_STATE_ACCESS_POINT_ID = "ci_workspace_access_point_id"
-_STATE_ACCESS_POINT_ARN = "ci_workspace_access_point_arn"
+_STATE_ACCESS_POINT_ID = "ci_workspace_access_point_v2_id"
+_STATE_ACCESS_POINT_ARN = "ci_workspace_access_point_v2_arn"
 
 
 def get_s3_files_configuration() -> Optional[Dict[str, str]]:
@@ -76,10 +78,13 @@ def get_or_create_session_access_point(
     agent_state: Any,
     user_id: str,
     session_id: str,
-) -> Optional[Dict[str, str]]:
+) -> Dict[str, str]:
     config = get_s3_files_configuration()
     if not config:
-        return None
+        raise RuntimeError(
+            "S3 Files workspace is not configured: "
+            "S3_FILES_FILE_SYSTEM_ID and S3_FILES_FILE_SYSTEM_ARN are required"
+        )
 
     _validate_identity(user_id, "user_id")
     _validate_identity(session_id, "session_id")
@@ -111,7 +116,7 @@ def get_or_create_session_access_point(
         f"{config['file_system_id']}:{user_id}:{session_id}:code-interpreter"
     )
     client_token = hashlib.sha256(token_source.encode("utf-8")).hexdigest()
-    root_path = f"/code-interpreter-workspace/{user_id}/{session_id}"
+    root_path = f"/{code_interpreter_prefix(user_id, session_id).rstrip('/')}"
     response = client.create_access_point(
         clientToken=client_token,
         fileSystemId=config["file_system_id"],

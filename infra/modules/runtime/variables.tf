@@ -136,6 +136,12 @@ variable "workspace_file_system_arn" {
   default = ""
 }
 
+variable "enable_workspace_access_points" {
+  description = "Allow this runtime to create session-scoped S3 Files access points."
+  type        = bool
+  default     = false
+}
+
 variable "read_only_bucket_arns" {
   type    = list(string)
   default = []

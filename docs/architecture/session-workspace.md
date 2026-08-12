@@ -26,7 +26,7 @@ The initial repository maps existing S3 prefixes into these namespaces:
 | Logical path | Current storage prefix |
 | --- | --- |
 | `documents/` | `documents/{userId}/{sessionId}/` |
-| `code-interpreter/` | `code-interpreter-workspace/{userId}/{sessionId}/` |
+| `code-interpreter/` | `code-interpreter-workspace/{workspaceId}/` |
 | `code-agent/` | `code-agent-workspace/{userId}/{sessionId}/` |
 
 The repository contract supports directory listing, file metadata, preview, and
@@ -64,13 +64,17 @@ workspace API.
 Code Interpreter receives a dynamically created access point rooted at:
 
 ```text
-/code-interpreter-workspace/{userId}/{sessionId}
+/code-interpreter-workspace/{workspaceId}
 ```
 
 That access point is mounted at `/mnt/workspace`. The access point root is the
 security boundary; path validation or a working directory is not treated as an
 isolation mechanism. A Code Interpreter session cannot traverse to another
 user or chat session.
+
+`workspaceId` is the first 48 hexadecimal characters of
+`SHA-256(userId + NUL + sessionId)`. The bounded opaque ID keeps the access
+point root below the S3 Files path-length limit.
 
 The trusted frontend task mounts an access point rooted at
 `/code-interpreter-workspace` read-only. Workspace API authorization still
@@ -88,7 +92,7 @@ Existing logical namespaces remain unchanged:
 ```text
 uploads/            S3 API, mapped to Code Interpreter inputs/
 documents/          S3 API
-code-interpreter/   S3 Files mount, with S3 API fallback
+code-interpreter/   S3 Files mount
 code-agent/         S3 API
 ```
 
@@ -104,17 +108,13 @@ pass through the frontend task. Dev currently accepts workspace uploads up to
 model context by at most 40,000 characters; the complete object remains in
 `inputs/` for Code Interpreter.
 S3 Files imports that prefix on first directory access. Code Interpreter output
-files are created directly in `/mnt/workspace`; the previous base64 preload and
-push path remains only as a rollout fallback.
+files are created directly in `/mnt/workspace`. Code Interpreter does not start
+when its session-scoped S3 Files mount cannot be configured or attached.
 
 Access point metadata is stored under the hidden
 `.workspace-access-points/{userId}/{sessionId}.json` prefix. Session deletion
 removes the access point best-effort before removing this registry object. File
 data follows the existing workspace retention policy.
-
-The dev rollout is controlled by `enable_s3_files_workspace`. Disabling it
-removes S3 Files IAM permissions, mounts, and environment configuration and
-returns Code Interpreter to the legacy synchronization path.
 
 ## Network Boundary
 

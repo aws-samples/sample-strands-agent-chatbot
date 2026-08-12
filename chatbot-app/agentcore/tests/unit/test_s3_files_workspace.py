@@ -43,10 +43,20 @@ def test_creates_session_scoped_access_point(mock_client, _sleep):
     request = client.create_access_point.call_args.kwargs
     assert request["fileSystemId"] == "fs-123"
     assert request["rootDirectory"]["path"] == (
-        "/code-interpreter-workspace/user-1/session-1"
+        "/code-interpreter-workspace/"
+        "c75baf0822512599e9fb5404e22693cffa5c19b706f1f6c2"
     )
+    assert len(request["rootDirectory"]["path"]) <= 100
     assert "tags" not in request
-    assert values["ci_workspace_access_point_id"] == "ap-123"
+    assert values["ci_workspace_access_point_v2_id"] == "ap-123"
+
+
+def test_workspace_path_is_bounded_for_long_runtime_session_ids():
+    from workspace.paths import code_interpreter_prefix
+
+    root_path = "/" + code_interpreter_prefix("u" * 64, "s" * 100).rstrip("/")
+
+    assert len(root_path) == 76
 
 
 @patch.dict(
@@ -65,11 +75,12 @@ def test_rejects_identity_that_can_escape_root():
 
 
 @patch.dict("os.environ", {}, clear=True)
-def test_returns_none_when_s3_files_is_disabled():
+def test_raises_when_s3_files_is_not_configured():
     from workspace.s3_files import get_or_create_session_access_point
 
-    assert get_or_create_session_access_point(
-        MagicMock(),
-        "user-1",
-        "session-1",
-    ) is None
+    with pytest.raises(RuntimeError, match="S3 Files workspace is not configured"):
+        get_or_create_session_access_point(
+            MagicMock(),
+            "user-1",
+            "session-1",
+        )

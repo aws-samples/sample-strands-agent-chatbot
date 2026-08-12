@@ -13,6 +13,7 @@ import {
   symlink,
   writeFile,
 } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -22,7 +23,13 @@ describe('mounted Code Interpreter workspace', () => {
 
   beforeEach(async () => {
     mountPath = await mkdtemp(join(tmpdir(), 'workspace-mount-'))
-    sessionRoot = join(mountPath, 'user-1', 'session-1')
+    const workspaceId = createHash('sha256')
+      .update('user-1')
+      .update('\0')
+      .update('session-1')
+      .digest('hex')
+      .slice(0, 48)
+    sessionRoot = join(mountPath, workspaceId)
     await mkdir(sessionRoot, { recursive: true })
     vi.stubEnv('S3_FILES_MOUNT_PATH', mountPath)
     vi.stubEnv('ARTIFACT_BUCKET', 'workspace-bucket')

@@ -8,6 +8,7 @@
  * - Error responses
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { createHash } from 'node:crypto'
 
 // Mock dependencies
 vi.mock('@/lib/auth-utils', () => ({
@@ -324,7 +325,13 @@ describe('Workspace Download API', async () => {
 
     it('should map code-interpreter paths', async () => {
       const path = 'code-interpreter/chart.png'
-      const expected = `code-interpreter-workspace/${userId}/${sessionId}/chart.png`
+      const workspaceId = createHash('sha256')
+        .update(userId)
+        .update('\0')
+        .update(sessionId)
+        .digest('hex')
+        .slice(0, 48)
+      const expected = `code-interpreter-workspace/${workspaceId}/chart.png`
       const result = toS3Key(userId, sessionId, path)
       expect(result).toBe(expected)
     })
@@ -388,9 +395,15 @@ describe('Workspace Download API', async () => {
 
 // Reusable path mapper (mirrors route.ts logic)
 function toS3Key(userId: string, sessionId: string, path: string): string {
+  const workspaceId = createHash('sha256')
+    .update(userId)
+    .update('\0')
+    .update(sessionId)
+    .digest('hex')
+    .slice(0, 48)
   const NAMESPACE_MAP: [string, string][] = [
     ['code-agent', `code-agent-workspace/${userId}/${sessionId}/`],
-    ['code-interpreter', `code-interpreter-workspace/${userId}/${sessionId}/`],
+    ['code-interpreter', `code-interpreter-workspace/${workspaceId}/`],
     ['documents', `documents/${userId}/${sessionId}/`],
   ]
   const cleanPath = path.replace(/^\//, '')

@@ -286,6 +286,7 @@ def auto_store_files(
             import boto3
 
             from workspace.config import get_workspace_bucket
+            from workspace.paths import code_interpreter_prefix
 
             s3 = boto3.client(
                 "s3",
@@ -294,7 +295,7 @@ def auto_store_files(
             bucket = get_workspace_bucket()
             for file_info in uploaded_files:
                 key = (
-                    f"code-interpreter-workspace/{user_id}/{session_id}/"
+                    f"{code_interpreter_prefix(user_id, session_id)}"
                     f"inputs/{file_info['filename']}"
                 )
                 try:

@@ -885,6 +885,17 @@ export const useStreamEvents = ({
         }
       }
 
+      const codeInterpreterMayHaveChangedWorkspace = currentToolExecutionsRef.current.some(
+        toolExec => (
+          toolExec.isComplete
+          && !toolExec.isCancelled
+          && ['execute_code', 'execute_command', 'file_operations'].includes(toolExec.toolName)
+        ),
+      )
+      if (codeInterpreterMayHaveChangedWorkspace) {
+        window.dispatchEvent(new CustomEvent('workspace-files-changed'))
+      }
+
       // Trigger Excalidraw diagram artifact creation (JSON content direct from tool result)
       if (onExcalidrawCreated) {
         for (const toolExec of currentToolExecutionsRef.current) {

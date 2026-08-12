@@ -6,6 +6,7 @@ import {
 } from '@aws-sdk/client-s3'
 import { GetParameterCommand, SSMClient } from '@aws-sdk/client-ssm'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
+import { createHash } from 'node:crypto'
 import { constants as fsConstants, type Stats } from 'node:fs'
 import type { FileHandle } from 'node:fs/promises'
 import { open, readdir, realpath, stat } from 'node:fs/promises'
@@ -30,13 +31,24 @@ interface Namespace {
   prefix: (userId: string, sessionId: string) => string
 }
 
+function codeInterpreterWorkspaceId(userId: string, sessionId: string): string {
+  return createHash('sha256')
+    .update(userId)
+    .update('\0')
+    .update(sessionId)
+    .digest('hex')
+    .slice(0, 48)
+}
+
+function codeInterpreterPrefix(userId: string, sessionId: string): string {
+  return `code-interpreter-workspace/${codeInterpreterWorkspaceId(userId, sessionId)}/`
+}
+
 const NAMESPACES: Namespace[] = [
   {
     logicalPath: 'uploads',
     label: 'Uploads',
-    prefix: (userId, sessionId) => (
-      `code-interpreter-workspace/${userId}/${sessionId}/inputs/`
-    ),
+    prefix: (userId, sessionId) => `${codeInterpreterPrefix(userId, sessionId)}inputs/`,
   },
   {
     logicalPath: 'documents',
@@ -46,7 +58,7 @@ const NAMESPACES: Namespace[] = [
   {
     logicalPath: 'code-interpreter',
     label: 'Code Interpreter',
-    prefix: (userId, sessionId) => `code-interpreter-workspace/${userId}/${sessionId}/`,
+    prefix: codeInterpreterPrefix,
   },
   {
     logicalPath: 'code-agent',
@@ -246,11 +258,9 @@ async function mountedSessionRoot(
     throw error
   })
   if (!mountRoot) return undefined
-  const userRoot = await findMountedEntry(mountRoot, userId, 'directory')
-  if (!userRoot) return undefined
-  const sessionRoot = await findMountedEntry(userRoot, sessionId, 'directory')
-  if (!sessionRoot) return undefined
-  return realpath(sessionRoot)
+  const workspaceId = codeInterpreterWorkspaceId(userId, sessionId)
+  const sessionRoot = await findMountedEntry(mountRoot, workspaceId, 'directory')
+  return sessionRoot ? realpath(sessionRoot) : undefined
 }
 
 async function resolveMountedPath(

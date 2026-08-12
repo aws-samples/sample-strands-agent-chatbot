@@ -134,7 +134,10 @@ describe('S3WorkspaceRepository', () => {
     })
     expect(vi.mocked(getSignedUrl).mock.calls[0][1].input).toMatchObject({
       Bucket: 'workspace-bucket',
-      Key: 'code-interpreter-workspace/user-1/session-1/inputs/records.jsonl',
+      Key: (
+        'code-interpreter-workspace/'
+        + 'c75baf0822512599e9fb5404e22693cffa5c19b706f1f6c2/inputs/records.jsonl'
+      ),
       ContentType: 'application/x-ndjson',
     })
     expect(send).not.toHaveBeenCalled()
