@@ -22,7 +22,8 @@ from workspace.paths import code_interpreter_prefix
 
 logger = logging.getLogger(__name__)
 
-# Extensions treated as binary (base64 encoded on read)
+# Extensions treated as binary. Binary payloads must not be returned as text:
+# a single base64-encoded Office file can exceed the model context window.
 _BINARY_EXTENSIONS = {
     '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico', '.svg',
     '.pdf', '.pptx', '.ppt', '.docx', '.doc', '.xlsx', '.xls',
@@ -135,7 +136,8 @@ def workspace_read(path: str, tool_context: ToolContext = None) -> str:
     """Read a file from the shared session workspace.
 
     Text files are returned as plain strings.
-    Binary files (images, PDFs, Office docs) are returned base64-encoded.
+    Binary files return metadata only; use the relevant document tool or Code
+    Interpreter to inspect their contents.
 
     Args:
         path: Logical path, e.g.:
@@ -145,7 +147,7 @@ def workspace_read(path: str, tool_context: ToolContext = None) -> str:
               'documents/image/chart.png'
 
     Returns:
-        JSON with content (text or base64), encoding, and size.
+        JSON with text content, or metadata for binary files.
     """
     try:
         user_id, session_id = _get_ids(tool_context)
@@ -155,12 +157,16 @@ def workspace_read(path: str, tool_context: ToolContext = None) -> str:
         s3_key = _to_s3_key(user_id, session_id, path)
         response = s3.get_object(Bucket=bucket, Key=s3_key)
         if _is_binary(path):
-            data = response['Body'].read()
+            size = int(response.get('ContentLength', 0))
             return json.dumps({
                 'path': path,
-                'encoding': 'base64',
-                'content': base64.b64encode(data).decode('utf-8'),
-                'size': len(data),
+                'encoding': 'binary',
+                'size': size,
+                'content_omitted': True,
+                'message': (
+                    'Binary content is not returned inline. Use the appropriate '
+                    'document/presentation tool or Code Interpreter to inspect this file.'
+                ),
                 'status': 'ok',
             })
         else:

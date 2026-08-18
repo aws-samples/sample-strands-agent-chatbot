@@ -659,7 +659,11 @@ class TestInvocationsEndpoint:
             "/invocations",
             headers={
                 "Authorization": (
-                    f"Bearer {_unsigned_test_token({'client_id': 'trusted-service'})}"
+                    "Bearer "
+                    + _unsigned_test_token({
+                        "client_id": "trusted-service",
+                        "sub": "trusted-service-token-subject",
+                    })
                 )
             },
             json={

@@ -7,8 +7,10 @@ Skill infrastructure tools for progressive disclosure.
 
 import asyncio
 import concurrent.futures
+import copy
 import json
 import logging
+import os
 from datetime import timedelta
 
 from strands import tool
@@ -20,6 +22,128 @@ logger = logging.getLogger(__name__)
 
 # Module-level registry reference, set by SkillChatAgent during init
 _registry = None
+_DEFAULT_SKILL_RESULT_MAX_CHARS = 100_000
+
+
+def _skill_result_max_chars() -> int:
+    try:
+        return max(1_000, int(os.getenv(
+            "SKILL_RESULT_MAX_CHARS",
+            str(_DEFAULT_SKILL_RESULT_MAX_CHARS),
+        )))
+    except ValueError:
+        return _DEFAULT_SKILL_RESULT_MAX_CHARS
+
+
+def _truncate_result_text(text: str, max_chars: int) -> str:
+    """Keep a bounded start/end preview of oversized tool text."""
+    if len(text) <= max_chars:
+        return text
+    marker = f"\n... [tool result truncated, {len(text) - max_chars:,} chars omitted] ...\n"
+    if max_chars <= len(marker):
+        return marker[:max_chars]
+    preview_chars = max(0, max_chars - len(marker))
+    start_chars = (preview_chars + 1) // 2
+    end_chars = preview_chars // 2
+    return text[:start_chars] + marker + (text[-end_chars:] if end_chars else "")
+
+
+def _strip_inline_base64_envelope(value):
+    """Remove binary text from common JSON envelopes while retaining metadata."""
+    if not isinstance(value, dict):
+        return value
+    if str(value.get("encoding", "")).lower() != "base64":
+        return value
+    if not isinstance(value.get("content"), str):
+        return value
+
+    sanitized = dict(value)
+    sanitized.pop("content", None)
+    sanitized["content_omitted"] = True
+    sanitized.setdefault(
+        "message",
+        "Inline base64 content was omitted. Use the appropriate file-processing tool.",
+    )
+    return sanitized
+
+
+def _content_embeds_metadata(content) -> bool:
+    if not isinstance(content, list):
+        return False
+    for block in content:
+        if not isinstance(block, dict) or not isinstance(block.get("text"), str):
+            continue
+        try:
+            parsed = json.loads(block["text"])
+        except (TypeError, ValueError):
+            continue
+        if isinstance(parsed, dict) and "metadata" in parsed:
+            return True
+    return False
+
+
+def _sanitize_content_text(text: str, max_chars: int) -> str:
+    """Sanitize a text block while keeping structured response envelopes valid."""
+    try:
+        parsed = json.loads(text)
+    except (TypeError, ValueError):
+        return _truncate_result_text(text, max_chars)
+
+    sanitized = _strip_inline_base64_envelope(parsed)
+    if isinstance(sanitized, dict) and isinstance(sanitized.get("text"), str):
+        nested_text = sanitized["text"]
+        without_text = dict(sanitized)
+        without_text["text"] = ""
+        overhead = len(json.dumps(without_text, ensure_ascii=False, default=str))
+        nested_limit = max(0, max_chars - overhead)
+        for _ in range(3):
+            sanitized["text"] = _truncate_result_text(nested_text, nested_limit)
+            serialized = json.dumps(sanitized, ensure_ascii=False, default=str)
+            overflow = len(serialized) - max_chars
+            if overflow <= 0:
+                return serialized
+            nested_limit = max(0, nested_limit - overflow)
+
+    serialized = json.dumps(sanitized, ensure_ascii=False, default=str)
+    return _truncate_result_text(serialized, max_chars)
+
+
+def _sanitize_skill_result(result, max_chars: int | None = None):
+    """Bound textual tool output without modifying native image/document blocks."""
+    limit = max_chars or _skill_result_max_chars()
+
+    if isinstance(result, str):
+        try:
+            parsed = json.loads(result)
+        except (TypeError, ValueError):
+            return _truncate_result_text(result, limit)
+
+        sanitized = _strip_inline_base64_envelope(parsed)
+        serialized = json.dumps(sanitized, ensure_ascii=False, default=str)
+        return _truncate_result_text(serialized, limit)
+
+    if isinstance(result, dict):
+        sanitized = copy.deepcopy(_strip_inline_base64_envelope(result))
+        content = sanitized.get("content")
+        if isinstance(content, list):
+            remaining = limit
+            for block in content:
+                if not isinstance(block, dict) or not isinstance(block.get("text"), str):
+                    continue
+                text = block["text"]
+                block["text"] = _sanitize_content_text(text, remaining)
+                remaining = max(0, remaining - len(block["text"]))
+            if "metadata" in sanitized and _content_embeds_metadata(content):
+                sanitized.pop("metadata", None)
+            return sanitized
+
+        serialized = json.dumps(sanitized, ensure_ascii=False, default=str)
+        if len(serialized) > limit:
+            return _truncate_result_text(serialized, limit)
+        return sanitized
+
+    text = str(result)
+    return _truncate_result_text(text, limit)
 
 
 def set_dispatcher_registry(registry) -> None:
@@ -360,21 +484,23 @@ def skill_executor(
     try:
         # ========== Script Execution Path ==========
         if script_name:
-            return _execute_script(
+            result = _execute_script(
                 tool_context=tool_context,
                 skill_name=skill_name,
                 script_name=script_name,
                 script_input=script_input or {},
             )
+            return _sanitize_skill_result(result)
 
         # ========== Tool Execution Path ==========
         if tool_name:
-            return _execute_tool(
+            result = _execute_tool(
                 tool_context=tool_context,
                 skill_name=skill_name,
                 tool_name=tool_name,
                 tool_input=tool_input or {},
             )
+            return _sanitize_skill_result(result)
 
     except Exception as e:
         logger.error(f"Error executing {skill_name}/{tool_name or script_name}: {e}")
