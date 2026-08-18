@@ -235,22 +235,26 @@ class TestWorkspaceRead:
 
     @patch('local_tools.workspace._s3_client')
     @patch('local_tools.workspace.get_workspace_bucket', return_value='my-bucket')
-    def test_reads_binary_file_as_base64(self, mock_bucket, mock_s3_factory):
-        import base64
+    def test_returns_binary_metadata_without_inline_content(self, mock_bucket, mock_s3_factory):
         mock_s3 = MagicMock()
         mock_s3_factory.return_value = mock_s3
-        binary_data = b'\x89PNG\r\n\x1a\n'
+        body = MagicMock()
         mock_s3.get_object.return_value = {
-            'Body': MagicMock(read=MagicMock(return_value=binary_data))
+            'Body': body,
+            'ContentLength': 1_325_581,
         }
 
         from local_tools.workspace import workspace_read
-        result = workspace_read(path='code-interpreter/chart.png', tool_context=_make_context())
+        result = workspace_read(path='uploads/deck.pptx', tool_context=_make_context())
         data = json.loads(result)
 
         assert data['status'] == 'ok'
-        assert data['encoding'] == 'base64'
-        assert base64.b64decode(data['content']) == binary_data
+        assert data['encoding'] == 'binary'
+        assert data['size'] == 1_325_581
+        assert data['content_omitted'] is True
+        assert 'content' not in data
+        assert 'presentation tool' in data['message']
+        body.read.assert_not_called()
 
     @patch('local_tools.workspace._s3_client')
     @patch('local_tools.workspace.get_workspace_bucket', return_value='my-bucket')

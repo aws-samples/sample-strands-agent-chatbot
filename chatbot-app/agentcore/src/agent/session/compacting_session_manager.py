@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from strands.agent.agent import Agent
 
 logger = logging.getLogger(__name__)
+_HARD_TOOL_RESULT_LENGTH = 100_000
 
 
 @dataclass
@@ -571,7 +572,9 @@ class CompactingSessionManager(AgentCoreMemorySessionManager):
         - Truncating toolResult.content (large tool outputs)
         - Replacing image blocks with text placeholders
 
-        Protected messages (recent turns) are NOT truncated to preserve latest context.
+        Protected messages skip normal compaction, but a hard safety limit still
+        applies to textual tool results. This lets a poisoned recent turn recover
+        instead of repeatedly overflowing before compaction can run.
 
         Args:
             messages: List of message dicts
@@ -588,9 +591,7 @@ class CompactingSessionManager(AgentCoreMemorySessionManager):
             protected_indices = set()
 
         for msg_idx, msg in enumerate(modified_messages):
-            # Skip protected messages (recent turns)
-            if msg_idx in protected_indices:
-                continue
+            is_protected = msg_idx in protected_indices
             content = msg.get('content', [])
             if not isinstance(content, list):
                 continue
@@ -602,6 +603,8 @@ class CompactingSessionManager(AgentCoreMemorySessionManager):
 
                 # Replace image blocks with placeholder
                 if 'image' in block:
+                    if is_protected:
+                        continue
                     image_data = block['image']
                     image_format = image_data.get('format', 'unknown')
                     source = image_data.get('source', {})
@@ -616,6 +619,8 @@ class CompactingSessionManager(AgentCoreMemorySessionManager):
 
                 # Replace document blocks with placeholder
                 elif 'document' in block:
+                    if is_protected:
+                        continue
                     doc_data = block['document']
                     doc_format = doc_data.get('format', 'unknown')
                     doc_name = doc_data.get('name', 'unknown')
@@ -631,6 +636,8 @@ class CompactingSessionManager(AgentCoreMemorySessionManager):
 
                 # Truncate toolUse input
                 elif 'toolUse' in block:
+                    if is_protected:
+                        continue
                     tool_use = block['toolUse']
                     tool_input = tool_use.get('input', {})
 
@@ -656,6 +663,8 @@ class CompactingSessionManager(AgentCoreMemorySessionManager):
 
                             # Replace image in toolResult with placeholder
                             if 'image' in result_block:
+                                if is_protected:
+                                    continue
                                 image_data = result_block['image']
                                 image_format = image_data.get('format', 'unknown')
                                 source = image_data.get('source', {})
@@ -673,22 +682,49 @@ class CompactingSessionManager(AgentCoreMemorySessionManager):
 
                             elif 'text' in result_block:
                                 text = result_block['text']
-                                if len(text) > self.max_tool_content_length:
+                                replacement = self._strip_base64_tool_result(text)
+                                if replacement is not None:
                                     original_len = len(text)
-                                    result_block['text'] = self._truncate_text(text, self.max_tool_content_length)
+                                    result_block['text'] = replacement
                                     truncation_count += 1
-                                    total_chars_saved += original_len - self.max_tool_content_length
+                                    total_chars_saved += max(0, original_len - len(replacement))
+                                    continue
+
+                                limit = (
+                                    _HARD_TOOL_RESULT_LENGTH
+                                    if is_protected
+                                    else self.max_tool_content_length
+                                )
+                                if len(text) > limit:
+                                    original_len = len(text)
+                                    result_block['text'] = self._truncate_text(text, limit)
+                                    truncation_count += 1
+                                    total_chars_saved += original_len - limit
 
                             elif 'json' in result_block:
                                 json_content = result_block['json']
+                                sanitized_json = self._strip_base64_json_envelope(json_content)
+                                if sanitized_json is not None:
+                                    original_len = len(json.dumps(json_content, ensure_ascii=False))
+                                    result_block['json'] = sanitized_json
+                                    replacement_len = len(json.dumps(sanitized_json, ensure_ascii=False))
+                                    truncation_count += 1
+                                    total_chars_saved += max(0, original_len - replacement_len)
+                                    continue
+
                                 json_str = json.dumps(json_content, ensure_ascii=False)
-                                if len(json_str) > self.max_tool_content_length:
+                                limit = (
+                                    _HARD_TOOL_RESULT_LENGTH
+                                    if is_protected
+                                    else self.max_tool_content_length
+                                )
+                                if len(json_str) > limit:
                                     original_len = len(json_str)
                                     # Simply convert to truncated text instead of recursive dict processing
                                     result_block.pop('json')
-                                    result_block['text'] = self._truncate_text(json_str, self.max_tool_content_length)
+                                    result_block['text'] = self._truncate_text(json_str, limit)
                                     truncation_count += 1
-                                    total_chars_saved += original_len - self.max_tool_content_length
+                                    total_chars_saved += original_len - limit
 
         if truncation_count > 0:
             logger.debug(
@@ -697,6 +733,35 @@ class CompactingSessionManager(AgentCoreMemorySessionManager):
             )
 
         return modified_messages, truncation_count, total_chars_saved
+
+    @staticmethod
+    def _strip_base64_json_envelope(value: Any) -> Optional[Dict[str, Any]]:
+        if not isinstance(value, dict):
+            return None
+        if str(value.get("encoding", "")).lower() != "base64":
+            return None
+        if not isinstance(value.get("content"), str):
+            return None
+
+        sanitized = dict(value)
+        sanitized.pop("content", None)
+        sanitized["content_omitted"] = True
+        sanitized.setdefault(
+            "message",
+            "Inline base64 content omitted during context recovery.",
+        )
+        return sanitized
+
+    @classmethod
+    def _strip_base64_tool_result(cls, text: str) -> Optional[str]:
+        try:
+            parsed = json.loads(text)
+        except (TypeError, ValueError):
+            return None
+        sanitized = cls._strip_base64_json_envelope(parsed)
+        if sanitized is None:
+            return None
+        return json.dumps(sanitized, ensure_ascii=False)
 
     @staticmethod
     def _estimate_tokens(messages: List[Dict]) -> int:
@@ -852,7 +917,25 @@ class CompactingSessionManager(AgentCoreMemorySessionManager):
                 self.compaction_state = self.load_compaction_state(agent)
                 conv_manager_offset = agent.conversation_manager.removed_message_count
                 checkpoint = self.compaction_state.checkpoint
-                effective_offset = max(conv_manager_offset, checkpoint)
+                # A custom summary and Sliding Window's removed count are separate
+                # coordinate systems. Prefer the summarized checkpoint when one
+                # exists; taking max() can drop the unsummarized gap between them.
+                if checkpoint > 0 and self.compaction_state.summary:
+                    effective_offset = min(checkpoint, len(all_session_messages))
+                    if conv_manager_offset != effective_offset:
+                        logger.warning(
+                            "[Compaction] Reconciling conversation-manager offset "
+                            f"{conv_manager_offset} -> summarized checkpoint {effective_offset}"
+                        )
+                        agent.conversation_manager.removed_message_count = effective_offset
+                else:
+                    effective_offset = min(conv_manager_offset, len(all_session_messages))
+                    if conv_manager_offset != effective_offset:
+                        logger.warning(
+                            "[Compaction] Clamping conversation-manager offset "
+                            f"{conv_manager_offset} -> {effective_offset}"
+                        )
+                        agent.conversation_manager.removed_message_count = effective_offset
 
                 stage = "none"
                 self._valid_cutoff_message_ids = []
@@ -867,7 +950,7 @@ class CompactingSessionManager(AgentCoreMemorySessionManager):
                 messages_to_process = [sm.to_message() for sm in session_messages]
                 original_message_count = len(messages_to_process)
 
-                if checkpoint > 0 and effective_offset >= checkpoint:
+                if checkpoint > 0 and self.compaction_state.summary:
                     if self.compaction_state.summary and messages_to_process:
                         summary_prefix = f"""<conversation_summary>
 The following is a summary of our previous conversation:
@@ -881,13 +964,15 @@ Please continue the conversation with this context in mind.
                         messages_to_process = self._prepend_summary_to_first_message(messages_to_process, summary_prefix)
                     stage = "checkpoint"
 
-                # Truncate tool output only when the conversation is actually
-                # near the model's limit. Doing it on every load discarded
-                # detail that a 1M-token model had room for.
+                # Normal compaction runs near the model limit. The hard result
+                # cap runs on every load, including protected recent turns, so
+                # existing sessions containing inline base64 can recover.
                 should_truncate, estimated_tokens = self._should_truncate(messages_to_process)
-                truncation_count = 0
+                protected_indices = self._find_protected_message_indices(
+                    messages_to_process,
+                    self.protected_turns,
+                )
                 if should_truncate:
-                    protected_indices = self._find_protected_message_indices(messages_to_process, self.protected_turns)
                     truncated_messages, truncation_count, chars_saved = self._truncate_tool_contents(
                         messages_to_process, protected_indices=protected_indices
                     )
@@ -896,7 +981,11 @@ Please continue the conversation with this context in mind.
                         f"~{estimated_tokens:,} estimated tokens >= {self.truncation_threshold:,} threshold"
                     )
                 else:
-                    truncated_messages = messages_to_process
+                    all_protected = set(range(len(messages_to_process)))
+                    truncated_messages, truncation_count, chars_saved = self._truncate_tool_contents(
+                        messages_to_process,
+                        protected_indices=all_protected,
+                    )
                     # info, not debug: this is the decision the model-sized
                     # threshold exists to make, and the only record of which
                     # threshold was in effect for this model. At debug level it
@@ -906,6 +995,11 @@ Please continue the conversation with this context in mind.
                         f"[Compaction] Skipped truncation: ~{estimated_tokens:,} estimated tokens "
                         f"< {self.truncation_threshold:,} threshold"
                     )
+                    if truncation_count:
+                        logger.warning(
+                            f"[Compaction] Emergency-truncated {truncation_count} protected "
+                            f"tool result block(s), saving ~{chars_saved:,} chars"
+                        )
 
                 if truncation_count > 0:
                     stage = "checkpoint+truncation" if stage == "checkpoint" else "truncation"
@@ -945,11 +1039,28 @@ Please continue the conversation with this context in mind.
         if input_tokens > self.token_threshold:
             logger.info(f"Threshold exceeded: {input_tokens:,} > {self.token_threshold:,}")
 
-            # Always recompute cutoff points from current agent.messages
-            # Cache from initialize() becomes stale as new messages are appended
+            # Checkpoints are persisted-history offsets. Recompute from the full
+            # repository rather than agent.messages, which Sliding Window may
+            # already have trimmed and whose indices are therefore relative.
+            persisted_messages = None
+            repository = getattr(self, "session_repository", None)
+            if repository is not None:
+                try:
+                    stored = repository.list_messages(
+                        session_id=self.session_id,
+                        agent_id=agent_id,
+                    )
+                    persisted_messages = [sm.to_message() for sm in stored]
+                except Exception as e:
+                    logger.warning(
+                        "[Compaction] Failed to reload persisted messages; "
+                        f"using current agent history: {e}"
+                    )
+
+            source_messages = persisted_messages if persisted_messages is not None else agent.messages
             self._valid_cutoff_message_ids = []
             self._all_messages_for_summary = []
-            for idx, msg in enumerate(agent.messages):
+            for idx, msg in enumerate(source_messages):
                 self._all_messages_for_summary.append(msg)
                 if msg.get('role') == 'user' and not self._has_tool_result(msg):
                     self._valid_cutoff_message_ids.append(idx)

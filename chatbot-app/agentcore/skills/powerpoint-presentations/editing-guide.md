@@ -44,7 +44,7 @@ The response includes:
 | Action | Required Fields | Description |
 |--------|----------------|-------------|
 | `set_text` | `element_id`, `text` | Replace all text in a shape |
-| `replace_text` | `element_id`, `old_text`, `new_text` | Replace specific text within a shape (preserves formatting) |
+| `replace_text` | `element_id`, `find`, `replace` | Replace specific text within a shape (preserves formatting) |
 | `replace_image` | `element_id`, `image_path` | Replace an existing image with a new one |
 
 ### EMU Unit Reference
@@ -92,10 +92,9 @@ If you need to add completely new visual elements or restructure a slide:
     {
       "slide_index": 1,
       "operations": [
-        { "action": "replace_text", "element_id": 3, "old_text": "Q3", "new_text": "Q4" }
+        { "action": "replace_text", "element_id": 3, "find": "Q3", "replace": "Q4" }
       ]
     }
   ]
 }
 ```
-

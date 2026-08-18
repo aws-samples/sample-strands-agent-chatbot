@@ -94,15 +94,16 @@ def _resolve_user_id(
             return None
         return claimed or "anonymous"
 
+    expected_m2m_client = os.environ.get("M2M_CLIENT_ID")
+    if (
+        expected_m2m_client
+        and claims.get("client_id") == expected_m2m_client
+        and claimed
+    ):
+        return claimed
+
     subject = claims.get("sub")
     if not isinstance(subject, str) or not subject:
-        expected_m2m_client = os.environ.get("M2M_CLIENT_ID")
-        if (
-            expected_m2m_client
-            and claims.get("client_id") == expected_m2m_client
-            and claimed
-        ):
-            return claimed
         raise HTTPException(status_code=401, detail="Bearer token subject is required")
     if claimed and claimed != subject:
         raise HTTPException(status_code=403, detail="User identity mismatch")

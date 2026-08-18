@@ -208,3 +208,81 @@ class TestSkillExecutorMCPPath:
         parsed = json.loads(result)
         assert parsed["status"] == "error"
         assert "Connection closed" in parsed["error"]
+
+
+class TestSkillResultBudget:
+    def test_truncates_oversized_text_with_start_and_end_preview(self):
+        from skill.skill_tools import _sanitize_skill_result
+
+        result = _sanitize_skill_result("A" * 120 + "END", max_chars=100)
+
+        assert len(result) == 100
+        assert result.startswith("A")
+        assert result.endswith("END")
+        assert "tool result truncated" in result
+
+    def test_removes_inline_base64_json_envelope(self):
+        from skill.skill_tools import _sanitize_skill_result
+
+        result = _sanitize_skill_result(json.dumps({
+            "path": "uploads/deck.pptx",
+            "encoding": "base64",
+            "content": "A" * 20_000,
+            "size": 15_000,
+            "status": "ok",
+        }))
+        parsed = json.loads(result)
+
+        assert parsed["path"] == "uploads/deck.pptx"
+        assert parsed["size"] == 15_000
+        assert parsed["content_omitted"] is True
+        assert "content" not in parsed
+
+    def test_preserves_native_image_blocks_and_deduplicates_metadata(self):
+        from skill.skill_tools import _sanitize_skill_result
+
+        metadata = {"filename": "slide.png"}
+        image = {"image": {"format": "png", "source": {"bytes": b"png"}}}
+        result = _sanitize_skill_result({
+            "content": [
+                {"text": json.dumps({"text": "preview", "metadata": metadata})},
+                image,
+            ],
+            "status": "success",
+            "metadata": metadata,
+        })
+
+        assert result["content"][1] == image
+        assert result["status"] == "success"
+        assert "metadata" not in result
+
+    def test_bounds_text_inside_structured_content(self):
+        from skill.skill_tools import _sanitize_skill_result
+
+        result = _sanitize_skill_result({
+            "content": [{"text": "X" * 1_000}],
+            "status": "success",
+        }, max_chars=200)
+
+        assert len(result["content"][0]["text"]) == 200
+        assert result["status"] == "success"
+
+    def test_keeps_oversized_metadata_envelope_valid(self):
+        from skill.skill_tools import _sanitize_skill_result
+
+        result = _sanitize_skill_result({
+            "content": [{
+                "text": json.dumps({
+                    "text": "X" * 1_000,
+                    "metadata": {"filename": "report.pptx"},
+                }),
+            }],
+            "status": "success",
+            "metadata": {"filename": "report.pptx"},
+        }, max_chars=250)
+        envelope = json.loads(result["content"][0]["text"])
+
+        assert len(result["content"][0]["text"]) <= 250
+        assert "tool result truncated" in envelope["text"]
+        assert envelope["metadata"]["filename"] == "report.pptx"
+        assert "metadata" not in result
