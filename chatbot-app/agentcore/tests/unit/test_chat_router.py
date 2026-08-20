@@ -465,6 +465,7 @@ class TestMailboxDelivery:
             {"id": "artifact-1", "content": "# Report"},
         )
 
+        assert chat.create_agent.call_args.kwargs["tool_free"] is True
         processor.assert_not_called()
         assert agent.state.get("artifacts")["artifact-1"] == {
             "id": "artifact-1",
@@ -1444,3 +1445,26 @@ class TestModelConfiguration:
         assert "uploads/packets-pass-a.jsonl" in prompt
         assert "../not-allowed.jsonl" not in prompt
         assert "uploads/nested/not-allowed.jsonl" not in prompt
+
+    def test_workspace_attachment_paths_are_validated_for_delegation(self):
+        from routers.chat import _workspace_attachment_paths
+
+        assert _workspace_attachment_paths([
+            "uploads/deck.pptx",
+            "uploads/deck.pptx",
+            "../not-allowed.pptx",
+            "uploads/nested/not-allowed.pptx",
+        ]) == ["uploads/deck.pptx"]
+
+    def test_uploaded_files_become_required_code_agent_inputs(self):
+        from routers.chat import _uploaded_file_input_paths
+
+        assert _uploaded_file_input_paths([
+            {"filename": "deck.pptx"},
+            {"filename": "deck.pptx"},
+            {"filename": "notes.txt"},
+            {"not_filename": "ignored"},
+        ]) == [
+            "inputs/deck.pptx",
+            "inputs/notes.txt",
+        ]

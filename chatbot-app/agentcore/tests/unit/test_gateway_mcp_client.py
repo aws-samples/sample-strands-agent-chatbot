@@ -33,9 +33,15 @@ class TestMCPTransport:
             return FakeHttpClient()
 
         @asynccontextmanager
-        async def fake_streamable_http_client(url, *, http_client):
+        async def fake_streamable_http_client(
+            url,
+            *,
+            http_client,
+            terminate_on_close,
+        ):
             captured["url"] = url
             captured["http_client"] = http_client
+            captured["terminate_on_close"] = terminate_on_close
             yield expected_streams
 
         monkeypatch.setattr(mcp_client.httpx, "AsyncClient", fake_async_client)
@@ -56,6 +62,7 @@ class TestMCPTransport:
         assert captured["client_kwargs"]["auth"] is auth
         assert captured["client_kwargs"]["follow_redirects"] is True
         assert isinstance(captured["client_kwargs"]["timeout"], httpx.Timeout)
+        assert captured["terminate_on_close"] is False
 
 
 class TestNativeToolFilters:
@@ -122,6 +129,23 @@ class TestNativeToolFilters:
             enabled_tool_ids=["mcp_search_emails"],
             elicitation_bridge=None,
         )
+
+
+class TestToolFreeAgent:
+    def test_skips_skill_and_gateway_tool_loading(self, monkeypatch):
+        from agents.chat_agent import ChatAgent
+        from agents.skill_chat_agent import SkillChatAgent
+
+        inherited_loader = Mock(return_value=[])
+        monkeypatch.setattr(ChatAgent, "_load_tools", inherited_loader)
+        agent = SkillChatAgent.__new__(SkillChatAgent)
+        agent._tool_free = True
+        agent.enabled_tools = None
+        agent._closed = True
+
+        assert agent._load_tools() == []
+        assert agent.enabled_tools == []
+        inherited_loader.assert_called_once_with()
 
 
 class TestSkillExecutorMCPPath:

@@ -32,6 +32,7 @@ _ci_clients: Dict[str, Any] = {}
 _STATE_CI_SESSION_ID = "ci_session_id"
 _STATE_CI_IDENTIFIER = "ci_identifier"
 _STATE_CI_MOUNTED_WORKSPACE = "ci_mounted_workspace"
+_MOUNTED_WORKSPACE_VERSION = "root-v2"
 
 # Session timeout in seconds (1 hour; max is 28800 = 8 hours)
 _SESSION_TIMEOUT_SECONDS = 3600
@@ -119,7 +120,10 @@ def get_ci_session(tool_context: ToolContext) -> Any:
     # Step 1: Try in-process cache (fast path — same process, same turn or consecutive turns)
     ci = _ci_clients.get(session_key)
     if ci is not None:
-        if tool_context.agent.state.get(_STATE_CI_MOUNTED_WORKSPACE) is not True:
+        if (
+            tool_context.agent.state.get(_STATE_CI_MOUNTED_WORKSPACE)
+            != _MOUNTED_WORKSPACE_VERSION
+        ):
             logger.info("Discarding non-mounted cached CI session: %s", session_key)
             try:
                 ci.stop()
@@ -154,14 +158,17 @@ def get_ci_session(tool_context: ToolContext) -> Any:
     stored_session_id = agent_state.get(_STATE_CI_SESSION_ID)
     stored_identifier = agent_state.get(_STATE_CI_IDENTIFIER)
 
-    mounted_session = agent_state.get(_STATE_CI_MOUNTED_WORKSPACE) is True
+    mounted_session = (
+        agent_state.get(_STATE_CI_MOUNTED_WORKSPACE)
+        == _MOUNTED_WORKSPACE_VERSION
+    )
     if stored_session_id and stored_identifier and mounted_session:
         ci = CodeInterpreter(region)
         ci.identifier = stored_identifier
         ci.session_id = stored_session_id
         if _is_session_alive(ci, stored_identifier, stored_session_id):
             try:
-                _prepare_mounted_workspace(ci)
+                _prepare_mounted_workspace(ci, verify_write=True)
                 logger.info(f"Reattached to existing CI session: {stored_session_id}")
                 _ci_clients[session_key] = ci
                 return ci
@@ -227,13 +234,13 @@ def get_ci_session(tool_context: ToolContext) -> Any:
     # Store in agent.state for cross-turn persistence
     agent_state.set(_STATE_CI_SESSION_ID, ci.session_id)
     agent_state.set(_STATE_CI_IDENTIFIER, identifier)
-    agent_state.set(_STATE_CI_MOUNTED_WORKSPACE, True)
+    agent_state.set(_STATE_CI_MOUNTED_WORKSPACE, _MOUNTED_WORKSPACE_VERSION)
 
     # Cache in-process
     _ci_clients[session_key] = ci
 
     try:
-        _prepare_mounted_workspace(ci)
+        _prepare_mounted_workspace(ci, verify_write=True)
     except Exception as error:
         _ci_clients.pop(session_key, None)
         agent_state.set(_STATE_CI_SESSION_ID, None)
@@ -249,8 +256,8 @@ def get_ci_session(tool_context: ToolContext) -> Any:
     return ci
 
 
-def _prepare_mounted_workspace(ci: Any) -> None:
-    """Set the Code Interpreter working directory and trigger input import."""
+def _prepare_mounted_workspace(ci: Any, *, verify_write: bool = False) -> None:
+    """Set the working directory, trigger input import, and verify write access."""
     mount_path = os.getenv("S3_FILES_MOUNT_PATH", "/mnt/workspace")
     code = (
         "import os\n"
@@ -262,6 +269,15 @@ def _prepare_mounted_workspace(ci: Any) -> None:
         "if os.path.isdir(_inputs):\n"
         "    list(os.scandir(_inputs))\n"
     )
+    if verify_write:
+        code += (
+            "import tempfile\n"
+            "with tempfile.NamedTemporaryFile(\n"
+            "    dir=_mount, prefix='.workspace-write-probe-', delete=True\n"
+            ") as _probe:\n"
+            "    _probe.write(b'ok')\n"
+            "    _probe.flush()\n"
+        )
     response = ci.invoke("executeCode", {
         "code": code,
         "language": "python",

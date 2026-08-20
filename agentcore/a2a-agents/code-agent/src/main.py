@@ -43,7 +43,12 @@ from claude_agent_sdk import (
     CLIJSONDecodeError,
 )
 from .model_runtime import effective_model_id, needs_model_switch
-from .session_workspace import restore_s3_prefix, sync_session_inputs
+from .session_workspace import (
+    missing_required_inputs,
+    normalize_required_input_paths,
+    restore_s3_prefix,
+    sync_session_inputs,
+)
 
 # Claude Agent SDK cannot run inside an existing Claude Code session.
 # Unset CLAUDECODE so nested invocation is allowed in all environments.
@@ -563,6 +568,37 @@ class ClaudeCodeExecutor(AgentExecutor):
             if ARTIFACT_BUCKET
             else []
         )
+        try:
+            required_inputs = normalize_required_input_paths(
+                metadata.get("workspace_paths", [])
+            )
+        except ValueError as error:
+            await updater.submit()
+            await updater.add_artifact(
+                [Part(root=TextPart(text=f"Error: {error}"))],
+                name="error",
+            )
+            await updater.failed()
+            return
+
+        missing_inputs = missing_required_inputs(workspace, required_inputs)
+        if missing_inputs:
+            missing_list = ", ".join(f"`{path}`" for path in missing_inputs)
+            logger.error(
+                "[Workspace inputs] Required files were not synchronized: %s",
+                ", ".join(missing_inputs),
+            )
+            await updater.submit()
+            await updater.add_artifact(
+                [Part(root=TextPart(text=(
+                    "Error: Required Workspace input files were not synchronized: "
+                    f"{missing_list}. The task was not started."
+                )))],
+                name="error",
+            )
+            await updater.failed()
+            return
+
         task_text = build_task_with_files(task_text, file_descriptions)
 
         await updater.submit()

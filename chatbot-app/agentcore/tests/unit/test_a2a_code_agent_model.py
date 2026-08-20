@@ -53,6 +53,7 @@ def _context():
         "user_id": "user-1",
         "model_id": "openai.gpt-5.6-terra",
         "auth_token": None,
+        "workspace_paths": ["uploads/turn-context.md"],
     }
     context.agent = None
     return context
@@ -69,6 +70,7 @@ async def test_code_agent_high_uses_latest_opus(code_tool):
     await _drain(
         tool_impl(
             task="Implement the feature",
+            workspace_paths=["inputs/spec.md"],
             task_complexity="high",
             tool_context=_context(),
         )
@@ -78,13 +80,19 @@ async def test_code_agent_high_uses_latest_opus(code_tool):
     assert metadata["model_id"] == "us.anthropic.claude-opus-5"
     assert metadata["task_complexity"] == "high"
     assert metadata["orchestrator_model_id"] == "openai.gpt-5.6-terra"
+    assert metadata["workspace_paths"] == [
+        "uploads/turn-context.md",
+        "inputs/spec.md",
+    ]
 
 
 @pytest.mark.asyncio
 async def test_code_agent_defaults_to_sonnet(code_tool):
     tool, sent = code_tool
     tool_impl = tool._tool_func
-    await _drain(tool_impl(task="Fix a bug", tool_context=_context()))
+    await _drain(
+        tool_impl(task="Fix a bug", workspace_paths=[], tool_context=_context())
+    )
     assert sent[0]["metadata"]["model_id"] == "us.anthropic.claude-sonnet-5"
 
 
@@ -96,6 +104,7 @@ async def test_code_agent_rejects_invalid_complexity(code_tool):
         await _drain(
             tool_impl(
                 task="Fix a bug",
+                workspace_paths=[],
                 task_complexity="extreme",
                 tool_context=_context(),
             )
@@ -110,3 +119,4 @@ def test_code_agent_schema_exposes_complexity_enum(code_tool):
         "medium",
         "high",
     ]
+    assert "workspace_paths" in schema["required"]

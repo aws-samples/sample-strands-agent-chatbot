@@ -14,10 +14,12 @@ These tests verify:
 - Document manager inheritance and specialization
 """
 import pytest
-from unittest.mock import MagicMock, patch, ANY
+from unittest.mock import MagicMock, patch
 from typing import Dict, Any, List
 from datetime import datetime
-import json
+import hashlib
+
+from botocore.exceptions import ClientError
 
 
 # ============================================================
@@ -44,16 +46,50 @@ class MockS3Client:
         self.exceptions = MagicMock()
         self.exceptions.NoSuchKey = Exception
 
-    def put_object(self, Bucket: str, Key: str, Body: bytes, Metadata: Dict = None, ContentType: str = None):
+    def put_object(
+        self,
+        Bucket: str,
+        Key: str,
+        Body: bytes,
+        Metadata: Dict = None,
+        ContentType: str = None,
+        IfMatch: str = None,
+        IfNoneMatch: str = None,
+        Tagging: str = None,
+    ):
+        current_etag = (
+            f'"{hashlib.md5(self.objects[Key]).hexdigest()}"'
+            if Key in self.objects
+            else None
+        )
+        if IfMatch is not None and current_etag != IfMatch:
+            raise ClientError(
+                {'Error': {'Code': 'PreconditionFailed', 'Message': 'stale'}},
+                'PutObject',
+            )
+        if IfNoneMatch == "*" and Key in self.objects:
+            raise ClientError(
+                {'Error': {'Code': 'PreconditionFailed', 'Message': 'exists'}},
+                'PutObject',
+            )
         self.objects[Key] = Body
         self.metadata[Key] = Metadata or {}
-        return {}
+        return {'ETag': f'"{hashlib.md5(Body).hexdigest()}"'}
 
     def get_object(self, Bucket: str, Key: str):
         if Key not in self.objects:
             raise self.exceptions.NoSuchKey("NoSuchKey")
         return {
-            'Body': MagicMock(read=lambda: self.objects[Key])
+            'Body': MagicMock(read=lambda: self.objects[Key]),
+            'ETag': f'"{hashlib.md5(self.objects[Key]).hexdigest()}"',
+        }
+
+    def head_object(self, Bucket: str, Key: str):
+        if Key not in self.objects:
+            raise self.exceptions.NoSuchKey("NoSuchKey")
+        return {
+            'ContentLength': len(self.objects[Key]),
+            'ETag': f'"{hashlib.md5(self.objects[Key]).hexdigest()}"',
         }
 
     def list_objects_v2(self, Bucket: str, Prefix: str):
@@ -74,6 +110,11 @@ class MockS3Client:
             del self.objects[Key]
             if Key in self.metadata:
                 del self.metadata[Key]
+        return {}
+
+    def delete_objects(self, Bucket: str, Delete: Dict):
+        for item in Delete.get("Objects", []):
+            self.delete_object(Bucket=Bucket, Key=item["Key"])
         return {}
 
     def generate_presigned_url(self, operation: str, Params: Dict, ExpiresIn: int = 900):
@@ -330,6 +371,87 @@ class TestDocumentTypeManagers:
                 # Invalid
                 with pytest.raises(ValueError, match="must end with .pptx"):
                     manager.validate_pptx_filename("slides.ppt")
+
+    def test_powerpoint_manager_reads_canonical_workspace_upload(self, mock_s3):
+        with patch('workspace.base_manager.boto3.client', return_value=mock_s3):
+            with patch('workspace.base_manager.get_workspace_bucket', return_value='test-bucket'):
+                from workspace.managers import PowerPointManager
+
+                manager = PowerPointManager("user1", "session1")
+                manager.save_input("northstar.pptx", b"uploaded deck")
+
+                documents = manager.list_s3_documents()
+
+                assert [document["filename"] for document in documents] == [
+                    "northstar.pptx"
+                ]
+                assert documents[0]["scope"] == "input"
+                assert manager.load_from_s3("northstar.pptx") == b"uploaded deck"
+                assert not any(
+                    key.startswith("documents/")
+                    for key in mock_s3.objects
+                )
+
+    def test_powerpoint_manager_ignores_legacy_documents_namespace(self, mock_s3):
+        with patch('workspace.base_manager.boto3.client', return_value=mock_s3):
+            with patch('workspace.base_manager.get_workspace_bucket', return_value='test-bucket'):
+                from workspace.managers import PowerPointManager
+
+                manager = PowerPointManager("user1", "session1")
+                mock_s3.objects[
+                    "documents/user1/session1/powerpoint/legacy.pptx"
+                ] = b"legacy"
+
+                assert manager.list_s3_documents() == []
+                with pytest.raises(FileNotFoundError):
+                    manager.load_from_s3("legacy.pptx")
+
+    def test_powerpoint_manager_reuses_one_hidden_edit_draft(self, mock_s3):
+        with patch('workspace.base_manager.boto3.client', return_value=mock_s3):
+            with patch('workspace.base_manager.get_workspace_bucket', return_value='test-bucket'):
+                from workspace.managers import PowerPointManager
+
+                manager = PowerPointManager("user1", "session1")
+                manager.save_input("northstar.pptx", b"source")
+
+                first = manager.begin_edit("northstar.pptx")
+                second = manager.begin_edit("northstar.pptx")
+                draft_bytes, state = manager.load_edit(first["edit_id"])
+                manager.save_edit(
+                    first["edit_id"],
+                    b"edited",
+                    state["draft_etag"],
+                )
+
+                assert first["edit_id"] == second["edit_id"]
+                assert first["reused"] is False
+                assert second["reused"] is True
+                assert draft_bytes == b"source"
+                assert [d["filename"] for d in manager.list_s3_documents()] == [
+                    "northstar.pptx"
+                ]
+                assert len([
+                    key for key in mock_s3.objects
+                    if "/.drafts/powerpoint/" in key and key.endswith(".pptx")
+                ]) == 1
+
+    def test_powerpoint_manager_rejects_stale_draft_write(self, mock_s3):
+        with patch('workspace.base_manager.boto3.client', return_value=mock_s3):
+            with patch('workspace.base_manager.get_workspace_bucket', return_value='test-bucket'):
+                from workspace.managers import PowerPointManager
+
+                manager = PowerPointManager("user1", "session1")
+                manager.save_input("northstar.pptx", b"source")
+                edit = manager.begin_edit("northstar.pptx")
+                _, state = manager.load_edit(edit["edit_id"])
+                manager.save_edit(edit["edit_id"], b"first", state["draft_etag"])
+
+                with pytest.raises(RuntimeError, match="changed"):
+                    manager.save_edit(
+                        edit["edit_id"],
+                        b"stale",
+                        state["draft_etag"],
+                    )
 
     def test_image_manager_validates_image_extensions(self, mock_s3):
         """Test ImageManager validates supported image extensions."""

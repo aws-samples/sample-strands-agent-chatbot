@@ -112,7 +112,7 @@ def test_starts_session_with_required_filesystem_configuration(
         },
     }]
     ci.start.assert_not_called()
-    assert values["ci_mounted_workspace"] is True
+    assert values["ci_mounted_workspace"] == "root-v2"
     assert values["ci_session_id"] == "session-123"
 
 
@@ -189,7 +189,52 @@ def test_non_mounted_stored_session_is_not_reattached(
     ci.get_session.assert_not_called()
     ci.data_plane_client.start_code_interpreter_session.assert_called_once()
     assert values["ci_session_id"] == "new-mounted-session"
-    assert values["ci_mounted_workspace"] is True
+    assert values["ci_mounted_workspace"] == "root-v2"
+
+
+@patch("workspace.s3_files.get_or_create_session_access_point")
+@patch("bedrock_agentcore.tools.code_interpreter_client.CodeInterpreter")
+def test_legacy_mounted_session_is_replaced(
+    mock_code_interpreter,
+    mock_access_point,
+):
+    mock_access_point.return_value = {
+        "file_system_arn": "fs-arn",
+        "access_point_arn": "ap-arn",
+        "mount_path": "/mnt/workspace",
+    }
+    ci = mock_code_interpreter.return_value
+    ci.data_plane_client.start_code_interpreter_session.return_value = {
+        "codeInterpreterIdentifier": "ci-123",
+        "sessionId": "new-mounted-session",
+    }
+    ci.invoke.return_value = _exec_response()
+    ctx, values = _make_context(state_values={
+        "ci_identifier": "ci-123",
+        "ci_session_id": "legacy-mounted-session",
+        "ci_mounted_workspace": True,
+    })
+
+    from builtin_tools.code_interpreter_tool import get_ci_session
+
+    get_ci_session(ctx)
+
+    ci.get_session.assert_not_called()
+    assert values["ci_session_id"] == "new-mounted-session"
+    assert values["ci_mounted_workspace"] == "root-v2"
+
+
+def test_workspace_initialization_includes_write_probe():
+    ci = MagicMock()
+    ci.invoke.return_value = _exec_response()
+
+    from builtin_tools.code_interpreter_tool import _prepare_mounted_workspace
+
+    _prepare_mounted_workspace(ci, verify_write=True)
+
+    code = ci.invoke.call_args.args[1]["code"]
+    assert "NamedTemporaryFile" in code
+    assert "dir=_mount" in code
 
 
 @patch("builtin_tools.code_interpreter_tool._get_ci_from_context")
