@@ -157,6 +157,31 @@ resource "aws_s3_bucket_versioning" "artifacts" {
   }
 }
 
+resource "aws_s3_bucket_lifecycle_configuration" "artifacts" {
+  bucket     = aws_s3_bucket.artifacts.id
+  depends_on = [aws_s3_bucket_versioning.artifacts]
+
+  rule {
+    id     = "expire-temporary-ppt-drafts"
+    status = "Enabled"
+
+    filter {
+      tag {
+        key   = "lifecycle"
+        value = "temporary-ppt-draft"
+      }
+    }
+
+    expiration {
+      days = 7
+    }
+
+    noncurrent_version_expiration {
+      noncurrent_days = 7
+    }
+  }
+}
+
 resource "aws_s3_bucket_cors_configuration" "artifacts" {
   bucket = aws_s3_bucket.artifacts.id
   cors_rule {

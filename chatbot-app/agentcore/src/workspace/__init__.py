@@ -43,13 +43,14 @@ workspace/
 
 ```
 S3: ARTIFACT_BUCKET
-└── documents/
-    └── {user_id}/
-        └── {session_id}/
-            ├── word/*.docx
-            ├── excel/*.xlsx
-            ├── powerpoint/*.pptx
-            └── image/*.png, *.jpg, etc.
+├── documents/{user_id}/{session_id}/
+│   ├── word/*.docx
+│   ├── excel/*.xlsx
+│   └── image/*.png, *.jpg, etc.
+└── code-interpreter-workspace/{workspace_id}/
+    ├── inputs/*.pptx
+    ├── artifacts/powerpoint/*.pptx
+    └── .drafts/powerpoint/*
 ```
 
 ## Key Features

@@ -31,7 +31,7 @@ interface Namespace {
   prefix: (userId: string, sessionId: string) => string
 }
 
-function codeInterpreterWorkspaceId(userId: string, sessionId: string): string {
+export function codeInterpreterWorkspaceId(userId: string, sessionId: string): string {
   return createHash('sha256')
     .update(userId)
     .update('\0')

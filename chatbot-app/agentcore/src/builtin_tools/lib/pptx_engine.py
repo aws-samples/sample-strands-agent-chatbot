@@ -11,17 +11,20 @@ Usage:
         engine.delete_slides([0])
         engine.move_slide(1, 0)
         result_bytes = engine.pack()
-    ppt_manager.save_to_s3("deck-v2.pptx", result_bytes)
+    ppt_manager.save_edit(edit_id, result_bytes, expected_etag)
 """
 
 import io
 import logging
+import math
 import re
 import shutil
 import tempfile
 import zipfile
+from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import unquote, urlparse
 
 import defusedxml.minidom
 
@@ -68,7 +71,16 @@ class PptxEngine:
     def _unpack(self):
         """Extract PPTX zip, pretty-print XML, escape smart quotes."""
         with zipfile.ZipFile(io.BytesIO(self._bytes), "r") as zf:
-            zf.extractall(self._tmpdir)
+            package_root = self._tmpdir.resolve()
+            for member in zf.infolist():
+                destination = (package_root / member.filename).resolve()
+                try:
+                    destination.relative_to(package_root)
+                except ValueError as exc:
+                    raise ValueError(
+                        f"Unsafe package path: {member.filename}"
+                    ) from exc
+                zf.extract(member, package_root)
 
         xml_files = (
             list(self._tmpdir.rglob("*.xml"))
@@ -157,6 +169,268 @@ class PptxEngine:
             except Exception:
                 result.append({"index": idx, "name": layout_file.stem, "filename": layout_file.name, "placeholder_count": 0})
         return result
+
+    def get_deck_spec(self) -> Dict[str, Any]:
+        """Return a compact, reusable description of the deck's design system."""
+        width, height = self._get_slide_size()
+        theme = self._get_theme_spec()
+        slide_summaries = []
+
+        for index, slide in enumerate(self.get_slide_order()):
+            info = self.analyze_slide(slide["filename"])
+            elements = info.get("elements", [])
+            type_counts = Counter(element.get("type", "unknown") for element in elements)
+            slide_summaries.append({
+                "slide_index": index,
+                "title": info.get("title"),
+                "layout": self._get_slide_layout_name(slide["filename"]),
+                "element_count": len(elements),
+                "element_types": dict(sorted(type_counts.items())),
+                "text_characters": sum(
+                    len(element.get("text") or "") for element in elements
+                ),
+            })
+
+        return {
+            "schema_version": 1,
+            "slide_size": {
+                "width_inches": round(width, 3),
+                "height_inches": round(height, 3),
+                "aspect_ratio": round(width / height, 4) if height else None,
+            },
+            "theme": theme,
+            "explicit_fonts": self._get_explicit_fonts(),
+            "layouts": self.get_layouts(),
+            "slides": slide_summaries,
+        }
+
+    def validate(self) -> Dict[str, Any]:
+        """Validate package integrity and report conservative slide geometry issues."""
+        errors: List[Dict[str, Any]] = []
+        warnings: List[Dict[str, Any]] = []
+        required_parts = [
+            "[Content_Types].xml",
+            "_rels/.rels",
+            "ppt/presentation.xml",
+            "ppt/_rels/presentation.xml.rels",
+        ]
+
+        for part in required_parts:
+            if not (self._tmpdir / part).is_file():
+                errors.append({
+                    "code": "missing_required_part",
+                    "part": part,
+                    "message": f"Required package part is missing: {part}",
+                })
+
+        xml_files = list(self._tmpdir.rglob("*.xml")) + list(
+            self._tmpdir.rglob("*.rels")
+        )
+        for xml_file in xml_files:
+            try:
+                defusedxml.minidom.parse(str(xml_file))
+            except Exception as exc:
+                errors.append({
+                    "code": "invalid_xml",
+                    "part": str(xml_file.relative_to(self._tmpdir)),
+                    "message": str(exc),
+                })
+
+        content_types_path = self._tmpdir / "[Content_Types].xml"
+        if content_types_path.exists():
+            try:
+                content_types_dom = defusedxml.minidom.parse(
+                    str(content_types_path)
+                )
+                override_parts = set()
+                for override in content_types_dom.getElementsByTagName("Override"):
+                    part_name = override.getAttribute("PartName")
+                    override_parts.add(part_name)
+                    part_path = self._tmpdir / part_name.lstrip("/")
+                    if not part_path.exists():
+                        errors.append({
+                            "code": "missing_content_type_part",
+                            "part": part_name,
+                            "message": (
+                                "Content type override references a missing part: "
+                                f"{part_name}"
+                            ),
+                        })
+                for slide_file in (self._tmpdir / "ppt" / "slides").glob(
+                    "slide*.xml"
+                ):
+                    part_name = f"/ppt/slides/{slide_file.name}"
+                    if part_name not in override_parts:
+                        errors.append({
+                            "code": "missing_slide_content_type",
+                            "part": part_name,
+                            "message": (
+                                "Slide is missing its content type override: "
+                                f"{part_name}"
+                            ),
+                        })
+            except Exception:
+                pass
+
+        for rels_file in self._tmpdir.rglob("*.rels"):
+            try:
+                rels_dom = defusedxml.minidom.parse(str(rels_file))
+            except Exception:
+                continue
+            for rel in rels_dom.getElementsByTagName("Relationship"):
+                target = rel.getAttribute("Target")
+                if not target or rel.getAttribute("TargetMode") == "External":
+                    continue
+                parsed = urlparse(target)
+                if parsed.scheme or parsed.netloc:
+                    continue
+                target_path = _resolve_relationship_target(
+                    self._tmpdir, rels_file, target
+                )
+                try:
+                    target_path.relative_to(self._tmpdir.resolve())
+                except ValueError:
+                    errors.append({
+                        "code": "relationship_outside_package",
+                        "part": str(rels_file.relative_to(self._tmpdir)),
+                        "relationship_id": rel.getAttribute("Id"),
+                        "target": target,
+                        "message": "Relationship target escapes the package root.",
+                    })
+                    continue
+                if not target_path.exists():
+                    errors.append({
+                        "code": "missing_relationship_target",
+                        "part": str(rels_file.relative_to(self._tmpdir)),
+                        "relationship_id": rel.getAttribute("Id"),
+                        "target": target,
+                        "message": f"Relationship target does not exist: {target}",
+                    })
+
+        try:
+            width, height = self._get_slide_size()
+            slide_order = self.get_slide_order()
+            for slide_index, slide in enumerate(slide_order):
+                info = self.analyze_slide(slide["filename"])
+                elements = info.get("elements", [])
+                warnings.extend(
+                    _lint_slide_geometry(slide_index, elements, width, height)
+                )
+        except Exception as exc:
+            errors.append({
+                "code": "slide_analysis_failed",
+                "message": str(exc),
+            })
+
+        return {
+            "valid": not errors,
+            "error_count": len(errors),
+            "warning_count": len(warnings),
+            "errors": errors,
+            "warnings": warnings,
+            "checks": {
+                "required_parts": True,
+                "xml_parse": True,
+                "content_types": True,
+                "relationship_targets": True,
+                "slide_bounds": True,
+                "text_overlap": True,
+                "placeholder_text": True,
+                "text_overflow_heuristic": True,
+            },
+        }
+
+    def _get_slide_size(self) -> tuple[float, float]:
+        pres_path = self._tmpdir / "ppt" / "presentation.xml"
+        if not pres_path.exists():
+            return 13.333, 7.5
+        dom = defusedxml.minidom.parse(str(pres_path))
+        sizes = dom.getElementsByTagName("p:sldSz")
+        if not sizes:
+            return 13.333, 7.5
+        cx = int(sizes[0].getAttribute("cx") or 0)
+        cy = int(sizes[0].getAttribute("cy") or 0)
+        if not cx or not cy:
+            return 13.333, 7.5
+        return cx / EMU_PER_INCH, cy / EMU_PER_INCH
+
+    def _get_theme_spec(self) -> Dict[str, Any]:
+        theme_files = sorted((self._tmpdir / "ppt" / "theme").glob("theme*.xml"))
+        if not theme_files:
+            return {"name": None, "colors": {}, "fonts": {}}
+
+        dom = defusedxml.minidom.parse(str(theme_files[0]))
+        theme_nodes = dom.getElementsByTagName("a:theme")
+        theme_name = theme_nodes[0].getAttribute("name") if theme_nodes else None
+        colors: Dict[str, str] = {}
+        schemes = dom.getElementsByTagName("a:clrScheme")
+        if schemes:
+            for child in schemes[0].childNodes:
+                if child.nodeType != child.ELEMENT_NODE:
+                    continue
+                values = child.getElementsByTagName("a:srgbClr")
+                if values:
+                    colors[child.tagName.split(":")[-1]] = values[0].getAttribute("val")
+                    continue
+                values = child.getElementsByTagName("a:sysClr")
+                if values:
+                    colors[child.tagName.split(":")[-1]] = (
+                        values[0].getAttribute("lastClr")
+                        or values[0].getAttribute("val")
+                    )
+
+        fonts: Dict[str, Optional[str]] = {"major": None, "minor": None}
+        for key, tag in (("major", "a:majorFont"), ("minor", "a:minorFont")):
+            nodes = dom.getElementsByTagName(tag)
+            if not nodes:
+                continue
+            latin = nodes[0].getElementsByTagName("a:latin")
+            if latin:
+                fonts[key] = latin[0].getAttribute("typeface") or None
+
+        return {"name": theme_name, "colors": colors, "fonts": fonts}
+
+    def _get_explicit_fonts(self) -> List[str]:
+        fonts = set()
+        search_roots = [
+            self._tmpdir / "ppt" / "slides",
+            self._tmpdir / "ppt" / "slideLayouts",
+            self._tmpdir / "ppt" / "slideMasters",
+        ]
+        for search_root in search_roots:
+            if not search_root.exists():
+                continue
+            for xml_file in search_root.rglob("*.xml"):
+                try:
+                    dom = defusedxml.minidom.parse(str(xml_file))
+                except Exception:
+                    continue
+                for tag in ("a:latin", "a:ea", "a:cs"):
+                    for node in dom.getElementsByTagName(tag):
+                        typeface = node.getAttribute("typeface").strip()
+                        if typeface and not typeface.startswith("+"):
+                            fonts.add(typeface)
+        return sorted(fonts, key=str.casefold)
+
+    def _get_slide_layout_name(self, slide_filename: str) -> Optional[str]:
+        rels_path = (
+            self._tmpdir / "ppt" / "slides" / "_rels" / f"{slide_filename}.rels"
+        )
+        if not rels_path.exists():
+            return None
+        dom = defusedxml.minidom.parse(str(rels_path))
+        for rel in dom.getElementsByTagName("Relationship"):
+            if "slideLayout" not in rel.getAttribute("Type"):
+                continue
+            target_path = _resolve_relationship_target(
+                self._tmpdir, rels_path, rel.getAttribute("Target")
+            )
+            if not target_path.exists():
+                return None
+            layout_dom = defusedxml.minidom.parse(str(target_path))
+            csld = layout_dom.getElementsByTagName("p:cSld")
+            return csld[0].getAttribute("name") if csld else target_path.stem
+        return None
 
     # ── Analyze ───────────────────────────────────────────────────────────────
 
@@ -257,15 +531,60 @@ class PptxEngine:
 
     def replace_text(self, slide_filename: str, element_id: int, find: str, replace: str):
         """Find and replace text within a shape."""
+        if not find:
+            raise ValueError("find must be a non-empty string")
         slide_path = self._tmpdir / "ppt" / "slides" / slide_filename
         dom = defusedxml.minidom.parseString(slide_path.read_bytes())
         shape = _get_shape_by_id(dom, element_id)
         if shape is None:
             raise ValueError(f"element_id {element_id} not found in {slide_filename}")
 
-        for t_node in shape.getElementsByTagName("a:t"):
-            if t_node.firstChild and t_node.firstChild.nodeValue:
-                t_node.firstChild.nodeValue = t_node.firstChild.nodeValue.replace(find, replace)
+        replacement_count = 0
+        for paragraph in shape.getElementsByTagName("a:p"):
+            text_nodes = paragraph.getElementsByTagName("a:t")
+            values = [
+                node.firstChild.nodeValue
+                if node.firstChild and node.firstChild.nodeValue
+                else ""
+                for node in text_nodes
+            ]
+            combined = "".join(values)
+            matches = list(re.finditer(re.escape(find), combined))
+            if not matches:
+                continue
+
+            offsets = []
+            cursor = 0
+            for value in values:
+                offsets.append((cursor, cursor + len(value)))
+                cursor += len(value)
+
+            output_values = [""] * len(values)
+            cursor = 0
+            for match in matches:
+                _distribute_original_text(
+                    combined, offsets, output_values, cursor, match.start()
+                )
+                start_index = next(
+                    index
+                    for index, (_, end) in enumerate(offsets)
+                    if match.start() < end
+                )
+                output_values[start_index] += replace
+                cursor = match.end()
+            _distribute_original_text(
+                combined, offsets, output_values, cursor, len(combined)
+            )
+
+            for node, value in zip(text_nodes, output_values):
+                _set_text_node_value(dom, node, value)
+            replacement_count += len(matches)
+
+        if replacement_count == 0:
+            raise ValueError(
+                f"Text {find!r} was not found in element_id {element_id} "
+                f"of {slide_filename}"
+            )
 
         slide_path.write_bytes(dom.toxml(encoding="utf-8"))
 
@@ -688,6 +1007,27 @@ def _get_shape_by_id(dom, element_id: int):
     return None
 
 
+def _set_text_node_value(dom, text_node, value: str):
+    if text_node.firstChild:
+        text_node.firstChild.nodeValue = value
+    else:
+        text_node.appendChild(dom.createTextNode(value))
+
+
+def _distribute_original_text(
+    combined: str,
+    offsets: List[tuple[int, int]],
+    output_values: List[str],
+    start: int,
+    end: int,
+) -> None:
+    for index, (node_start, node_end) in enumerate(offsets):
+        segment_start = max(start, node_start)
+        segment_end = min(end, node_end)
+        if segment_start < segment_end:
+            output_values[index] += combined[segment_start:segment_end]
+
+
 def _parse_shape(node, element_id: int) -> Dict[str, Any]:
     tag = node.tagName
     elem: Dict[str, Any] = {"id": element_id}
@@ -697,6 +1037,7 @@ def _parse_shape(node, element_id: int) -> Dict[str, Any]:
         elem["role"] = _get_placeholder_role(node)
         elem["text"] = _extract_text(node)
         elem["position"] = _get_position(node)
+        elem.update(_get_text_metrics(node))
     elif tag == "p:pic":
         elem["type"] = "picture"
         elem["role"] = ""
@@ -768,8 +1109,156 @@ def _extract_table_text(node) -> str:
 
 def _get_position(node) -> Dict[str, float]:
     off_list = node.getElementsByTagName("a:off")
-    if off_list:
-        x = int(off_list[0].getAttribute("x") or 0)
-        y = int(off_list[0].getAttribute("y") or 0)
-        return {"left": round(x / EMU_PER_INCH, 2), "top": round(y / EMU_PER_INCH, 2)}
-    return {"left": 0, "top": 0}
+    ext_list = node.getElementsByTagName("a:ext")
+    x = int(off_list[0].getAttribute("x") or 0) if off_list else 0
+    y = int(off_list[0].getAttribute("y") or 0) if off_list else 0
+    cx = int(ext_list[0].getAttribute("cx") or 0) if ext_list else 0
+    cy = int(ext_list[0].getAttribute("cy") or 0) if ext_list else 0
+    return {
+        "left": round(x / EMU_PER_INCH, 3),
+        "top": round(y / EMU_PER_INCH, 3),
+        "width": round(cx / EMU_PER_INCH, 3),
+        "height": round(cy / EMU_PER_INCH, 3),
+    }
+
+
+def _get_text_metrics(node) -> Dict[str, Any]:
+    sizes = []
+    for tag in ("a:rPr", "a:defRPr", "a:endParaRPr"):
+        for props in node.getElementsByTagName(tag):
+            raw_size = props.getAttribute("sz")
+            if raw_size.isdigit():
+                sizes.append(int(raw_size) / 100)
+    return {
+        "font_size_pt": max(sizes) if sizes else None,
+        "autofit": bool(
+            node.getElementsByTagName("a:normAutofit")
+            or node.getElementsByTagName("a:spAutoFit")
+        ),
+    }
+
+
+def _resolve_relationship_target(
+    package_root: Path, rels_file: Path, target: str
+) -> Path:
+    clean_target = unquote(target.split("#", 1)[0].replace("\\", "/"))
+    if clean_target.startswith("/"):
+        return (package_root / clean_target.lstrip("/")).resolve()
+    source_dir = rels_file.parent.parent
+    return (source_dir / clean_target).resolve()
+
+
+def _lint_slide_geometry(
+    slide_index: int,
+    elements: List[Dict[str, Any]],
+    slide_width: float,
+    slide_height: float,
+) -> List[Dict[str, Any]]:
+    issues: List[Dict[str, Any]] = []
+    tolerance = 0.03
+    positioned = []
+
+    for element in elements:
+        position = element.get("position") or {}
+        left = float(position.get("left", 0))
+        top = float(position.get("top", 0))
+        width = float(position.get("width", 0))
+        height = float(position.get("height", 0))
+        if width <= 0 or height <= 0:
+            continue
+
+        positioned.append(element)
+        if (
+            left < -tolerance
+            or top < -tolerance
+            or left + width > slide_width + tolerance
+            or top + height > slide_height + tolerance
+        ):
+            issues.append({
+                "code": "element_out_of_bounds",
+                "slide_index": slide_index,
+                "element_id": element.get("id"),
+                "message": "Element extends beyond the slide boundary.",
+                "position": position,
+            })
+
+        text = (element.get("text") or "").strip()
+        if text and re.search(
+            r"(\{\{[^{}]+\}\}|<[^<>]+>|lorem\s+ipsum|click\s+to\s+add)",
+            text,
+            flags=re.IGNORECASE,
+        ):
+            issues.append({
+                "code": "placeholder_text",
+                "slide_index": slide_index,
+                "element_id": element.get("id"),
+                "message": f"Possible placeholder text remains: {text[:80]}",
+            })
+
+        if (
+            element.get("type") == "text"
+            and text
+            and not element.get("autofit")
+            and element.get("font_size_pt")
+        ):
+            font_size = float(element["font_size_pt"])
+            line_height = max(0.01, font_size / 72 * 1.2)
+            average_char_width = max(0.01, font_size / 72 * 0.52)
+            chars_per_line = max(1, int(width / average_char_width))
+            estimated_lines = sum(
+                max(1, math.ceil(len(line) / chars_per_line))
+                for line in text.splitlines() or [text]
+            )
+            available_lines = max(1, int(height / line_height))
+            if estimated_lines > available_lines * 1.25:
+                issues.append({
+                    "code": "possible_text_overflow",
+                    "slide_index": slide_index,
+                    "element_id": element.get("id"),
+                    "message": (
+                        f"Text may require about {estimated_lines} lines but the "
+                        f"box fits about {available_lines} at {font_size:g}pt."
+                    ),
+                })
+
+    text_elements = [
+        element
+        for element in positioned
+        if element.get("type") == "text" and (element.get("text") or "").strip()
+    ]
+    for index, first in enumerate(text_elements):
+        for second in text_elements[index + 1:]:
+            overlap_ratio = _overlap_ratio(
+                first["position"], second["position"]
+            )
+            if overlap_ratio >= 0.08:
+                issues.append({
+                    "code": "text_overlap",
+                    "slide_index": slide_index,
+                    "element_ids": [first.get("id"), second.get("id")],
+                    "overlap_ratio": round(overlap_ratio, 3),
+                    "message": "Text boxes overlap and require visual review.",
+                })
+
+    return issues
+
+
+def _overlap_ratio(first: Dict[str, float], second: Dict[str, float]) -> float:
+    left = max(first["left"], second["left"])
+    top = max(first["top"], second["top"])
+    right = min(
+        first["left"] + first["width"],
+        second["left"] + second["width"],
+    )
+    bottom = min(
+        first["top"] + first["height"],
+        second["top"] + second["height"],
+    )
+    if right <= left or bottom <= top:
+        return 0.0
+    intersection = (right - left) * (bottom - top)
+    smaller_area = min(
+        first["width"] * first["height"],
+        second["width"] * second["height"],
+    )
+    return intersection / smaller_area if smaller_area else 0.0

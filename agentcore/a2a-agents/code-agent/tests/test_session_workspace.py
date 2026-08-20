@@ -6,17 +6,24 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from src.session_workspace import restore_s3_prefix, sync_session_inputs
+from src.session_workspace import (
+    code_interpreter_input_prefix,
+    code_interpreter_workspace_id,
+    missing_required_inputs,
+    normalize_required_input_paths,
+    restore_s3_prefix,
+    sync_session_inputs,
+)
 
 
 def test_syncs_canonical_uploads_under_inputs(tmp_path: Path):
+    input_prefix = code_interpreter_input_prefix("user-1", "session-1")
     s3 = MagicMock()
     paginator = MagicMock()
     paginator.paginate.return_value = [{
         "Contents": [{
             "Key": (
-                "code-interpreter-workspace/user-1/session-1/"
-                "inputs/packets-pass-a.jsonl"
+                f"{input_prefix}/packets-pass-a.jsonl"
             ),
         }],
     }]
@@ -40,7 +47,13 @@ def test_syncs_canonical_uploads_under_inputs(tmp_path: Path):
     assert descriptions == ["- `inputs/packets-pass-a.jsonl`"]
     paginator.paginate.assert_called_once_with(
         Bucket="workspace-bucket",
-        Prefix="code-interpreter-workspace/user-1/session-1/inputs/",
+        Prefix=f"{input_prefix}/",
+    )
+
+
+def test_canonical_workspace_id_matches_orchestrator_contract():
+    assert code_interpreter_workspace_id("user-1", "session-1") == (
+        "c75baf0822512599e9fb5404e22693cffa5c19b706f1f6c2"
     )
 
 
@@ -77,6 +90,7 @@ def test_workspace_restore_does_not_restore_mirrored_inputs(tmp_path: Path):
 
 
 def test_sync_failure_preserves_existing_inputs(tmp_path: Path):
+    input_prefix = code_interpreter_input_prefix("user-1", "session-1")
     inputs = tmp_path / "inputs"
     inputs.mkdir()
     (inputs / "existing.jsonl").write_text('{"existing":true}\n')
@@ -86,8 +100,7 @@ def test_sync_failure_preserves_existing_inputs(tmp_path: Path):
     paginator.paginate.return_value = [{
         "Contents": [{
             "Key": (
-                "code-interpreter-workspace/user-1/session-1/"
-                "inputs/replacement.jsonl"
+                f"{input_prefix}/replacement.jsonl"
             ),
         }],
     }]
@@ -130,6 +143,7 @@ def test_sync_listing_failure_preserves_existing_inputs(tmp_path: Path):
 
 
 def test_sync_rejects_object_path_traversal_and_preserves_inputs(tmp_path: Path):
+    input_prefix = code_interpreter_input_prefix("user-1", "session-1")
     inputs = tmp_path / "inputs"
     inputs.mkdir()
     (inputs / "existing.txt").write_text("keep")
@@ -139,8 +153,7 @@ def test_sync_rejects_object_path_traversal_and_preserves_inputs(tmp_path: Path)
     paginator.paginate.return_value = [{
         "Contents": [{
             "Key": (
-                "code-interpreter-workspace/user-1/session-1/"
-                "inputs/../../outside.txt"
+                f"{input_prefix}/../../outside.txt"
             ),
         }],
     }]
@@ -160,6 +173,7 @@ def test_sync_rejects_object_path_traversal_and_preserves_inputs(tmp_path: Path)
 
 
 def test_sync_replaces_inputs_symlink_without_touching_target(tmp_path: Path):
+    input_prefix = code_interpreter_input_prefix("user-1", "session-1")
     outside = tmp_path / "outside"
     outside.mkdir()
     (outside / "protected.txt").write_text("protected")
@@ -170,8 +184,7 @@ def test_sync_replaces_inputs_symlink_without_touching_target(tmp_path: Path):
     paginator.paginate.return_value = [{
         "Contents": [{
             "Key": (
-                "code-interpreter-workspace/user-1/session-1/"
-                "inputs/current.json"
+                f"{input_prefix}/current.json"
             ),
         }],
     }]
@@ -225,6 +238,7 @@ def test_restore_rejects_nested_symlink_before_creating_directories(
 
 
 def test_sync_replaces_regular_file_without_leaving_backup(tmp_path: Path):
+    input_prefix = code_interpreter_input_prefix("user-1", "session-1")
     (tmp_path / "inputs").write_text("stale")
 
     s3 = MagicMock()
@@ -232,8 +246,7 @@ def test_sync_replaces_regular_file_without_leaving_backup(tmp_path: Path):
     paginator.paginate.return_value = [{
         "Contents": [{
             "Key": (
-                "code-interpreter-workspace/user-1/session-1/"
-                "inputs/current.json"
+                f"{input_prefix}/current.json"
             ),
         }],
     }]
@@ -252,3 +265,40 @@ def test_sync_replaces_regular_file_without_leaving_backup(tmp_path: Path):
 
     assert (tmp_path / "inputs" / "current.json").read_text() == "{}"
     assert not list(tmp_path.glob(".inputs-backup-*"))
+
+
+def test_normalizes_required_workspace_paths():
+    assert normalize_required_input_paths([
+        "inputs/deck.pptx",
+        "uploads/data.json",
+        "/mnt/workspace/inputs/deck.pptx",
+    ]) == [
+        "inputs/deck.pptx",
+        "inputs/data.json",
+    ]
+
+
+@pytest.mark.parametrize(
+    "paths",
+    [
+        "inputs/deck.pptx",
+        [""],
+        ["documents/deck.pptx"],
+        ["inputs/../secret.txt"],
+        ["/tmp/deck.pptx"],
+    ],
+)
+def test_rejects_invalid_required_workspace_paths(paths):
+    with pytest.raises(ValueError, match="workspace_paths"):
+        normalize_required_input_paths(paths)
+
+
+def test_reports_missing_required_inputs(tmp_path: Path):
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    (inputs / "present.pptx").write_bytes(b"pptx")
+
+    assert missing_required_inputs(
+        tmp_path,
+        ["inputs/present.pptx", "inputs/missing.pptx"],
+    ) == ["inputs/missing.pptx"]

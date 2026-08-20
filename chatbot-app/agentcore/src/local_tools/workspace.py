@@ -94,9 +94,9 @@ def workspace_list(path: str = '', tool_context: ToolContext = None) -> str:
         user_id, session_id = _get_ids(tool_context)
         bucket = get_workspace_bucket()
         s3 = _s3_client()
+        ci_prefix = code_interpreter_prefix(user_id, session_id)
 
         if not path or path.strip('/') == '':
-            ci_prefix = code_interpreter_prefix(user_id, session_id)
             s3_prefixes = [
                 f"{ci_prefix}inputs/",
                 f"code-agent-workspace/{user_id}/{session_id}/",
@@ -114,6 +114,10 @@ def workspace_list(path: str = '', tool_context: ToolContext = None) -> str:
                 for obj in page.get('Contents', []):
                     key = obj['Key']
                     if not key.endswith('/'):
+                        if key.startswith(ci_prefix):
+                            relative_parts = key[len(ci_prefix):].split("/")
+                            if any(part.startswith(".") for part in relative_parts):
+                                continue
                         logical_path = _to_logical_path(user_id, session_id, key)
                         if logical_path in seen_paths:
                             continue

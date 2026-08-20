@@ -33,6 +33,7 @@ async def _streamable_http_transport(url: str, auth: httpx.Auth | None):
     ) as http_client, streamable_http_client(
         url,
         http_client=http_client,
+        terminate_on_close=False,
     ) as streams:
         yield streams
 

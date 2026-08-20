@@ -1,115 +1,88 @@
-# PowerPoint Design Guide
+# Presentation Design System
 
-Visual patterns and detailed guidance for slide design. Load this when implementing slide visuals.
+Read this reference when designing a new deck or intentionally redesigning one.
+For source-preserving edits, derive these values from `inspect_presentation`.
 
-## Using Palettes in Code (PptxGenJS)
+## Define Tokens First
 
-```javascript
-// Example: Midnight Executive palette
-// Colors are 6-digit hex WITHOUT '#'
-const PRIMARY = "1E2761";
-const ACCENT  = "FFFFFF";
-const ICE     = "CADCFC";
+Create a compact design record before generating slides:
 
-let slide = pres.addSlide();
-
-// Solid background
-slide.background = { color: PRIMARY };
-
-// Accent bar at bottom
-slide.addShape(pres.shapes.RECTANGLE, {
-  x: 0, y: 7.1, w: 13.3, h: 0.4,
-  fill: { color: ACCENT }, line: { color: ACCENT }
-});
-
-// Title text
-slide.addText("Slide Title", {
-  x: 0.6, y: 0.4, w: 10, h: 1.0,
-  fontSize: 40, bold: true, color: ACCENT,
-  fontFace: "Georgia", margin: 0
-});
+```json
+{
+  "audience": "executive leadership",
+  "objective": "approve the launch plan",
+  "slide_size": "LAYOUT_WIDE",
+  "colors": {
+    "background": "F7F8FA",
+    "surface": "FFFFFF",
+    "text": "18212B",
+    "muted": "5B6773",
+    "accent": "007A78",
+    "signal": "D1495B"
+  },
+  "fonts": {
+    "heading": "Aptos Display",
+    "body": "Aptos"
+  },
+  "spacing": {
+    "edge": 0.55,
+    "gap": 0.3
+  },
+  "motif": "thin vertical section marker"
+}
 ```
 
-## Creating Lighter Tints
+Use one dominant neutral, readable text, one primary accent, and at most one
+semantic signal color. Do not select a palette from a generic theme table without
+considering the subject, audience, source assets, and rendering environment.
 
-For data slides that need lighter backgrounds within the same palette:
+## Design by Slide Function
 
-```javascript
-// Slightly lighter than Midnight Executive primary for data slide background
-const LIGHT_BG = "2A3578";  // Tint of 1E2761
+Assign each slide one function and one message:
 
-slide.background = { color: LIGHT_BG };
-```
+| Function | Suitable composition |
+|---|---|
+| Opening | Literal title, restrained visual, minimal metadata |
+| Context | Annotated image, map, timeline, or compact evidence |
+| Argument | Claim plus two or three supporting proof points |
+| Data | One chart with a takeaway title and direct labels |
+| Comparison | Aligned columns with a consistent comparison basis |
+| Process | Ordered stages with clear direction and ownership |
+| Decision | Options, criteria, recommendation, and consequence |
+| Closing | Decision/request and next action |
 
----
+Vary composition when the content requires it, not merely to avoid repetition.
+Repeated slide functions should use consistent geometry.
 
-## Visual Element Patterns
+## Density Budgets
 
-### Accent bar (bottom)
+- Use one message per slide.
+- Prefer a takeaway sentence over a topic label as the title.
+- Keep body copy readable at presentation distance.
+- Split a slide when text must be reduced below the deck's established body size.
+- Use charts for quantitative relationships, diagrams for systems, and images for
+  concrete subjects. Decorative shapes do not count as evidence.
 
-```javascript
-slide.addShape(pres.shapes.RECTANGLE, {
-  x: 0, y: 7.1, w: 13.3, h: 0.4,
-  fill: { color: ACCENT }, line: { color: ACCENT }
-});
-```
+## Geometry
 
-### Icon circle
+- Keep content at least 0.5 inches from the slide edge unless intentionally full bleed.
+- Use stable grids and repeat exact alignment coordinates.
+- Keep 0.25 to 0.5 inches between peer elements.
+- Reserve space for source labels, footnotes, and page furniture.
+- Crop images intentionally; never distort aspect ratio.
 
-```javascript
-// ICE (secondary) fill + dark PRIMARY text = legible on any slide background
-slide.addShape(pres.shapes.OVAL, {
-  x: 1.0, y: 2.0, w: 1.2, h: 1.2,
-  fill: { color: ICE }, line: { color: ICE }
-});
-slide.addText("★", {
-  x: 1.0, y: 2.0, w: 1.2, h: 1.2,
-  fontSize: 28, color: PRIMARY, align: "center", valign: "middle"
-});
-```
+## Typography and Fonts
 
-### Side stripe (left edge)
+- Use fonts present in the target rendering environment.
+- Use no more than one heading family and one body family.
+- Establish a small type scale and reuse it.
+- Left-align paragraphs; center only content designed for scanning as a unit.
+- Do not use uniform auto-fit as a substitute for editing content.
 
-```javascript
-slide.addShape(pres.shapes.RECTANGLE, {
-  x: 0, y: 0, w: 0.4, h: 7.5,
-  fill: { color: ACCENT }, line: { color: ACCENT }
-});
-```
+## Data and Accessibility
 
-### Divider line
-
-```javascript
-slide.addShape(pres.shapes.RECTANGLE, {
-  x: 1, y: 3.0, w: 11.3, h: 0.02,
-  fill: { color: ACCENT }, line: { color: ACCENT }
-});
-```
-
-### Card with shadow
-
-```javascript
-const makeShadow = () => ({ type: "outer", color: "000000", blur: 8, offset: 3, angle: 135, opacity: 0.15 });
-slide.addShape(pres.shapes.RECTANGLE, {
-  x: 1.0, y: 1.5, w: 5.0, h: 2.5,
-  fill: { color: "FFFFFF" },
-  shadow: makeShadow()
-});
-```
-
-> Always use a factory function for shadow objects — PptxGenJS mutates them in-place. See [pptxgenjs.md](pptxgenjs.md).
-
-### Stat callout (large number)
-
-```javascript
-slide.addText("87%", {
-  x: 1, y: 1.5, w: 4, h: 2,
-  fontSize: 80, bold: true, color: ACCENT,
-  align: "center", valign: "middle"
-});
-slide.addText("Customer Satisfaction", {
-  x: 1, y: 3.5, w: 4, h: 0.5,
-  fontSize: 14, color: ACCENT, align: "center"
-});
-```
-
+- Encode critical distinctions with labels or shape as well as color.
+- Use sufficient foreground/background contrast.
+- Add meaningful alternative text to new images.
+- Cite sources close to charts and claims.
+- Avoid 3D charts, legends for a single series, and unnecessary gridlines.
