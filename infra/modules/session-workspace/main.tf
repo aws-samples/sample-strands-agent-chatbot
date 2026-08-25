@@ -258,35 +258,6 @@ resource "aws_s3files_mount_target" "this" {
   ]
 }
 
-# The frontend is trusted and enforces user/session authorization in the API.
-# It mounts only the Code Interpreter namespace and never executes user code.
-resource "aws_s3files_access_point" "frontend" {
-  file_system_id = aws_s3files_file_system.this.id
-
-  posix_user {
-    uid = 1000
-    gid = 1000
-  }
-
-  root_directory {
-    path = "/code-interpreter-workspace"
-
-    creation_permissions {
-      owner_uid   = 1000
-      owner_gid   = 1000
-      permissions = "0750"
-    }
-  }
-
-  tags = {
-    Name        = "${local.prefix}-frontend"
-    Environment = var.environment
-    ManagedBy   = "terraform"
-  }
-
-  depends_on = [aws_s3files_mount_target.this]
-}
-
 resource "aws_iam_role" "code_interpreter" {
   name = "${local.prefix}-code-interpreter"
 
@@ -317,6 +288,7 @@ resource "aws_iam_role_policy" "code_interpreter" {
         Effect = "Allow"
         Action = [
           "s3files:ClientMount",
+          "s3files:ClientRootAccess",
           "s3files:ClientWrite",
           "s3files:GetAccessPoint",
         ]

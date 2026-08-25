@@ -179,7 +179,9 @@ export function WorkspaceBrowser({ sessionId }: WorkspaceBrowserProps) {
     setPreviewError(null)
     try {
       const response = await apiFetch(
-        `workspace/preview?path=${encodeURIComponent(entry.path)}`,
+        entry.fileId
+          ? `session-files/${entry.fileId}/preview`
+          : `workspace/preview?path=${encodeURIComponent(entry.path)}`,
         { headers: { 'X-Session-ID': sessionId } },
       )
       if (!response.ok) throw new Error('Preview is not available')
@@ -198,11 +200,18 @@ export function WorkspaceBrowser({ sessionId }: WorkspaceBrowserProps) {
     if (!selected || !sessionId) return
     setDownloading(true)
     try {
-      const response = await apiFetch('workspace/download', {
+      const response = await apiFetch(
+        selected.entry.fileId
+          ? `session-files/${selected.entry.fileId}/download`
+          : 'workspace/download',
+        {
         method: 'POST',
         headers: { 'X-Session-ID': sessionId },
-        body: JSON.stringify({ path: selected.entry.path, sessionId }),
-      })
+        ...(!selected.entry.fileId
+          ? { body: JSON.stringify({ path: selected.entry.path, sessionId }) }
+          : {}),
+        },
+      )
       if (!response.ok) throw new Error('Download is not available')
       const { url, filename } = await response.json()
       const link = document.createElement('a')

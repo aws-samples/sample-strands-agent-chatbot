@@ -567,6 +567,14 @@ export const useStreamEvents = ({
     const toolImages   = parsedContent.images    ?? []
     const toolStatus   = parsedContent.status
 
+    if (
+      typeof window !== 'undefined'
+      && Array.isArray(toolMetadata?.files)
+      && toolMetadata.files.length > 0
+    ) {
+      window.dispatchEvent(new CustomEvent('workspace-files-changed'))
+    }
+
     // Find the tool name from current executions
     const toolExecution = currentToolExecutionsRef.current.find(tool => tool.id === event.toolCallId)
     const toolName = toolExecution?.toolName

@@ -93,6 +93,16 @@ variable "orchestration_table_name" {
   default = ""
 }
 
+variable "session_files_table_arn" {
+  type    = string
+  default = ""
+}
+
+variable "session_files_table_name" {
+  type    = string
+  default = ""
+}
+
 variable "enable_ddb_policy" {
   description = "Attach DDB access policy to execution role. Set true when user_data_table_arn or global_data_table_arn is wired."
   type        = bool
