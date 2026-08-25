@@ -16,6 +16,26 @@ let GetParameterCommand: any
 let ssmClient: any
 let cachedRuntimeUrl: string | null = null
 
+export class AgentCoreRuntimeError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly responseBody: string,
+  ) {
+    super(message)
+    this.name = 'AgentCoreRuntimeError'
+  }
+}
+
+export function isAbortError(error: unknown): boolean {
+  return (
+    typeof error === 'object'
+    && error !== null
+    && 'name' in error
+    && error.name === 'AbortError'
+  )
+}
+
 async function initializeSsmClient() {
   if (!SSMClient) {
     const ssmModule = await import('@aws-sdk/client-ssm')
@@ -131,7 +151,11 @@ async function invokeAwsAgentCore(
 
   if (!response.ok) {
     const errorText = await response.text()
-    throw new Error(`AgentCore Runtime returned ${response.status}: ${errorText}`)
+    throw new AgentCoreRuntimeError(
+      `AgentCore Runtime returned ${response.status}: ${errorText}`,
+      response.status,
+      errorText,
+    )
   }
 
   console.log('[AgentCore] AWS Runtime invoked successfully')
@@ -163,7 +187,11 @@ export async function invokeAgentCoreRuntime(
       return await invokeAwsAgentCore(aguiBody, userId, sessionId, authToken, abortSignal)
     }
   } catch (error) {
+    if (isAbortError(error)) {
+      throw error
+    }
     console.error('[AgentCore] Failed to invoke Runtime:', error)
+    if (error instanceof AgentCoreRuntimeError) throw error
     throw new Error(
       `Failed to invoke AgentCore Runtime: ${error instanceof Error ? error.message : 'Unknown error'}`
     )

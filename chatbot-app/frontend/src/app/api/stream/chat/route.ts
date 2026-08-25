@@ -3,9 +3,14 @@
  * Invokes AgentCore Runtime and streams responses
  */
 import { NextRequest } from 'next/server'
-import { invokeAgentCoreRuntime } from '@/lib/agentcore-runtime-client'
+import {
+  AgentCoreRuntimeError,
+  invokeAgentCoreRuntime,
+  isAbortError,
+} from '@/lib/agentcore-runtime-client'
 import { extractUserFromRequest, getSessionId, ensureSessionExists } from '@/lib/auth-utils'
 import { createDefaultHookManager } from '@/lib/chat-hooks'
+import { isRuntimeTokenFresh } from '@/lib/runtime-auth-policy'
 import sharp from 'sharp'
 
 // Maximum image size in bytes — must stay well under AgentCore Memory's
@@ -194,6 +199,15 @@ export async function POST(request: NextRequest) {
     if (!IS_LOCAL && userId === 'anonymous') {
       return new Response(
         JSON.stringify({ error: 'Authentication required' }),
+        { status: 401, headers: { 'Content-Type': 'application/json' } }
+      )
+    }
+    if (!IS_LOCAL && !isRuntimeTokenFresh(user.tokenExpiresAt)) {
+      return new Response(
+        JSON.stringify({
+          error: 'Authentication token must be refreshed before invoking AgentCore Runtime',
+          code: 'AUTH_TOKEN_STALE',
+        }),
         { status: 401, headers: { 'Content-Type': 'application/json' } }
       )
     }
@@ -458,16 +472,32 @@ export async function POST(request: NextRequest) {
         } catch (error) {
           if (
             clientDisconnected
-            && error instanceof Error
-            && error.name === 'AbortError'
+            && isAbortError(error)
           ) {
             console.log('[BFF] Stream relay detached after client disconnect')
             return
           }
           console.error('[BFF] Error:', error)
+          const runtimeAuthError = (
+            error instanceof AgentCoreRuntimeError
+            && error.status === 401
+          )
+          const runtimeUnavailable = (
+            error instanceof AgentCoreRuntimeError
+            && error.status >= 500
+          )
           const errorEvent = `data: ${JSON.stringify({
             type: 'RUN_ERROR',
-            message: 'Agent stream failed'
+            code: runtimeAuthError
+              ? 'AUTH_TOKEN_STALE'
+              : runtimeUnavailable
+                ? 'RUNTIME_UNAVAILABLE'
+                : 'AGENT_STREAM_FAILED',
+            message: runtimeAuthError
+              ? 'Your authentication session needs to be refreshed. Please retry.'
+              : runtimeUnavailable
+                ? 'The agent service is temporarily unavailable. Please retry.'
+                : 'Agent request failed.'
           })}\n\n`
           try {
             if (!clientDisconnected) {
@@ -496,7 +526,7 @@ export async function POST(request: NextRequest) {
               }
             }
 
-            if (currentSession) {
+            if (currentSession && agentStarted) {
               const updates: any = {
                 lastMessageAt: new Date().toISOString(),
                 messageCount: (currentSession.messageCount || 0) + 1,
