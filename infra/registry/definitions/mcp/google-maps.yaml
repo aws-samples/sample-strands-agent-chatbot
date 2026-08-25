@@ -30,7 +30,6 @@ tools:
     properties:
       - { name: place_id, type: string, description: Place ID from search results, required: true }
       - { name: language, type: string, description: "Optional: Language code (default: 'en')" }
-      - { name: reviews_sort, type: string, description: "Optional: 'most_relevant' (default) or 'newest'" }
   - name: get_directions
     description: "Get turn-by-turn directions between two locations. Supports 4 modes: driving, walking, bicycling, transit. Returns distance, duration, and step-by-step instructions. Can avoid tolls/highways/ferries and provide alternative routes."
     input_type: object
