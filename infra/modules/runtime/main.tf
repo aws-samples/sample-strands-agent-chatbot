@@ -670,7 +670,7 @@ resource "aws_bedrockagentcore_agent_runtime" "this" {
       SESSION_ORCHESTRATION_TABLE = var.orchestration_table_name
     } : {},
     var.session_files_table_name != "" ? {
-      SESSION_FILES_TABLE = var.session_files_table_name
+      SESSION_FILES_TABLE       = var.session_files_table_name
       SESSION_FILE_BLOB_BACKEND = "s3"
     } : {},
     var.runtime_type == "orchestrator" ? {
