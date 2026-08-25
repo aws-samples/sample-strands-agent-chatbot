@@ -19,7 +19,12 @@ from skill import register_skill
 from typing import Any, Dict, Optional
 import json
 import logging
+import mimetypes
 import os
+import uuid
+
+from builtin_tools.lib.tool_response import build_success_response
+from session_files.publisher import PublishError, SessionFilePublisher
 
 logger = logging.getLogger(__name__)
 
@@ -343,7 +348,7 @@ def execute_code(
     language: str = "python",
     output_filename: str = "",
     tool_context: ToolContext = None,
-) -> str:
+) -> Any:
     """Execute code in a sandboxed Code Interpreter environment.
 
     Supports Python (recommended, 200+ libraries), JavaScript, and TypeScript.
@@ -352,8 +357,8 @@ def execute_code(
     Args:
         code: Code to execute.
         language: "python" (default), "javascript", or "typescript".
-        output_filename: Optional. If provided, downloads this file after execution
-                        and saves it to workspace. Code must save a file with this exact name.
+        output_filename: Optional. If provided, publishes this file as a durable
+                        session file. Code must save a file with this exact name.
 
     Returns:
         Execution stdout, or file confirmation if output_filename is set.
@@ -378,42 +383,57 @@ def execute_code(
         if not output_filename:
             return stdout or "(no output)"
 
-        # Download output file
         output_path = _mounted_path(output_filename)
-        download_response = ci.invoke("readFiles", {"paths": [output_path]})
-        for event in download_response.get("stream", []):
-            result = event.get("result", {})
-            for item in result.get("content", []):
-                if not isinstance(item, dict):
-                    continue
-                blob = item.get("data") or item.get("resource", {}).get("blob")
-                if blob:
-                    size_kb = len(blob) / 1024
-                    workspace_path = f"code-interpreter/{output_filename}"
-                    summary = f"Code executed. File saved: {workspace_path} ({size_kb:.1f} KB)"
-                    if stdout:
-                        summary += f"\n\nstdout:\n{stdout[:500]}"
+        invocation_state = tool_context.invocation_state
+        user_id = invocation_state.get("user_id", "default_user")
+        session_id = invocation_state.get("session_id", "default_session")
+        tool_use = getattr(tool_context, "tool_use", None)
+        tool_use_id = (
+            str(tool_use.get("toolUseId"))
+            if isinstance(tool_use, dict) and tool_use.get("toolUseId")
+            else f"manual-{uuid.uuid4().hex}"
+        )
+        filename = os.path.basename(output_path)
+        media_type = (
+            mimetypes.guess_type(filename)[0]
+            or "application/octet-stream"
+        )
+        artifact_type = media_type.split("/", 1)[0]
+        publisher = SessionFilePublisher.from_environment()
+        file_ref = publisher.publish_code_interpreter_file(
+            code_interpreter=ci,
+            source_path=output_path,
+            user_id=user_id,
+            session_id=session_id,
+            filename=filename,
+            media_type=media_type,
+            artifact_type=artifact_type,
+            producer_tool="execute_code",
+            producer_id=tool_use_id,
+            idempotency_key=f"{tool_use_id}:0",
+        )
+        size_kb = int(file_ref.size_bytes or 0) / 1024
+        summary = (
+            f"Code executed. Published {file_ref.filename} "
+            f"({size_kb:.1f} KB)."
+        )
+        if stdout:
+            summary += f"\n\nstdout:\n{stdout[:500]}"
+        return build_success_response(
+            summary,
+            {
+                "files": [file_ref.to_dict()],
+                "fileId": file_ref.file_id,
+                "filename": file_ref.filename,
+            },
+        )
 
-                    lower_name = output_filename.lower()
-                    if lower_name.endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp')):
-                        return json.dumps({
-                            "content": [
-                                {"text": summary},
-                                {"image": {
-                                    "format": "png" if lower_name.endswith(".png") else "jpeg",
-                                    "source": {"bytes": "__IMAGE_BYTES__"},
-                                }},
-                            ],
-                            "status": "success",
-                        })
-                    return summary
-
+    except PublishError as e:
+        logger.error(f"execute_code publish error: {e}")
         return json.dumps({
-            "warning": f"Code executed but could not download '{output_filename}'.",
-            "stdout": stdout[:500] if stdout else "(none)",
-            "status": "partial",
+            "error": f"Code executed but the output could not be published: {e}",
+            "status": "error",
         })
-
     except Exception as e:
         logger.error(f"execute_code error: {e}")
         return json.dumps({"error": str(e), "status": "error"})

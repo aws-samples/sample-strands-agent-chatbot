@@ -145,3 +145,37 @@ resource "aws_dynamodb_table" "session_orchestration" {
     Component = "session-orchestration"
   }
 }
+
+resource "aws_dynamodb_table" "session_files" {
+  name         = "${var.project_name}-session-files"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "sessionKey"
+  range_key    = "recordKey"
+
+  attribute {
+    name = "sessionKey"
+    type = "S"
+  }
+
+  attribute {
+    name = "recordKey"
+    type = "S"
+  }
+
+  ttl {
+    enabled        = true
+    attribute_name = "ttl"
+  }
+
+  point_in_time_recovery {
+    enabled = true
+  }
+
+  server_side_encryption {
+    enabled = true
+  }
+
+  tags = {
+    Component = "session-files"
+  }
+}

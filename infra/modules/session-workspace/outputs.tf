@@ -6,10 +6,6 @@ output "file_system_arn" {
   value = aws_s3files_file_system.this.arn
 }
 
-output "frontend_access_point_arn" {
-  value = aws_s3files_access_point.frontend.arn
-}
-
 output "mount_target_security_group_id" {
   value = aws_security_group.mount_target.id
 }
