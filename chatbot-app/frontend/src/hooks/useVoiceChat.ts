@@ -20,6 +20,7 @@ import {
 } from '@/lib/audioUtils'
 import { fetchAuthSession } from 'aws-amplify/auth'
 import { AgentStatus } from '@/types/events'
+import { getRuntimeAccessToken } from '@/lib/runtime-auth'
 
 function toBase64Url(value: string): string {
   return btoa(value)
@@ -428,8 +429,7 @@ export function useVoiceChat({
       // Get auth token once (reused for BFF and WebSocket)
       let authToken: string | null = null
       try {
-        const session = await fetchAuthSession()
-        authToken = session.tokens?.accessToken?.toString() || null
+        authToken = await getRuntimeAccessToken()
       } catch {
         // Continue without auth for local development
       }

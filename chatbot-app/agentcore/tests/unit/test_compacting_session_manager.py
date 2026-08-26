@@ -9,10 +9,12 @@ Tests cover:
 - Edge cases and error handling
 """
 
-import pytest
-from unittest.mock import Mock, MagicMock, patch
+import json
 import os
 import sys
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'src'))
@@ -1301,6 +1303,59 @@ class TestTruncationWithProtectedIndices:
         assert truncation_count == 0
         assert chars_saved == 0
 
+    def test_hard_cap_applies_to_protected_tool_result(self, manager):
+        """A poisoned latest turn must be recoverable during session load."""
+        long_content = "D" * 120_000
+        messages = [{
+            "role": "user",
+            "content": [{
+                "toolResult": {
+                    "toolUseId": "1",
+                    "content": [{"text": long_content}],
+                },
+            }],
+        }]
+
+        result, truncation_count, chars_saved = manager._truncate_tool_contents(
+            messages,
+            protected_indices={0},
+        )
+
+        text = result[0]["content"][0]["toolResult"]["content"][0]["text"]
+        assert len(text) < len(long_content)
+        assert "[truncated," in text
+        assert truncation_count == 1
+        assert chars_saved == 20_000
+
+    def test_base64_envelope_is_removed_from_protected_tool_result(self, manager):
+        payload = json.dumps({
+            "path": "uploads/deck.pptx",
+            "encoding": "base64",
+            "content": "A" * 10_000,
+            "size": 7_500,
+            "status": "ok",
+        })
+        messages = [{
+            "role": "user",
+            "content": [{
+                "toolResult": {
+                    "toolUseId": "1",
+                    "content": [{"text": payload}],
+                },
+            }],
+        }]
+
+        result, truncation_count, _ = manager._truncate_tool_contents(
+            messages,
+            protected_indices={0},
+        )
+        text = result[0]["content"][0]["toolResult"]["content"][0]["text"]
+        parsed = json.loads(text)
+
+        assert parsed["content_omitted"] is True
+        assert "content" not in parsed
+        assert truncation_count == 1
+
 
 class TestEffectiveOffsetCalculation:
     """Test effective offset calculation combining conv_manager offset and checkpoint"""
@@ -1529,6 +1584,40 @@ class TestUpdateAfterTurnLogic:
 
         assert manager.compaction_state.checkpoint == 4
         assert manager.compaction_state.summary == "Updated summary"
+
+    def test_checkpoint_uses_absolute_persisted_history_index(self, manager):
+        """Sliding Window's relative agent history must not define the checkpoint."""
+        full_history = [
+            {"role": "user", "content": [{"text": "msg1"}]},
+            {"role": "assistant", "content": [{"text": "resp1"}]},
+            {"role": "user", "content": [{"text": "msg2"}]},
+            {"role": "assistant", "content": [{"text": "resp2"}]},
+            {"role": "user", "content": [{"text": "msg3"}]},
+            {"role": "assistant", "content": [{"text": "resp3"}]},
+            {"role": "user", "content": [{"text": "msg4"}]},
+            {"role": "assistant", "content": [{"text": "resp4"}]},
+        ]
+        stored_messages = []
+        for message in full_history:
+            stored = MagicMock()
+            stored.to_message.return_value = message
+            stored_messages.append(stored)
+
+        manager.session_id = "test-session"
+        manager.session_repository = MagicMock()
+        manager.session_repository.list_messages.return_value = stored_messages
+        agent = self._make_mock_agent(full_history[-4:])
+
+        with patch.object(manager, 'save_compaction_state'):
+            with patch.object(
+                manager,
+                '_generate_summary_for_compaction',
+                return_value="Absolute summary",
+            ) as summarize:
+                manager.update_after_turn(2000, 'test-agent', agent)
+
+        assert manager.compaction_state.checkpoint == 4
+        summarize.assert_called_once_with(full_history[:4])
 
     def test_does_not_update_checkpoint_backward(self, manager):
         """Should not update checkpoint if new_checkpoint <= current checkpoint"""

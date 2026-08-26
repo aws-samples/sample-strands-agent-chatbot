@@ -97,11 +97,20 @@ code-agent/         S3 API
 ```
 
 Workspace-panel uploads are written directly to the Code Interpreter workspace
-`inputs/` prefix. Chat attachments are stored by their document manager when
+`inputs/` prefix. PowerPoint tools use that canonical object directly; there is
+no separate import step or `documents/.../powerpoint` copy. Published PowerPoint
+files live under `artifacts/powerpoint/`. One hidden draft per source lives
+under `.drafts/powerpoint/`, is updated with S3 ETag preconditions, and is
+removed on finalize. Drafts expire after seven days and are excluded from
+Workspace and PowerPoint listings.
+
+Other supported chat attachments are stored by their document manager when
 applicable and copied once to the same `inputs/` prefix.
 Code Agent synchronizes that canonical prefix into its local `inputs/`
 directory before every delegated task; the orchestrator does not relay a
-separate file list or create another durable copy.
+second copy. It does relay the logical paths required by the delegated task,
+and Code Agent fails the task before execution when any required input is
+absent from the synchronized mirror.
 Workspace uploads use session-scoped presigned PUT URLs, so file bytes do not
 pass through the frontend task. Dev currently accepts workspace uploads up to
 100 MB. JSON-family chat attachments are limited to 4 MB and represented in
@@ -109,7 +118,10 @@ model context by at most 40,000 characters; the complete object remains in
 `inputs/` for Code Interpreter.
 S3 Files imports that prefix on first directory access. Code Interpreter output
 files are created directly in `/mnt/workspace`. Code Interpreter does not start
-when its session-scoped S3 Files mount cannot be configured or attached.
+when its session-scoped S3 Files mount cannot be configured, attached, or
+written. Session access points use a root POSIX identity because S3 Files
+imports S3-created directories as `root:root`; the access point root remains
+the user/session isolation boundary.
 
 Access point metadata is stored under the hidden
 `.workspace-access-points/{userId}/{sessionId}.json` prefix. Session deletion
@@ -142,8 +154,9 @@ remove the corresponding workspace root and access point.
 
 ## Consequences
 
-- Existing tools continue to work while the UI gains a unified file browser.
-- Storage migration does not require another frontend protocol change.
+- PowerPoint uses the canonical Workspace; Word and Excel retain their current
+  document namespaces until separately migrated.
+- The frontend upload protocol does not require a PowerPoint-specific import.
 - Artifacts and files remain separate concepts.
 - Workspace-panel and chat attachment uploads are imported into the session
   workspace. Real-time file change events, rename, and delete remain follow-up

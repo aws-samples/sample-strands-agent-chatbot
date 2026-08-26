@@ -3,11 +3,11 @@
 
 # Core Framework
 fastapi==0.141.1
-uvicorn[standard]==0.52.1
+uvicorn[standard]==0.52.4
 
 # Strands Agent Framework
-strands-agents[a2a,otel]==1.51.0
-strands-agents-tools[a2a_client]>=0.8.5
+strands-agents[a2a,otel]==1.53.0
+strands-agents-tools[a2a_client]>=0.8.6
 mcp>=1.28.1,<2.0.0
 
 # OpenAI SDK - required for Bedrock Mantle OpenAI-compatible models (gpt-5.x, grok, gemma-4)
@@ -39,7 +39,7 @@ pymupdf>=1.28.0  # PDF text extraction for large files exceeding Bedrock's 4.5MB
 openpyxl>=3.1.5  # Excel sheet name extraction for preview
 defusedxml>=0.7.1  # Safe XML parsing for PPTX engine
 
-bedrock-agentcore==1.21.0
+bedrock-agentcore==1.22.0
 
 # Nova Act SDK (for natural language browser automation via AgentCore Browser)
 # NOTE: nova-act requires --no-deps due to strands-agents version conflict
@@ -57,7 +57,7 @@ install_playwright>=1.0.2,<2.0.0
 mypy-boto3-s3
 
 # AG-UI Protocol (agent-to-UI streaming standard)
-ag-ui-protocol>=0.1.19
+ag-ui-protocol>=0.1.20
 
 # Registry YAML loader
 PyYAML>=6.0

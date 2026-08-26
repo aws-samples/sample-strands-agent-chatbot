@@ -9,7 +9,7 @@
  */
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
-import { Markdown } from '@/components/ui/Markdown'
+import { Markdown, workspacePathFromHref } from '@/components/ui/Markdown'
 
 // Mock ChartRenderer
 vi.mock('@/components/ChartRenderer', () => ({
@@ -44,6 +44,27 @@ describe('Markdown', () => {
       const link = screen.getByRole('link')
       expect(link).toHaveAttribute('href', 'https://example.com')
       expect(link).toHaveAttribute('target', '_blank')
+    })
+
+    it('should render mounted scratch paths as non-clickable text', () => {
+      render(
+        <Markdown sessionId="session-1">
+          {'[Download PDF](/mnt/workspace/report.pdf)'}
+        </Markdown>,
+      )
+
+      expect(screen.getByText('Download PDF')).toHaveAttribute(
+        'title',
+        'Code Interpreter scratch paths are not downloadable',
+      )
+      expect(screen.queryByRole('link', { name: 'Download PDF' })).toBeNull()
+      expect(screen.queryByRole('button', { name: 'Download PDF' })).toBeNull()
+    })
+
+    it('should normalize sandbox workspace links', () => {
+      expect(workspacePathFromHref(
+        'sandbox:/mnt/workspace/reports/job.pdf',
+      )).toBe('code-interpreter/reports/job.pdf')
     })
 
     it('should render inline code', () => {

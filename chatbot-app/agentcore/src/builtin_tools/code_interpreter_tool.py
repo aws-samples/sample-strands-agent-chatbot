@@ -19,7 +19,12 @@ from skill import register_skill
 from typing import Any, Dict, Optional
 import json
 import logging
+import mimetypes
 import os
+import uuid
+
+from builtin_tools.lib.tool_response import build_success_response
+from session_files.publisher import PublishError, SessionFilePublisher
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +37,7 @@ _ci_clients: Dict[str, Any] = {}
 _STATE_CI_SESSION_ID = "ci_session_id"
 _STATE_CI_IDENTIFIER = "ci_identifier"
 _STATE_CI_MOUNTED_WORKSPACE = "ci_mounted_workspace"
+_MOUNTED_WORKSPACE_VERSION = "root-v2"
 
 # Session timeout in seconds (1 hour; max is 28800 = 8 hours)
 _SESSION_TIMEOUT_SECONDS = 3600
@@ -119,7 +125,10 @@ def get_ci_session(tool_context: ToolContext) -> Any:
     # Step 1: Try in-process cache (fast path — same process, same turn or consecutive turns)
     ci = _ci_clients.get(session_key)
     if ci is not None:
-        if tool_context.agent.state.get(_STATE_CI_MOUNTED_WORKSPACE) is not True:
+        if (
+            tool_context.agent.state.get(_STATE_CI_MOUNTED_WORKSPACE)
+            != _MOUNTED_WORKSPACE_VERSION
+        ):
             logger.info("Discarding non-mounted cached CI session: %s", session_key)
             try:
                 ci.stop()
@@ -154,14 +163,17 @@ def get_ci_session(tool_context: ToolContext) -> Any:
     stored_session_id = agent_state.get(_STATE_CI_SESSION_ID)
     stored_identifier = agent_state.get(_STATE_CI_IDENTIFIER)
 
-    mounted_session = agent_state.get(_STATE_CI_MOUNTED_WORKSPACE) is True
+    mounted_session = (
+        agent_state.get(_STATE_CI_MOUNTED_WORKSPACE)
+        == _MOUNTED_WORKSPACE_VERSION
+    )
     if stored_session_id and stored_identifier and mounted_session:
         ci = CodeInterpreter(region)
         ci.identifier = stored_identifier
         ci.session_id = stored_session_id
         if _is_session_alive(ci, stored_identifier, stored_session_id):
             try:
-                _prepare_mounted_workspace(ci)
+                _prepare_mounted_workspace(ci, verify_write=True)
                 logger.info(f"Reattached to existing CI session: {stored_session_id}")
                 _ci_clients[session_key] = ci
                 return ci
@@ -227,13 +239,13 @@ def get_ci_session(tool_context: ToolContext) -> Any:
     # Store in agent.state for cross-turn persistence
     agent_state.set(_STATE_CI_SESSION_ID, ci.session_id)
     agent_state.set(_STATE_CI_IDENTIFIER, identifier)
-    agent_state.set(_STATE_CI_MOUNTED_WORKSPACE, True)
+    agent_state.set(_STATE_CI_MOUNTED_WORKSPACE, _MOUNTED_WORKSPACE_VERSION)
 
     # Cache in-process
     _ci_clients[session_key] = ci
 
     try:
-        _prepare_mounted_workspace(ci)
+        _prepare_mounted_workspace(ci, verify_write=True)
     except Exception as error:
         _ci_clients.pop(session_key, None)
         agent_state.set(_STATE_CI_SESSION_ID, None)
@@ -249,8 +261,8 @@ def get_ci_session(tool_context: ToolContext) -> Any:
     return ci
 
 
-def _prepare_mounted_workspace(ci: Any) -> None:
-    """Set the Code Interpreter working directory and trigger input import."""
+def _prepare_mounted_workspace(ci: Any, *, verify_write: bool = False) -> None:
+    """Set the working directory, trigger input import, and verify write access."""
     mount_path = os.getenv("S3_FILES_MOUNT_PATH", "/mnt/workspace")
     code = (
         "import os\n"
@@ -262,6 +274,15 @@ def _prepare_mounted_workspace(ci: Any) -> None:
         "if os.path.isdir(_inputs):\n"
         "    list(os.scandir(_inputs))\n"
     )
+    if verify_write:
+        code += (
+            "import tempfile\n"
+            "with tempfile.NamedTemporaryFile(\n"
+            "    dir=_mount, prefix='.workspace-write-probe-', delete=True\n"
+            ") as _probe:\n"
+            "    _probe.write(b'ok')\n"
+            "    _probe.flush()\n"
+        )
     response = ci.invoke("executeCode", {
         "code": code,
         "language": "python",
@@ -327,7 +348,7 @@ def execute_code(
     language: str = "python",
     output_filename: str = "",
     tool_context: ToolContext = None,
-) -> str:
+) -> Any:
     """Execute code in a sandboxed Code Interpreter environment.
 
     Supports Python (recommended, 200+ libraries), JavaScript, and TypeScript.
@@ -336,8 +357,8 @@ def execute_code(
     Args:
         code: Code to execute.
         language: "python" (default), "javascript", or "typescript".
-        output_filename: Optional. If provided, downloads this file after execution
-                        and saves it to workspace. Code must save a file with this exact name.
+        output_filename: Optional. If provided, publishes this file as a durable
+                        session file. Code must save a file with this exact name.
 
     Returns:
         Execution stdout, or file confirmation if output_filename is set.
@@ -362,42 +383,57 @@ def execute_code(
         if not output_filename:
             return stdout or "(no output)"
 
-        # Download output file
         output_path = _mounted_path(output_filename)
-        download_response = ci.invoke("readFiles", {"paths": [output_path]})
-        for event in download_response.get("stream", []):
-            result = event.get("result", {})
-            for item in result.get("content", []):
-                if not isinstance(item, dict):
-                    continue
-                blob = item.get("data") or item.get("resource", {}).get("blob")
-                if blob:
-                    size_kb = len(blob) / 1024
-                    workspace_path = f"code-interpreter/{output_filename}"
-                    summary = f"Code executed. File saved: {workspace_path} ({size_kb:.1f} KB)"
-                    if stdout:
-                        summary += f"\n\nstdout:\n{stdout[:500]}"
+        invocation_state = tool_context.invocation_state
+        user_id = invocation_state.get("user_id", "default_user")
+        session_id = invocation_state.get("session_id", "default_session")
+        tool_use = getattr(tool_context, "tool_use", None)
+        tool_use_id = (
+            str(tool_use.get("toolUseId"))
+            if isinstance(tool_use, dict) and tool_use.get("toolUseId")
+            else f"manual-{uuid.uuid4().hex}"
+        )
+        filename = os.path.basename(output_path)
+        media_type = (
+            mimetypes.guess_type(filename)[0]
+            or "application/octet-stream"
+        )
+        artifact_type = media_type.split("/", 1)[0]
+        publisher = SessionFilePublisher.from_environment()
+        file_ref = publisher.publish_code_interpreter_file(
+            code_interpreter=ci,
+            source_path=output_path,
+            user_id=user_id,
+            session_id=session_id,
+            filename=filename,
+            media_type=media_type,
+            artifact_type=artifact_type,
+            producer_tool="execute_code",
+            producer_id=tool_use_id,
+            idempotency_key=f"{tool_use_id}:0",
+        )
+        size_kb = int(file_ref.size_bytes or 0) / 1024
+        summary = (
+            f"Code executed. Published {file_ref.filename} "
+            f"({size_kb:.1f} KB)."
+        )
+        if stdout:
+            summary += f"\n\nstdout:\n{stdout[:500]}"
+        return build_success_response(
+            summary,
+            {
+                "files": [file_ref.to_dict()],
+                "fileId": file_ref.file_id,
+                "filename": file_ref.filename,
+            },
+        )
 
-                    lower_name = output_filename.lower()
-                    if lower_name.endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp')):
-                        return json.dumps({
-                            "content": [
-                                {"text": summary},
-                                {"image": {
-                                    "format": "png" if lower_name.endswith(".png") else "jpeg",
-                                    "source": {"bytes": "__IMAGE_BYTES__"},
-                                }},
-                            ],
-                            "status": "success",
-                        })
-                    return summary
-
+    except PublishError as e:
+        logger.error(f"execute_code publish error: {e}")
         return json.dumps({
-            "warning": f"Code executed but could not download '{output_filename}'.",
-            "stdout": stdout[:500] if stdout else "(none)",
-            "status": "partial",
+            "error": f"Code executed but the output could not be published: {e}",
+            "status": "error",
         })
-
     except Exception as e:
         logger.error(f"execute_code error: {e}")
         return json.dumps({"error": str(e), "status": "error"})
