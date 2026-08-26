@@ -4,7 +4,7 @@
 # Testing framework
 pytest>=9.1.1
 pytest-asyncio>=0.24.0
-pytest-cov>=6.0.0
+pytest-cov>=7.1.0
 
 # AWS mocking (for integration tests)
 moto>=5.2.2
