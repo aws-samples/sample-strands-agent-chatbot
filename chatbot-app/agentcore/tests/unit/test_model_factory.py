@@ -154,8 +154,9 @@ class TestBedrockRuntimeResponsesRouting:
     def test_legacy_gpt_ids_use_runtime_responses(self, legacy_id, canonical_id):
         model = build_model(legacy_id)
         assert model.config["model_id"] == canonical_id
-        assert "bedrock-runtime.us-west-2.amazonaws.com" in (
+        assert (
             model.client_args["base_url"]
+            == "https://bedrock-runtime.us-west-2.amazonaws.com/openai/v1"
         )
 
     @pytest.mark.parametrize(("file_format", "expected_mime"), [
