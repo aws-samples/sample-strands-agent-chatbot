@@ -34,8 +34,15 @@ class SkillChatAgent(ChatAgent):
     The rest of the ChatAgent behavior (streaming, session, hooks) is inherited.
     """
 
-    def __init__(self, *args, disabled_skills: list[str] | None = None, **kwargs):
+    def __init__(
+        self,
+        *args,
+        disabled_skills: list[str] | None = None,
+        tool_free: bool = False,
+        **kwargs,
+    ):
         self._disabled_skills: set = set(disabled_skills or [])
+        self._tool_free = tool_free
         super().__init__(*args, **kwargs)
 
     def _build_system_prompt(self):
@@ -53,6 +60,10 @@ class SkillChatAgent(ChatAgent):
 
     def _load_tools(self):
         """Override: inject tool IDs for skills not in the disabled set."""
+        if self._tool_free:
+            self.enabled_tools = []
+            return super()._load_tools()
+
         if self.enabled_tools is None:
             self.enabled_tools = []
         has_auth = bool(getattr(self, 'auth_token', None))

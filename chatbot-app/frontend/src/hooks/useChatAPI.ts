@@ -3,13 +3,14 @@ import { Message, ToolExecution, WorkspaceAttachment } from '@/types/chat'
 import { AGUIStreamEvent, ChatUIState, AGUI_EVENT_TYPES } from '@/types/events'
 import { getApiUrl } from '@/config/environment'
 import logger from '@/utils/logger'
-import { fetchAuthSession, getCurrentUser } from 'aws-amplify/auth'
+import { getCurrentUser } from 'aws-amplify/auth'
 import { buildToolMaps, createToolExecution } from '@/utils/messageParser'
 import { isSessionTimedOut, getLastActivity, updateLastActivity, clearSessionData, triggerWarmup, generateSessionId } from '@/config/session'
 import { isA2ATool } from './usePolling'
 import { useSSEReconnect } from './useSSEReconnect'
 import { validateAGUIStreamEvent } from '@/utils/sseParser'
 import { arrayBufferToBase64 } from '@/lib/base64'
+import { getRuntimeAuthHeaders } from '@/lib/runtime-auth'
 
 /**
  * Process swarm message content blocks in order to preserve text/tool interleaving.
@@ -315,14 +316,9 @@ export const useChatAPI = ({
    */
   const getAuthHeaders = async (): Promise<Record<string, string>> => {
     try {
-      const session = await fetchAuthSession()
-      const token = session.tokens?.accessToken?.toString()
-
-      if (token) {
-        return { 'Authorization': `Bearer ${token}` }
-      }
+      return await getRuntimeAuthHeaders()
     } catch (error) {
-      logger.debug('No auth session available (local dev or not authenticated)')
+      logger.error('Failed to prepare AgentCore Runtime authentication:', error)
     }
     return {}
   }
@@ -592,12 +588,32 @@ export const useChatAPI = ({
           headers['X-Session-ID'] = currentSessionId
         }
 
-        let response = await fetch(getApiUrl('stream/chat'), {
-          method: 'POST',
-          headers,
-          body: aguiBody,
-          signal: localAbortController.signal
-        })
+        const sendRequest = (requestHeaders: Record<string, string>) => fetch(
+          getApiUrl('stream/chat'),
+          {
+            method: 'POST',
+            headers: requestHeaders,
+            body: aguiBody,
+            signal: localAbortController.signal
+          },
+        )
+
+        let response = await sendRequest(headers)
+
+        // The BFF uses the server clock to enforce AgentCore's minimum JWT
+        // lifetime. Refresh and retry exactly once only for that explicit case.
+        if (response.status === 401) {
+          const payload = await response.clone().json().catch(() => null)
+          if (payload?.code === 'AUTH_TOKEN_STALE') {
+            const refreshedAuthHeaders = await getRuntimeAuthHeaders({ forceRefresh: true })
+            if (!refreshedAuthHeaders.Authorization) {
+              throw new Error('Authentication session expired. Please sign in again.')
+            }
+            Object.assign(authHeaders, refreshedAuthHeaders)
+            Object.assign(headers, refreshedAuthHeaders)
+            response = await sendRequest(headers)
+          }
+        }
 
         // Retry on transient errors (502, 503, 504) with exponential backoff
         if (!response.ok) {

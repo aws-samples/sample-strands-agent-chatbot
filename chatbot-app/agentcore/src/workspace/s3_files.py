@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 _SAFE_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 _STATE_ACCESS_POINT_ID = "ci_workspace_access_point_v2_id"
 _STATE_ACCESS_POINT_ARN = "ci_workspace_access_point_v2_arn"
+_ACCESS_POINT_IDENTITY_VERSION = "root-v2"
 
 
 def get_s3_files_configuration() -> Optional[Dict[str, str]]:
@@ -93,11 +94,20 @@ def get_or_create_session_access_point(
     client = boto3.client("s3files", region_name=region)
     stored_id = agent_state.get(_STATE_ACCESS_POINT_ID)
     stored_arn = agent_state.get(_STATE_ACCESS_POINT_ARN)
+    root_path = f"/{code_interpreter_prefix(user_id, session_id).rstrip('/')}"
+    stale_access_point_id = None
 
     if stored_id and stored_arn:
         try:
             response = client.get_access_point(accessPointId=stored_id)
-            if str(response.get("status", "")).upper() == "AVAILABLE":
+            posix_user = response.get("posixUser") or {}
+            compatible = (
+                str(response.get("status", "")).upper() == "AVAILABLE"
+                and response.get("rootDirectory", {}).get("path") == root_path
+                and posix_user.get("uid") == 0
+                and posix_user.get("gid") == 0
+            )
+            if compatible:
                 _persist_access_point_registry(
                     user_id,
                     session_id,
@@ -109,23 +119,27 @@ def get_or_create_session_access_point(
                     "access_point_id": stored_id,
                     "access_point_arn": stored_arn,
                 }
+            stale_access_point_id = stored_id
         except Exception as error:
             logger.info("Stored S3 Files access point is unavailable: %s", error)
 
     token_source = (
-        f"{config['file_system_id']}:{user_id}:{session_id}:code-interpreter"
+        f"{config['file_system_id']}:{user_id}:{session_id}:"
+        f"code-interpreter:{_ACCESS_POINT_IDENTITY_VERSION}"
     )
     client_token = hashlib.sha256(token_source.encode("utf-8")).hexdigest()
-    root_path = f"/{code_interpreter_prefix(user_id, session_id).rstrip('/')}"
     response = client.create_access_point(
         clientToken=client_token,
         fileSystemId=config["file_system_id"],
-        posixUser={"uid": 1000, "gid": 1000},
+        # S3 Files imports S3-created directories as root:root. The access point
+        # remains session-rooted, while this server-side identity permits output
+        # creation alongside imported inputs.
+        posixUser={"uid": 0, "gid": 0},
         rootDirectory={
             "path": root_path,
             "creationPermissions": {
-                "ownerUid": 1000,
-                "ownerGid": 1000,
+                "ownerUid": 0,
+                "ownerGid": 0,
                 "permissions": "0750",
             },
         },
@@ -141,6 +155,15 @@ def get_or_create_session_access_point(
         access_point_id,
         access_point_arn,
     )
+    if stale_access_point_id and stale_access_point_id != access_point_id:
+        try:
+            client.delete_access_point(accessPointId=stale_access_point_id)
+        except Exception as error:
+            logger.info(
+                "Could not delete superseded S3 Files access point %s: %s",
+                stale_access_point_id,
+                error,
+            )
     logger.info(
         "Created S3 Files access point %s for session workspace",
         access_point_id,

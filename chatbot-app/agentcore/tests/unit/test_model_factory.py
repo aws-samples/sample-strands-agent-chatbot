@@ -12,6 +12,8 @@ import pytest
 from unittest.mock import patch, MagicMock
 
 import agents.model_factory as mf
+from strands.models.openai_responses import OpenAIResponsesModel
+from strands.types.exceptions import ContextWindowOverflowException
 from agents.model_factory import (
     build_model,
     model_rejects_temperature,
@@ -135,6 +137,36 @@ class TestMantleRouting:
         model = build_model("openai.gpt-5.6-sol")
         out = type(model)._format_request_message_content({"text": "hi"})
         assert out == {"type": "input_text", "text": "hi"}
+
+    @pytest.mark.asyncio
+    @patch.dict(os.environ, {"AWS_BEARER_TOKEN_BEDROCK": "test-key"})
+    async def test_normalizes_mantle_prompt_token_overflow(self):
+        async def failing_stream(_self, *args, **kwargs):
+            if False:
+                yield None
+            raise RuntimeError(
+                "prompt tokens (1209034) exceed model maximum (1050000)"
+            )
+
+        model = build_model("openai.gpt-5.6-sol")
+        with patch.object(OpenAIResponsesModel, "stream", failing_stream):
+            with pytest.raises(ContextWindowOverflowException, match="1209034"):
+                async for _ in model.stream([]):
+                    pass
+
+    @pytest.mark.asyncio
+    @patch.dict(os.environ, {"AWS_BEARER_TOKEN_BEDROCK": "test-key"})
+    async def test_preserves_unrelated_mantle_errors(self):
+        async def failing_stream(_self, *args, **kwargs):
+            if False:
+                yield None
+            raise RuntimeError("upstream connection reset")
+
+        model = build_model("openai.gpt-5.6-sol")
+        with patch.object(OpenAIResponsesModel, "stream", failing_stream):
+            with pytest.raises(RuntimeError, match="connection reset"):
+                async for _ in model.stream([]):
+                    pass
 
 
 class TestApiKeyResolution:

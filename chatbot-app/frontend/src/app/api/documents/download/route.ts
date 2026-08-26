@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm'
 import { extractUserFromRequest } from '@/lib/auth-utils'
+import { codeInterpreterWorkspaceId } from '@/lib/workspace/s3-repository'
 
 const region = process.env.AWS_REGION || 'us-west-2'
 
@@ -85,8 +86,12 @@ export async function POST(request: NextRequest) {
       finalFilename = `${filename}${config.extension}`
     }
 
-    // Reconstruct S3 path based on document type
-    const s3Key = `s3://${documentBucket}/documents/${userId}/${sessionId}/${documentType}/${finalFilename}`
+    // PowerPoint outputs are published into the canonical session Workspace.
+    // Other document tools retain their existing namespaces until migrated.
+    const objectKey = documentType === 'powerpoint'
+      ? `code-interpreter-workspace/${codeInterpreterWorkspaceId(userId, sessionId)}/artifacts/powerpoint/${finalFilename}`
+      : `documents/${userId}/${sessionId}/${documentType}/${finalFilename}`
+    const s3Key = `s3://${documentBucket}/${objectKey}`
 
     console.log(`[DocumentDownload] Reconstructed S3 key: ${s3Key}`)
 

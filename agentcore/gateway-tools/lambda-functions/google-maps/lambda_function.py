@@ -275,7 +275,6 @@ def get_place_details(params: Dict[str, Any]) -> Dict[str, Any]:
     # Extract parameters
     place_id = params.get('place_id')
     language = params.get('language', 'en')
-    reviews_sort = params.get('reviews_sort', 'most_relevant')  # "most_relevant" or "newest"
 
     if not place_id:
         return error_response("place_id parameter required")
@@ -284,21 +283,20 @@ def get_place_details(params: Dict[str, Any]) -> Dict[str, Any]:
 
     try:
         # Request specific fields to optimize cost
-        # Note: 'photos' and 'types' are not valid as fields parameter,
-        # but are automatically included in basic response
+        # googlemaps uses the legacy Places field identifiers here: the request
+        # names are singular even though the response keys are plural.
         fields = [
             "name", "formatted_address", "formatted_phone_number",
             "geometry", "rating", "user_ratings_total",
-            "reviews", "website", "opening_hours", "price_level",
-            "url"
+            "review", "photo", "type", "website", "opening_hours",
+            "price_level", "url"
         ]
 
         # Call Places API Place Details
         result = gmaps.place(
             place_id=place_id,
             fields=fields,
-            language=language,
-            reviews_sort=reviews_sort
+            language=language
         )
 
         place = result.get('result', {})

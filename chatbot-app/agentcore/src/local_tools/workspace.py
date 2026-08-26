@@ -22,7 +22,8 @@ from workspace.paths import code_interpreter_prefix
 
 logger = logging.getLogger(__name__)
 
-# Extensions treated as binary (base64 encoded on read)
+# Extensions treated as binary. Binary payloads must not be returned as text:
+# a single base64-encoded Office file can exceed the model context window.
 _BINARY_EXTENSIONS = {
     '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico', '.svg',
     '.pdf', '.pptx', '.ppt', '.docx', '.doc', '.xlsx', '.xls',
@@ -93,9 +94,9 @@ def workspace_list(path: str = '', tool_context: ToolContext = None) -> str:
         user_id, session_id = _get_ids(tool_context)
         bucket = get_workspace_bucket()
         s3 = _s3_client()
+        ci_prefix = code_interpreter_prefix(user_id, session_id)
 
         if not path or path.strip('/') == '':
-            ci_prefix = code_interpreter_prefix(user_id, session_id)
             s3_prefixes = [
                 f"{ci_prefix}inputs/",
                 f"code-agent-workspace/{user_id}/{session_id}/",
@@ -113,6 +114,10 @@ def workspace_list(path: str = '', tool_context: ToolContext = None) -> str:
                 for obj in page.get('Contents', []):
                     key = obj['Key']
                     if not key.endswith('/'):
+                        if key.startswith(ci_prefix):
+                            relative_parts = key[len(ci_prefix):].split("/")
+                            if any(part.startswith(".") for part in relative_parts):
+                                continue
                         logical_path = _to_logical_path(user_id, session_id, key)
                         if logical_path in seen_paths:
                             continue
@@ -135,7 +140,8 @@ def workspace_read(path: str, tool_context: ToolContext = None) -> str:
     """Read a file from the shared session workspace.
 
     Text files are returned as plain strings.
-    Binary files (images, PDFs, Office docs) are returned base64-encoded.
+    Binary files return metadata only; use the relevant document tool or Code
+    Interpreter to inspect their contents.
 
     Args:
         path: Logical path, e.g.:
@@ -145,7 +151,7 @@ def workspace_read(path: str, tool_context: ToolContext = None) -> str:
               'documents/image/chart.png'
 
     Returns:
-        JSON with content (text or base64), encoding, and size.
+        JSON with text content, or metadata for binary files.
     """
     try:
         user_id, session_id = _get_ids(tool_context)
@@ -155,12 +161,16 @@ def workspace_read(path: str, tool_context: ToolContext = None) -> str:
         s3_key = _to_s3_key(user_id, session_id, path)
         response = s3.get_object(Bucket=bucket, Key=s3_key)
         if _is_binary(path):
-            data = response['Body'].read()
+            size = int(response.get('ContentLength', 0))
             return json.dumps({
                 'path': path,
-                'encoding': 'base64',
-                'content': base64.b64encode(data).decode('utf-8'),
-                'size': len(data),
+                'encoding': 'binary',
+                'size': size,
+                'content_omitted': True,
+                'message': (
+                    'Binary content is not returned inline. Use the appropriate '
+                    'document/presentation tool or Code Interpreter to inspect this file.'
+                ),
                 'status': 'ok',
             })
         else:

@@ -20,6 +20,7 @@ from typing import Optional
 
 import boto3
 from strands.models import BedrockModel, CacheConfig
+from strands.types.exceptions import ContextWindowOverflowException
 
 from agent.config.model_catalog import get_model_catalog
 # Re-exported for callers that already reach for model_factory. The registry
@@ -33,6 +34,20 @@ from agent.config.model_context_windows import (  # noqa: F401
 
 logger = logging.getLogger(__name__)
 _MODEL_CATALOG = get_model_catalog()
+_CONTEXT_OVERFLOW_MARKERS = (
+    "context_length_exceeded",
+    "prompt is too long",
+    "maximum context length",
+    "context length exceeded",
+    "context window exceeded",
+)
+
+
+def _is_context_overflow_error(error: BaseException) -> bool:
+    message = str(error).lower()
+    if "prompt tokens" in message and "exceed model maximum" in message:
+        return True
+    return any(marker in message for marker in _CONTEXT_OVERFLOW_MARKERS)
 
 
 # Reasoning models that reject the `temperature` inference param. Listed by
@@ -138,19 +153,26 @@ def _make_bedrock_mantle_responses_model(model_id: str, spec: MantleSpec, max_to
             while True:
                 lead_buffer = []
                 produced = False
-                async for event in super().stream(*args, **kwargs):
-                    if produced:
-                        yield event
-                        continue
-                    key = next(iter(event.keys())) if isinstance(event, dict) else None
-                    if key in self._CONTENT_KEYS:
-                        produced = True
-                        for held in lead_buffer:
-                            yield held
-                        lead_buffer = []
-                        yield event
-                    else:
-                        lead_buffer.append(event)
+                try:
+                    async for event in super().stream(*args, **kwargs):
+                        if produced:
+                            yield event
+                            continue
+                        key = next(iter(event.keys())) if isinstance(event, dict) else None
+                        if key in self._CONTENT_KEYS:
+                            produced = True
+                            for held in lead_buffer:
+                                yield held
+                            lead_buffer = []
+                            yield event
+                        else:
+                            lead_buffer.append(event)
+                except ContextWindowOverflowException:
+                    raise
+                except Exception as error:
+                    if _is_context_overflow_error(error):
+                        raise ContextWindowOverflowException(str(error)) from error
+                    raise
                 if produced:
                     return
                 if attempt < self.MAX_RETRIES:

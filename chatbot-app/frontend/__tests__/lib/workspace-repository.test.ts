@@ -27,7 +27,7 @@ describe('S3WorkspaceRepository', () => {
     expect(page.entries.map(entry => entry.path)).toEqual([
       'uploads',
       'documents',
-      'code-interpreter',
+      'outputs',
       'code-agent',
     ])
     expect(send).not.toHaveBeenCalled()
@@ -105,7 +105,7 @@ describe('S3WorkspaceRepository', () => {
     const preview = await repository.preview(
       'user-1',
       'session-1',
-      'code-interpreter/chart.png',
+      'documents/chart.png',
     )
 
     expect(preview).toMatchObject({

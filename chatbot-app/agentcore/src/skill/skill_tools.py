@@ -7,9 +7,12 @@ Skill infrastructure tools for progressive disclosure.
 
 import asyncio
 import concurrent.futures
+import copy
 import json
 import logging
+import os
 from datetime import timedelta
+from typing import Any
 
 from strands import tool
 from strands.types.tools import ToolContext
@@ -20,6 +23,153 @@ logger = logging.getLogger(__name__)
 
 # Module-level registry reference, set by SkillChatAgent during init
 _registry = None
+_DEFAULT_SKILL_RESULT_MAX_CHARS = 100_000
+
+
+def _normalize_executor_input(
+    value: dict[str, Any] | str | None,
+    parameter_name: str,
+) -> dict[str, Any]:
+    """Return a structured executor input without repairing malformed payloads."""
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str):
+        raise ValueError(f"{parameter_name} must be a JSON object")
+
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"{parameter_name} must be valid JSON object syntax "
+            f"(invalid JSON at character {exc.pos})"
+        ) from exc
+
+    if not isinstance(parsed, dict):
+        raise ValueError(f"{parameter_name} must decode to a JSON object")
+    return parsed
+
+
+def _skill_result_max_chars() -> int:
+    try:
+        return max(1_000, int(os.getenv(
+            "SKILL_RESULT_MAX_CHARS",
+            str(_DEFAULT_SKILL_RESULT_MAX_CHARS),
+        )))
+    except ValueError:
+        return _DEFAULT_SKILL_RESULT_MAX_CHARS
+
+
+def _truncate_result_text(text: str, max_chars: int) -> str:
+    """Keep a bounded start/end preview of oversized tool text."""
+    if len(text) <= max_chars:
+        return text
+    marker = f"\n... [tool result truncated, {len(text) - max_chars:,} chars omitted] ...\n"
+    if max_chars <= len(marker):
+        return marker[:max_chars]
+    preview_chars = max(0, max_chars - len(marker))
+    start_chars = (preview_chars + 1) // 2
+    end_chars = preview_chars // 2
+    return text[:start_chars] + marker + (text[-end_chars:] if end_chars else "")
+
+
+def _strip_inline_base64_envelope(value):
+    """Remove binary text from common JSON envelopes while retaining metadata."""
+    if not isinstance(value, dict):
+        return value
+    if str(value.get("encoding", "")).lower() != "base64":
+        return value
+    if not isinstance(value.get("content"), str):
+        return value
+
+    sanitized = dict(value)
+    sanitized.pop("content", None)
+    sanitized["content_omitted"] = True
+    sanitized.setdefault(
+        "message",
+        "Inline base64 content was omitted. Use the appropriate file-processing tool.",
+    )
+    return sanitized
+
+
+def _content_embeds_metadata(content) -> bool:
+    if not isinstance(content, list):
+        return False
+    for block in content:
+        if not isinstance(block, dict) or not isinstance(block.get("text"), str):
+            continue
+        try:
+            parsed = json.loads(block["text"])
+        except (TypeError, ValueError):
+            continue
+        if isinstance(parsed, dict) and "metadata" in parsed:
+            return True
+    return False
+
+
+def _sanitize_content_text(text: str, max_chars: int) -> str:
+    """Sanitize a text block while keeping structured response envelopes valid."""
+    try:
+        parsed = json.loads(text)
+    except (TypeError, ValueError):
+        return _truncate_result_text(text, max_chars)
+
+    sanitized = _strip_inline_base64_envelope(parsed)
+    if isinstance(sanitized, dict) and isinstance(sanitized.get("text"), str):
+        nested_text = sanitized["text"]
+        without_text = dict(sanitized)
+        without_text["text"] = ""
+        overhead = len(json.dumps(without_text, ensure_ascii=False, default=str))
+        nested_limit = max(0, max_chars - overhead)
+        for _ in range(3):
+            sanitized["text"] = _truncate_result_text(nested_text, nested_limit)
+            serialized = json.dumps(sanitized, ensure_ascii=False, default=str)
+            overflow = len(serialized) - max_chars
+            if overflow <= 0:
+                return serialized
+            nested_limit = max(0, nested_limit - overflow)
+
+    serialized = json.dumps(sanitized, ensure_ascii=False, default=str)
+    return _truncate_result_text(serialized, max_chars)
+
+
+def _sanitize_skill_result(result, max_chars: int | None = None):
+    """Bound textual tool output without modifying native image/document blocks."""
+    limit = max_chars or _skill_result_max_chars()
+
+    if isinstance(result, str):
+        try:
+            parsed = json.loads(result)
+        except (TypeError, ValueError):
+            return _truncate_result_text(result, limit)
+
+        sanitized = _strip_inline_base64_envelope(parsed)
+        serialized = json.dumps(sanitized, ensure_ascii=False, default=str)
+        return _truncate_result_text(serialized, limit)
+
+    if isinstance(result, dict):
+        sanitized = copy.deepcopy(_strip_inline_base64_envelope(result))
+        content = sanitized.get("content")
+        if isinstance(content, list):
+            remaining = limit
+            for block in content:
+                if not isinstance(block, dict) or not isinstance(block.get("text"), str):
+                    continue
+                text = block["text"]
+                block["text"] = _sanitize_content_text(text, remaining)
+                remaining = max(0, remaining - len(block["text"]))
+            if "metadata" in sanitized and _content_embeds_metadata(content):
+                sanitized.pop("metadata", None)
+            return sanitized
+
+        serialized = json.dumps(sanitized, ensure_ascii=False, default=str)
+        if len(serialized) > limit:
+            return _truncate_result_text(serialized, limit)
+        return sanitized
+
+    text = str(result)
+    return _truncate_result_text(text, limit)
 
 
 def set_dispatcher_registry(registry) -> None:
@@ -289,9 +439,9 @@ def skill_executor(
     tool_context: ToolContext,
     skill_name: str,
     tool_name: str = None,
-    tool_input = None,
+    tool_input: dict[str, Any] | None = None,
     script_name: str = None,
-    script_input = None,
+    script_input: dict[str, Any] | None = None,
 ) -> str:
     """Execute a tool or script from an activated skill.
 
@@ -325,24 +475,20 @@ def skill_executor(
             "status": "error",
         })
 
-    # Normalize tool_input / script_input: LLM sometimes passes a JSON string instead of a dict
-    def _coerce_to_dict(value):
-        if value is None or isinstance(value, dict):
-            return value
-        if isinstance(value, str):
-            # Strip trailing XML artifacts the LLM may append (e.g. "\n</invoke>")
-            cleaned = value.strip()
-            if '</invoke>' in cleaned:
-                cleaned = cleaned[:cleaned.rfind('</invoke>')].rstrip()
-            try:
-                parsed = json.loads(cleaned)
-                return parsed if isinstance(parsed, dict) else {}
-            except Exception:
-                return {}
-        return {}
-
-    tool_input = _coerce_to_dict(tool_input)
-    script_input = _coerce_to_dict(script_input)
+    try:
+        # Direct Python callers from older sessions can still pass a serialized
+        # object. The public tool schema remains object-only so models do not
+        # need to construct nested, escaped JSON.
+        tool_input = _normalize_executor_input(tool_input, "tool_input")
+        script_input = _normalize_executor_input(script_input, "script_input")
+    except ValueError as exc:
+        return json.dumps({
+            "error": str(exc),
+            "code": "INVALID_SKILL_INPUT",
+            "skill": skill_name,
+            "tool": tool_name or script_name,
+            "status": "error",
+        })
 
     # Validation: must specify either tool_name or script_name, not both
     if tool_name and script_name:
@@ -360,21 +506,23 @@ def skill_executor(
     try:
         # ========== Script Execution Path ==========
         if script_name:
-            return _execute_script(
+            result = _execute_script(
                 tool_context=tool_context,
                 skill_name=skill_name,
                 script_name=script_name,
                 script_input=script_input or {},
             )
+            return _sanitize_skill_result(result)
 
         # ========== Tool Execution Path ==========
         if tool_name:
-            return _execute_tool(
+            result = _execute_tool(
                 tool_context=tool_context,
                 skill_name=skill_name,
                 tool_name=tool_name,
                 tool_input=tool_input or {},
             )
+            return _sanitize_skill_result(result)
 
     except Exception as e:
         logger.error(f"Error executing {skill_name}/{tool_name or script_name}: {e}")
@@ -440,8 +588,30 @@ def _execute_tool(
 
         else:
             # Local tool — direct function call
-            call_kwargs = dict(tool_input)
-            context_param = target_tool._metadata._context_param
+            metadata = target_tool._metadata
+            input_model = getattr(metadata, "input_model", None)
+            if isinstance(input_model, type) and hasattr(input_model, "model_validate"):
+                try:
+                    validated_input = input_model.model_validate(tool_input)
+                    call_kwargs = validated_input.model_dump()
+                except Exception as exc:
+                    logger.warning(
+                        "Rejected invalid input for %s/%s: %s",
+                        skill_name,
+                        tool_name,
+                        exc,
+                    )
+                    return json.dumps({
+                        "error": f"Invalid input for tool '{tool_name}': {exc}",
+                        "code": "INVALID_TOOL_INPUT",
+                        "skill": skill_name,
+                        "tool": tool_name,
+                        "status": "error",
+                    })
+            else:
+                call_kwargs = dict(tool_input)
+
+            context_param = metadata._context_param
             if context_param:
                 target_context = ToolContext(
                     tool_use=tool_context.tool_use,

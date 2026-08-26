@@ -14,6 +14,7 @@ def _make_context(user_id="user1", session_id="sess1", state_values=None):
 
     ctx = MagicMock()
     ctx.invocation_state = {"user_id": user_id, "session_id": session_id}
+    ctx.tool_use = {"toolUseId": "tool-use-1"}
     ctx.agent.state = state
     return ctx, values
 
@@ -112,7 +113,7 @@ def test_starts_session_with_required_filesystem_configuration(
         },
     }]
     ci.start.assert_not_called()
-    assert values["ci_mounted_workspace"] is True
+    assert values["ci_mounted_workspace"] == "root-v2"
     assert values["ci_session_id"] == "session-123"
 
 
@@ -189,7 +190,52 @@ def test_non_mounted_stored_session_is_not_reattached(
     ci.get_session.assert_not_called()
     ci.data_plane_client.start_code_interpreter_session.assert_called_once()
     assert values["ci_session_id"] == "new-mounted-session"
-    assert values["ci_mounted_workspace"] is True
+    assert values["ci_mounted_workspace"] == "root-v2"
+
+
+@patch("workspace.s3_files.get_or_create_session_access_point")
+@patch("bedrock_agentcore.tools.code_interpreter_client.CodeInterpreter")
+def test_legacy_mounted_session_is_replaced(
+    mock_code_interpreter,
+    mock_access_point,
+):
+    mock_access_point.return_value = {
+        "file_system_arn": "fs-arn",
+        "access_point_arn": "ap-arn",
+        "mount_path": "/mnt/workspace",
+    }
+    ci = mock_code_interpreter.return_value
+    ci.data_plane_client.start_code_interpreter_session.return_value = {
+        "codeInterpreterIdentifier": "ci-123",
+        "sessionId": "new-mounted-session",
+    }
+    ci.invoke.return_value = _exec_response()
+    ctx, values = _make_context(state_values={
+        "ci_identifier": "ci-123",
+        "ci_session_id": "legacy-mounted-session",
+        "ci_mounted_workspace": True,
+    })
+
+    from builtin_tools.code_interpreter_tool import get_ci_session
+
+    get_ci_session(ctx)
+
+    ci.get_session.assert_not_called()
+    assert values["ci_session_id"] == "new-mounted-session"
+    assert values["ci_mounted_workspace"] == "root-v2"
+
+
+def test_workspace_initialization_includes_write_probe():
+    ci = MagicMock()
+    ci.invoke.return_value = _exec_response()
+
+    from builtin_tools.code_interpreter_tool import _prepare_mounted_workspace
+
+    _prepare_mounted_workspace(ci, verify_write=True)
+
+    code = ci.invoke.call_args.args[1]["code"]
+    assert "NamedTemporaryFile" in code
+    assert "dir=_mount" in code
 
 
 @patch("builtin_tools.code_interpreter_tool._get_ci_from_context")
@@ -249,3 +295,54 @@ def test_session_initialization_errors_are_returned_by_tools(mock_get_ci):
 
     assert result["status"] == "error"
     assert "S3 Files workspace is not configured" in result["error"]
+
+
+@patch("builtin_tools.code_interpreter_tool.SessionFilePublisher.from_environment")
+@patch("builtin_tools.code_interpreter_tool._get_ci_from_context")
+def test_execute_code_publishes_structured_session_file(
+    mock_get_ci,
+    mock_publisher_factory,
+):
+    from session_files.models import SessionFileRef
+
+    ci = MagicMock()
+    ci.invoke.return_value = _exec_response("/mnt/workspace/report.pdf\n")
+    mock_get_ci.return_value = ci
+    publisher = mock_publisher_factory.return_value
+    publisher.publish_code_interpreter_file.return_value = SessionFileRef(
+        file_id="file-123",
+        filename="report.pdf",
+        media_type="application/pdf",
+        artifact_type="application",
+        role="OUTPUT",
+        state="READY",
+        revision=1,
+        size_bytes=2048,
+        checksum_sha256="checksum",
+    )
+    ctx, _ = _make_context()
+
+    from builtin_tools.code_interpreter_tool import execute_code
+
+    result = execute_code(
+        "open('report.pdf', 'wb').write(b'pdf')",
+        output_filename="report.pdf",
+        tool_context=ctx,
+    )
+
+    payload = json.loads(result["content"][0]["text"])
+    assert "Published report.pdf (2.0 KB)" in payload["text"]
+    assert payload["metadata"]["files"][0]["fileId"] == "file-123"
+    publisher.publish_code_interpreter_file.assert_called_once_with(
+        code_interpreter=ci,
+        source_path="/mnt/workspace/report.pdf",
+        user_id="user1",
+        session_id="sess1",
+        filename="report.pdf",
+        media_type="application/pdf",
+        artifact_type="application",
+        producer_tool="execute_code",
+        producer_id="tool-use-1",
+        idempotency_key="tool-use-1:0",
+    )
+    assert [call.args[0] for call in ci.invoke.call_args_list] == ["executeCode"]

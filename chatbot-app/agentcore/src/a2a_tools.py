@@ -416,6 +416,7 @@ def create_a2a_tool(agent_id: str):
         # Code Agent - task parameter, streams code_step events
         async def tool_impl(
             task: str,
+            workspace_paths: list[str],
             task_complexity: Literal["low", "medium", "high"] = "medium",
             reset_session: bool = False,
             compact_session: bool = False,
@@ -423,6 +424,9 @@ def create_a2a_tool(agent_id: str):
         ) -> AsyncGenerator[Dict[str, Any], None]:
             """
             task: The coding task to delegate.
+            workspace_paths: Required session attachments for this task. Use
+                             inputs/<filename> or uploads/<filename>. Pass an
+                             empty list when the task has no session attachments.
             reset_session: Set True to clear conversation history and start fresh
                            (equivalent to /clear in Claude Code). Workspace files
                            are preserved — only the conversation context is wiped.
@@ -433,6 +437,17 @@ def create_a2a_tool(agent_id: str):
             """
             session_id, user_id, model_id, _auth_token = extract_context(tool_context)
             model_selection = resolve_code_agent_model(task_complexity)
+            required_workspace_paths = []
+            if tool_context:
+                for path in tool_context.invocation_state.get(
+                    "workspace_paths",
+                    [],
+                ):
+                    if path not in required_workspace_paths:
+                        required_workspace_paths.append(path)
+            for path in workspace_paths:
+                if path not in required_workspace_paths:
+                    required_workspace_paths.append(path)
 
             metadata = {
                 "session_id": session_id,
@@ -443,6 +458,7 @@ def create_a2a_tool(agent_id: str):
                 "orchestrator_model_id": model_id,
                 "task_complexity": model_selection.task_complexity,
                 "model_selection": model_selection.as_record(),
+                "workspace_paths": required_workspace_paths,
                 "reset_session": reset_session,
                 "compact_session": compact_session,
             }
@@ -483,6 +499,8 @@ def create_a2a_tool(agent_id: str):
 
         Args:
             task: The coding task to delegate.
+            workspace_paths: Required session attachments. Always pass this
+                field; use an empty list when no attachments are needed.
             task_complexity: Claude model tier: low, medium, or high.
             reset_session: Clear conversation history while preserving files.
             compact_session: Compact prior conversation before the task.

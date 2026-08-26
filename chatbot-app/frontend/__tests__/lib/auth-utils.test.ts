@@ -86,7 +86,8 @@ describe('extractUserFromRequest', async () => {
       const token = createMockJWT({
         sub: 'user-123-uuid',
         email: 'test@example.com',
-        'cognito:username': 'testuser'
+        'cognito:username': 'testuser',
+        exp: 1787659200,
       })
       const request = createMockRequest({ authorization: `Bearer ${token}` })
 
@@ -95,6 +96,7 @@ describe('extractUserFromRequest', async () => {
       expect(result.userId).toBe('user-123-uuid')
       expect(result.email).toBe('test@example.com')
       expect(result.username).toBe('testuser')
+      expect(result.tokenExpiresAt).toBe(1787659200)
     })
 
     it('should fallback to cognito:username when sub is missing', async () => {

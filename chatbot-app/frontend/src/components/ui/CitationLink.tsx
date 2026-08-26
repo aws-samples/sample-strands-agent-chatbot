@@ -53,6 +53,10 @@ export const CitationLink = ({
   showDomain = true,
   ...props
 }: CitationLinkProps) => {
+  if (!href) {
+    return <span className={className}>{children}</span>
+  }
+
   const domain = href ? getDomain(href) : ''
   const isExternalLink = href?.startsWith('http')
 

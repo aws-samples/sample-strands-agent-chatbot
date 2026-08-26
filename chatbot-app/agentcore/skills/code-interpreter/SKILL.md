@@ -21,7 +21,7 @@ A general-purpose code execution environment powered by AWS Bedrock AgentCore Co
 |-----------|------|----------|---------|-------------|
 | `code` | string | Yes | | Code to execute. Use `print()` for text output. |
 | `language` | string | No | `"python"` | `"python"`, `"javascript"`, or `"typescript"` |
-| `output_filename` | string | No | `""` | File to download after execution. Code must save a file with this exact name. Saved to workspace automatically. |
+| `output_filename` | string | No | `""` | File to publish as a durable session file. Code must save a file with this exact name. |
 
 ### execute_command
 
@@ -139,9 +139,9 @@ For production tasks (creating documents, charts, presentations), prefer special
 
 The chat session has a persistent filesystem mounted at `/mnt/workspace`.
 Relative file paths used by Code Interpreter tools resolve inside this directory.
-Files written there are immediately available in the Workspace panel under the
-`code-interpreter/` namespace and remain available when the interpreter session
-is restarted.
+Files written there are scratch files and remain available when the interpreter
+session is restarted. They are not user-downloadable artifacts unless
+`output_filename` is supplied.
 
 The mount is required. If it cannot be configured or attached, Code Interpreter
 returns an error instead of starting an isolated non-persistent session.
@@ -155,8 +155,10 @@ returns an error instead of starting an isolated non-persistent session.
 }
 ```
 
-`output_filename` may still be used when a generated file should be surfaced as
-an explicit artifact. It is not required for persistence.
+Use `output_filename` whenever a generated file must appear in Generated Files
+or be downloadable by the user. The tool publishes and verifies that file before
+returning success. Do not create Markdown links to `/mnt/workspace` or describe
+raw workspace paths as download links; the application renders the file action.
 
 **Uploaded files:**
 
@@ -165,15 +167,8 @@ manual loading or base64 transfer under `/mnt/workspace/inputs`. JSON, JSONL,
 and NDJSON attachments may be represented by a bounded text excerpt in the
 conversation; use the mounted file when the full dataset is needed.
 
-**Read saved files via workspace skill:**
-```
-workspace_read("code-interpreter/chart.png")
-workspace_read("code-interpreter/results.json")
-workspace_list("code-interpreter/")
-```
-
-Text and binary files use the same mounted filesystem; no transfer step is
-required.
+Use `file_operations` for scratch-file inspection. Published files are surfaced
+by the application and should be referenced by their displayed filename.
 
 ## Environment
 

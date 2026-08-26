@@ -359,6 +359,15 @@ resource "aws_iam_role_policy" "execution_ddb" {
         ]
         Resource = [var.orchestration_table_arn]
       }] : [],
+      var.session_files_table_arn != "" ? [{
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem",
+          "dynamodb:DeleteItem", "dynamodb:TransactWriteItems",
+          "dynamodb:ConditionCheckItem", "dynamodb:Query",
+        ]
+        Resource = [var.session_files_table_arn]
+      }] : [],
     )
   })
 }
@@ -475,8 +484,14 @@ resource "aws_iam_role_policy" "orchestrator_artifacts" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Effect   = "Allow"
-      Action   = ["s3:PutObject", "s3:GetObject", "s3:ListBucket", "s3:DeleteObject"]
+      Effect = "Allow"
+      Action = [
+        "s3:PutObject",
+        "s3:PutObjectTagging",
+        "s3:GetObject",
+        "s3:ListBucket",
+        "s3:DeleteObject",
+      ]
       Resource = [var.artifact_bucket_arn, "${var.artifact_bucket_arn}/*"]
     }]
   })
@@ -653,6 +668,10 @@ resource "aws_bedrockagentcore_agent_runtime" "this" {
     var.global_data_table_name != "" ? { GLOBAL_DATA_TABLE = var.global_data_table_name } : {},
     var.orchestration_table_name != "" ? {
       SESSION_ORCHESTRATION_TABLE = var.orchestration_table_name
+    } : {},
+    var.session_files_table_name != "" ? {
+      SESSION_FILES_TABLE       = var.session_files_table_name
+      SESSION_FILE_BLOB_BACKEND = "s3"
     } : {},
     var.runtime_type == "orchestrator" ? {
       GATEWAY_URL = var.gateway_url

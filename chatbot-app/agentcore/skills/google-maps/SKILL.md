@@ -24,10 +24,9 @@ description: Place search, directions, geocoding, and interactive maps
   - `open_now` (boolean, optional, default: false): Only open places
   - `language` (string, optional, default: "en"): Language code
 
-- **get_place_details(place_id, language?, reviews_sort?)**: Get detailed place info including reviews and hours.
+- **get_place_details(place_id, language?)**: Get detailed place info including reviews and hours.
   - `place_id` (string, required): Place ID from search results
   - `language` (string, optional, default: "en"): Language code
-  - `reviews_sort` (string, optional, default: "most_relevant"): "most_relevant" or "newest"
 
 - **get_directions(origin, destination, mode?, alternatives?, avoid?, language?)**: Get directions between two locations.
   - `origin` (string, required): Starting point (address or "lat,lng")

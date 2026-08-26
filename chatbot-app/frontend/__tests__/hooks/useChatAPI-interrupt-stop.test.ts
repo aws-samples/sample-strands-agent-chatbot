@@ -18,6 +18,9 @@ const reconnectMocks = vi.hoisted(() => ({
   restoreFromSession: vi.fn().mockReturnValue(false),
   attemptReconnect: vi.fn(),
 }))
+const authMocks = vi.hoisted(() => ({
+  fetchAuthSession: vi.fn(),
+}))
 
 vi.mock('@/hooks/useSSEReconnect', () => ({
   useSSEReconnect: () => ({
@@ -32,9 +35,7 @@ vi.mock('@/config/environment', () => ({
 }))
 
 vi.mock('aws-amplify/auth', () => ({
-  fetchAuthSession: vi.fn().mockResolvedValue({
-    tokens: { accessToken: { toString: () => 'test-token' } },
-  }),
+  fetchAuthSession: authMocks.fetchAuthSession,
 }))
 
 /** Builds an SSE response body from the given event objects. */
@@ -70,6 +71,18 @@ const INTERRUPT = {
       { id: 'int-1', name: 'chatbot-research-approval', reason: { tool_name: 'research_agent' } },
     ],
   },
+}
+
+function resetAuthMock() {
+  authMocks.fetchAuthSession.mockReset()
+  authMocks.fetchAuthSession.mockResolvedValue({
+    tokens: {
+      accessToken: {
+        payload: { exp: Date.now() / 1000 + 3600 },
+        toString: () => 'test-token',
+      },
+    },
+  })
 }
 
 function setup(handleStreamEvent = vi.fn()) {
@@ -129,6 +142,7 @@ describe('useChatAPI — stopping a turn that parked at an interrupt', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     sessionStorage.clear()
+    resetAuthMock()
   })
 
   it('still has a run to stop after an interrupt ends the stream', async () => {
@@ -211,12 +225,67 @@ describe('useChatAPI — stopping a turn that parked at an interrupt', () => {
     const body = JSON.parse(String(chatCall?.[1]?.body))
     expect(body.state.workspace_paths).toEqual(['uploads/large.jsonl'])
   })
+
+  it('force-refreshes once when the BFF rejects a stale Runtime token', async () => {
+    authMocks.fetchAuthSession.mockImplementation(
+      (options?: { forceRefresh?: boolean }) => Promise.resolve({
+        tokens: {
+          accessToken: {
+            payload: { exp: Date.now() / 1000 + 3600 },
+            toString: () => options?.forceRefresh
+              ? 'refreshed-token'
+              : 'cached-token',
+          },
+        },
+      }),
+    )
+    const staleResponse = new Response(JSON.stringify({
+      code: 'AUTH_TOKEN_STALE',
+    }), {
+      status: 401,
+      headers: { 'Content-Type': 'application/json' },
+    })
+    let chatAttempts = 0
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (String(url).includes('/api/warmup')) {
+        return Promise.resolve(new Response(JSON.stringify({
+          latencyMs: 1,
+          mode: 'local',
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }))
+      }
+      chatAttempts += 1
+      return Promise.resolve(
+        chatAttempts === 1
+          ? staleResponse
+          : sseResponse([RUN_FINISHED]),
+      )
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const { hook } = setup()
+
+    await act(async () => {
+      await hook.result.current.sendMessage('hello')
+    })
+
+    const chatCalls = fetchMock.mock.calls.filter(call =>
+      String(call[0]).includes('stream/chat'),
+    )
+    expect(chatCalls).toHaveLength(2)
+    expect(chatCalls[1][1]?.headers).toMatchObject({
+      Authorization: 'Bearer refreshed-token',
+    })
+    expect(authMocks.fetchAuthSession).toHaveBeenCalledWith({ forceRefresh: true })
+  })
 })
 
 describe('useChatAPI — background execution replay', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     sessionStorage.clear()
+    resetAuthMock()
     vi.mocked(sessionStorage.getItem).mockImplementation(key =>
       key === 'chat-session-id' ? 'session-1' : null,
     )
@@ -301,6 +370,7 @@ describe('useChatAPI — durable session restore', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     sessionStorage.clear()
+    resetAuthMock()
     reconnectMocks.restoreFromSession.mockReturnValue(false)
     reconnectMocks.attemptReconnect.mockReset()
   })

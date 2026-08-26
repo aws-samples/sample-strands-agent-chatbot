@@ -256,6 +256,8 @@ def auto_store_files(
             # prefix below, so avoid a second copy in documents/raw.
             known_extensions.update({'.json', '.jsonl', '.ndjson'})
 
+        canonical_inputs = set()
+
         # Step 1: Always save to S3 (no CI required)
         for config in file_type_configs:
             filtered = [
@@ -267,7 +269,15 @@ def auto_store_files(
             manager = config['manager_class'](user_id, session_id)
             for file_info in filtered:
                 try:
-                    manager.save_to_s3(file_info['filename'], file_info['bytes'], metadata={'auto_stored': 'true'})
+                    if isinstance(manager, PowerPointManager):
+                        manager.save_input(
+                            file_info['filename'],
+                            file_info['bytes'],
+                            metadata={'auto_stored': 'true'},
+                        )
+                        canonical_inputs.add(file_info['filename'])
+                    else:
+                        manager.save_to_s3(file_info['filename'], file_info['bytes'], metadata={'auto_stored': 'true'})
                     logger.debug(f"Saved to S3: {file_info['filename']}")
                 except Exception as e:
                     logger.error(f"Failed to save {file_info['filename']} to S3: {e}")
@@ -294,6 +304,8 @@ def auto_store_files(
             )
             bucket = get_workspace_bucket()
             for file_info in uploaded_files:
+                if file_info["filename"] in canonical_inputs:
+                    continue
                 key = (
                     f"{code_interpreter_prefix(user_id, session_id)}"
                     f"inputs/{file_info['filename']}"
