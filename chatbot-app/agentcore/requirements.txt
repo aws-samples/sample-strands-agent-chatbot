@@ -57,7 +57,7 @@ install_playwright>=1.0.2,<2.0.0
 mypy-boto3-s3
 
 # AG-UI Protocol (agent-to-UI streaming standard)
-ag-ui-protocol>=0.1.19
+ag-ui-protocol>=0.1.20
 
 # Registry YAML loader
 PyYAML>=6.0
