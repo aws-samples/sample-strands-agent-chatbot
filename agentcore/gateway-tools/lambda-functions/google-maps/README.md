@@ -160,10 +160,6 @@ Or for local testing:
       "language": {
         "type": "string",
         "description": "Optional: Language code (default: 'en')"
-      },
-      "reviews_sort": {
-        "type": "string",
-        "description": "Optional: 'most_relevant' (default) or 'newest'"
       }
     },
     "required": ["place_id"]

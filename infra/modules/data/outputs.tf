@@ -25,3 +25,11 @@ output "session_orchestration_table_arn" {
 output "session_orchestration_stream_arn" {
   value = aws_dynamodb_table.session_orchestration.stream_arn
 }
+
+output "session_files_table_name" {
+  value = aws_dynamodb_table.session_files.name
+}
+
+output "session_files_table_arn" {
+  value = aws_dynamodb_table.session_files.arn
+}
