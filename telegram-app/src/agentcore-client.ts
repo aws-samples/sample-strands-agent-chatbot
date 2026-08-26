@@ -78,7 +78,7 @@ async function getAccessToken(): Promise<string> {
 
 const sessionEpochs = new Map<number, number>();
 const selectedModels = new Map<number, string>();
-export const DEFAULT_MODEL_ID = "openai.gpt-5.6-terra";
+export const DEFAULT_MODEL_ID = "us.openai.gpt-5.6-terra";
 
 export function resetSession(chatId: number): void {
   sessionEpochs.set(chatId, Date.now());

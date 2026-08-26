@@ -116,8 +116,8 @@ class ChatAgent(BaseAgent):
         try:
             config = self.get_model_config()
 
-            # Routes to BedrockModel (caching) or a Mantle OpenAI provider based
-            # on model_id. Mantle models ignore caching/temperature internally.
+            # Routes to Bedrock Runtime or a Mantle-only provider based on
+            # model_id. Mantle models ignore caching/temperature internally.
             model = build_model(
                 config["model_id"],
                 temperature=config.get("temperature"),

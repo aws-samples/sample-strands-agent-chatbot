@@ -5,6 +5,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { extractUserFromRequest } from '@/lib/auth-utils'
 import { getUserProfile } from '@/lib/dynamodb-client'
+import { DEFAULT_MODEL_ID, normalizeModelId } from '@/lib/model-ids'
 
 // Check if running in local development mode
 const IS_LOCAL = process.env.NEXT_PUBLIC_AGENTCORE_LOCAL === 'true'
@@ -19,7 +20,7 @@ export async function GET(request: NextRequest) {
 
     // Default configuration
     let config = {
-      model_id: 'openai.gpt-5.6-terra',
+      model_id: DEFAULT_MODEL_ID,
       temperature: 0.5,
     }
 
@@ -31,7 +32,7 @@ export async function GET(request: NextRequest) {
 
       if (savedConfig) {
         if (savedConfig.model_id) {
-          config.model_id = savedConfig.model_id
+          config.model_id = normalizeModelId(savedConfig.model_id)
         }
         if (savedConfig.temperature !== undefined) {
           config.temperature = savedConfig.temperature
@@ -47,7 +48,7 @@ export async function GET(request: NextRequest) {
         if (profile?.preferences) {
           // Override with user preferences
           if (profile.preferences.defaultModel) {
-            config.model_id = profile.preferences.defaultModel
+            config.model_id = normalizeModelId(profile.preferences.defaultModel)
           }
           if (profile.preferences.defaultTemperature !== undefined) {
             config.temperature = profile.preferences.defaultTemperature

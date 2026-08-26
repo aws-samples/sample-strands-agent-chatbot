@@ -112,7 +112,7 @@ class TestComposerWorkflowInit:
         agent = ComposerWorkflow(session_id="sess-123")
         assert agent.session_id == "sess-123"
         assert agent.user_id == "sess-123"  # defaults to session_id
-        assert agent.model_id == "openai.gpt-5.6-terra"
+        assert agent.model_id == "us.openai.gpt-5.6-terra"
         assert agent.temperature == 0.7
 
     def test_init_with_custom_values(self):

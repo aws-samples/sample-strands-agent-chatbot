@@ -212,9 +212,9 @@ class TestExtractMetadata:
         ctx = MagicMock()
         ctx.metadata = {
             "session_id": "s1",
-            "orchestrator_model_id": "openai.gpt-5.6-terra",
+            "orchestrator_model_id": "us.openai.gpt-5.6-terra",
         }
-        assert _extract_metadata(ctx)["orchestrator_model_id"] == "openai.gpt-5.6-terra"
+        assert _extract_metadata(ctx)["orchestrator_model_id"] == "us.openai.gpt-5.6-terra"
         assert "model_id" not in _extract_metadata(ctx)
 
 

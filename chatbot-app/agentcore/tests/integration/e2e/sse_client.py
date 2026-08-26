@@ -208,7 +208,7 @@ def stream_chat(
     prompt: str,
     *,
     thread_id: str | None = None,
-    model_id: str = "openai.gpt-5.6-terra",
+    model_id: str = "us.openai.gpt-5.6-terra",
     state_overrides: dict[str, Any] | None = None,
     timeout: float = 180.0,
 ) -> StreamResult:

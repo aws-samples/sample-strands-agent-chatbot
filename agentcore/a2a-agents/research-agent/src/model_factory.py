@@ -9,13 +9,17 @@ from strands.models import BedrockModel
 
 
 MANTLE_MODEL_REGIONS: dict[str, str] = {
-    "openai.gpt-5.6-sol": "us-east-1",
-    "openai.gpt-5.6-terra": "us-east-1",
-    "openai.gpt-5.6-luna": "us-east-1",
-    "xai.grok-4.3": "us-west-2",
     "google.gemma-4-31b": "us-east-2",
     "google.gemma-4-26b-a4b": "us-east-2",
     "google.gemma-4-e2b": "us-east-2",
+}
+
+MODEL_ID_ALIASES: dict[str, str] = {
+    "openai.gpt-5.6-sol": "us.openai.gpt-5.6-sol",
+    "openai.gpt-5.6-terra": "us.openai.gpt-5.6-terra",
+    "openai.gpt-5.6-luna": "us.openai.gpt-5.6-luna",
+    "xai.grok-4.3": "us.xai.grok-4.6",
+    "xai.grok-4.6": "us.xai.grok-4.6",
 }
 
 NATIVE_MODEL_REGION_OVERRIDES: dict[str, str] = {
@@ -53,7 +57,8 @@ def build_model(
     app_region: str,
     max_tokens: int = 32000,
 ):
-    """Build a Mantle Responses model or a native Bedrock model."""
+    """Build a Mantle Responses model or a Bedrock Runtime model."""
+    model_id = MODEL_ID_ALIASES.get(model_id, model_id)
     mantle_region = MANTLE_MODEL_REGIONS.get(model_id)
     if mantle_region:
         from strands.models.openai_responses import OpenAIResponsesModel

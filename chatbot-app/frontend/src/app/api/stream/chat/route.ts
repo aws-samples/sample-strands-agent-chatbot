@@ -3,6 +3,7 @@
  * Invokes AgentCore Runtime and streams responses
  */
 import { NextRequest } from 'next/server'
+import { DEFAULT_MODEL_ID, normalizeModelId } from '@/lib/model-ids'
 import {
   AgentCoreRuntimeError,
   invokeAgentCoreRuntime,
@@ -259,7 +260,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Load model configuration from storage (only if not provided in request)
-    const defaultModelId = model_id || 'openai.gpt-5.6-terra'
+    const defaultModelId = normalizeModelId(model_id || DEFAULT_MODEL_ID)
 
     let modelConfig = {
       model_id: defaultModelId,
@@ -279,8 +280,8 @@ export async function POST(request: NextRequest) {
           if (config) {
             // Update model and temperature
             if (config.model_id) {
-              modelConfig.model_id = config.model_id
-              modelConfig.caching_enabled = config.model_id.toLowerCase().includes('claude')
+              modelConfig.model_id = normalizeModelId(config.model_id)
+              modelConfig.caching_enabled = modelConfig.model_id.toLowerCase().includes('claude')
               console.log(`[BFF] Applied model_id: ${config.model_id}, caching: ${modelConfig.caching_enabled}`)
             }
             if (config.temperature !== undefined) {
@@ -300,8 +301,8 @@ export async function POST(request: NextRequest) {
           const profile = await getUserProfile(userId)
           if (profile?.preferences) {
             if (profile.preferences.defaultModel) {
-              modelConfig.model_id = profile.preferences.defaultModel
-              modelConfig.caching_enabled = profile.preferences.defaultModel.toLowerCase().includes('claude')
+              modelConfig.model_id = normalizeModelId(profile.preferences.defaultModel)
+              modelConfig.caching_enabled = modelConfig.model_id.toLowerCase().includes('claude')
             }
             if (profile.preferences.defaultTemperature !== undefined) {
               modelConfig.temperature = profile.preferences.defaultTemperature

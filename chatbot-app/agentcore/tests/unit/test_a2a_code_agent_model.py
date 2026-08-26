@@ -51,7 +51,7 @@ def _context():
     context.invocation_state = {
         "session_id": "session-1",
         "user_id": "user-1",
-        "model_id": "openai.gpt-5.6-terra",
+        "model_id": "us.openai.gpt-5.6-terra",
         "auth_token": None,
         "workspace_paths": ["uploads/turn-context.md"],
     }
@@ -79,7 +79,7 @@ async def test_code_agent_high_uses_latest_opus(code_tool):
     metadata = sent[0]["metadata"]
     assert metadata["model_id"] == "us.anthropic.claude-opus-5"
     assert metadata["task_complexity"] == "high"
-    assert metadata["orchestrator_model_id"] == "openai.gpt-5.6-terra"
+    assert metadata["orchestrator_model_id"] == "us.openai.gpt-5.6-terra"
     assert metadata["workspace_paths"] == [
         "uploads/turn-context.md",
         "inputs/spec.md",

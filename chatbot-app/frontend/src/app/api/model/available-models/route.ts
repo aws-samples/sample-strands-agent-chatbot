@@ -1,10 +1,10 @@
 /**
  * Available Models endpoint - returns list of supported AI models
  *
- * Two backend execution paths (decided server-side by model_id):
- * - Native Bedrock (BedrockModel): prompt caching supported.
- * - Bedrock Mantle (OpenAIResponsesModel): frontier/extra models not on native
- *   Bedrock Converse (gpt-5.x, grok, gemma-4). No prompt caching.
+ * Three backend execution paths (decided server-side by model_id):
+ * - Bedrock Runtime Converse (BedrockModel): native/cross-Region profiles.
+ * - Bedrock Runtime Responses (OpenAIResponsesModel): GPT-5.6.
+ * - Bedrock Mantle Responses (OpenAIResponsesModel): Gemma 4.
  */
 import { NextResponse } from 'next/server'
 
@@ -33,26 +33,26 @@ const AVAILABLE_MODELS = [
     description: 'Fast and efficient, cost-effective'
   },
 
-  // GPT (OpenAI) - gpt-5.x via Mantle, gpt-oss via native Bedrock
+  // GPT (OpenAI) - Bedrock Runtime Responses with cross-Region profiles
   {
-    id: 'openai.gpt-5.6-sol',
+    id: 'us.openai.gpt-5.6-sol',
     name: 'GPT-5.6 Sol',
     provider: 'OpenAI',
-    description: 'Flagship frontier model (via Bedrock Mantle)',
+    description: 'Flagship frontier model via Bedrock Runtime',
     noTemperature: true
   },
   {
-    id: 'openai.gpt-5.6-terra',
+    id: 'us.openai.gpt-5.6-terra',
     name: 'GPT-5.6 Terra',
     provider: 'OpenAI',
-    description: 'Balanced frontier model (via Bedrock Mantle)',
+    description: 'Balanced frontier model via Bedrock Runtime',
     noTemperature: true
   },
   {
-    id: 'openai.gpt-5.6-luna',
+    id: 'us.openai.gpt-5.6-luna',
     name: 'GPT-5.6 Luna',
     provider: 'OpenAI',
-    description: 'Fast and cost-efficient model (via Bedrock Mantle)',
+    description: 'Fast and cost-efficient model via Bedrock Runtime',
     noTemperature: true
   },
   {
@@ -62,12 +62,12 @@ const AVAILABLE_MODELS = [
     description: 'Open-source GPT model with 120B parameters'
   },
 
-  // Grok (xAI) - via Mantle
+  // Grok (xAI) - Bedrock Runtime cross-Region inference profile
   {
-    id: 'xai.grok-4.3',
-    name: 'Grok 4.3',
+    id: 'us.xai.grok-4.6',
+    name: 'Grok 4.6',
     provider: 'xAI',
-    description: 'Advanced reasoning model (via Bedrock Mantle)'
+    description: 'Advanced reasoning model via Bedrock Runtime'
   },
 
   // DeepSeek - native Bedrock

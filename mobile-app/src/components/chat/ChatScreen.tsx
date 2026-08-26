@@ -6,7 +6,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage'
 import type { ImagePickerAsset } from 'expo-image-picker'
 import { useChat } from '../../hooks/useChat'
 import { useTheme } from '../../context/ThemeContext'
-import { AVAILABLE_MODELS, DEFAULT_MODEL_ID, MODEL_STORAGE_KEY } from '../../lib/constants'
+import { AVAILABLE_MODELS, DEFAULT_MODEL_ID, MODEL_STORAGE_KEY, normalizeModelId } from '../../lib/constants'
 import MessageList from './MessageList'
 import ChatInputBar from './ChatInputBar'
 import GreetingScreen from './GreetingScreen'
@@ -40,8 +40,12 @@ export default function ChatScreen({
   // Load persisted model selection
   useEffect(() => {
     AsyncStorage.getItem(MODEL_STORAGE_KEY).then(saved => {
-      if (saved && AVAILABLE_MODELS.some(model => model.id === saved)) {
-        setSelectedModelId(saved)
+      const normalized = saved ? normalizeModelId(saved) : null
+      if (normalized && AVAILABLE_MODELS.some(model => model.id === normalized)) {
+        setSelectedModelId(normalized)
+        if (normalized !== saved) {
+          AsyncStorage.setItem(MODEL_STORAGE_KEY, normalized)
+        }
       } else if (saved) {
         AsyncStorage.setItem(MODEL_STORAGE_KEY, DEFAULT_MODEL_ID)
       }

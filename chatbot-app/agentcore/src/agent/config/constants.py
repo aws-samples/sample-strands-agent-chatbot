@@ -38,7 +38,7 @@ A2A_PREFIX = "agentcore_"
 # =============================================================================
 
 # Default text model ID
-DEFAULT_MODEL_ID = "openai.gpt-5.6-terra"
+DEFAULT_MODEL_ID = "us.openai.gpt-5.6-terra"
 
 # Default temperature for model inference
 DEFAULT_TEMPERATURE = 0.7
@@ -67,7 +67,7 @@ DEFAULT_PROJECT_NAME = "strands-agent-chatbot"
 
 # Fraction of the model's context window that may be filled before compaction
 # starts. Sized off the model rather than a fixed token count because the picker
-# spans an 8x range of context windows (131k to 1.05M) — see
+# spans nearly an 8x range of context windows (131k to 1M) — see
 # MODEL_MAX_INPUT_TOKENS in agents/model_factory.py.
 COMPACTION_CONTEXT_RATIO = 0.7
 

@@ -56,6 +56,26 @@ def test_skill_executor_does_not_dispatch_malformed_tool_input(monkeypatch):
     execute_tool.assert_not_called()
 
 
+def test_skill_executor_repairs_annotated_research_skill_call(monkeypatch):
+    skill_tools._registry = MagicMock()
+    execute_tool = MagicMock(return_value="started")
+    monkeypatch.setattr(skill_tools, "_execute_tool", execute_tool)
+    context = MagicMock()
+
+    result = skill_tools.skill_executor(
+        tool_context=context,
+        skill_name="research-agent persistence=yes?true",
+    )
+
+    assert result == "started"
+    execute_tool.assert_called_once_with(
+        tool_context=context,
+        skill_name="research-agent",
+        tool_name="research_agent",
+        tool_input={},
+    )
+
+
 def test_execute_tool_validates_required_arguments_before_calling(monkeypatch):
     class ResearchInput:
         @classmethod
@@ -150,3 +170,55 @@ def test_execute_tool_dispatches_validated_input(monkeypatch):
     call_kwargs = tool_func.call_args.kwargs
     assert call_kwargs["plan"] == "research this"
     assert call_kwargs["tool_context"].tool_use == context.tool_use
+
+
+def test_execute_tool_repairs_missing_research_plan_from_user_message(monkeypatch):
+    class ResearchInput:
+        def __init__(self, plan):
+            self.plan = plan
+
+        @classmethod
+        def model_validate(cls, value):
+            if "plan" not in value:
+                raise ValueError("plan: Field required")
+            return cls(plan=value["plan"])
+
+        def model_dump(self):
+            return {"plan": self.plan}
+
+    tool_func = MagicMock(return_value="started")
+    target_tool = SimpleNamespace(
+        _metadata=SimpleNamespace(
+            input_model=ResearchInput,
+            _context_param="tool_context",
+        ),
+        _tool_func=tool_func,
+    )
+
+    registry = MagicMock()
+    registry.get_tools.return_value = [target_tool]
+    monkeypatch.setattr(skill_tools, "_registry", registry)
+    monkeypatch.setattr(
+        skill_tools,
+        "canonical_tool_name",
+        lambda _tool: "research_agent",
+    )
+
+    context = MagicMock(
+        tool_use={"toolUseId": "tool-1"},
+        agent=MagicMock(),
+        invocation_state={
+            "user_message": "Compare HTTP/2 and HTTP/3 using three sources.",
+        },
+    )
+    result = skill_tools._execute_tool(
+        tool_context=context,
+        skill_name="research-agent",
+        tool_name="research_agent",
+        tool_input={},
+    )
+
+    assert result == "started"
+    assert tool_func.call_args.kwargs["plan"] == (
+        "Compare HTTP/2 and HTTP/3 using three sources."
+    )

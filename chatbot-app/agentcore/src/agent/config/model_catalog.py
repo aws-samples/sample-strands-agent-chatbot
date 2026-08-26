@@ -11,7 +11,23 @@ from typing import Any, Optional
 
 TASK_COMPLEXITIES = frozenset({"low", "medium", "high"})
 DEFAULT_MAX_INPUT_TOKENS = 131_072
-_ALLOWED_TRANSPORTS = frozenset({"bedrock", "mantle_responses"})
+_ALLOWED_TRANSPORTS = frozenset({
+    "bedrock",
+    "bedrock_responses",
+    "mantle_responses",
+})
+MODEL_ID_ALIASES = {
+    "openai.gpt-5.6-sol": "us.openai.gpt-5.6-sol",
+    "openai.gpt-5.6-terra": "us.openai.gpt-5.6-terra",
+    "openai.gpt-5.6-luna": "us.openai.gpt-5.6-luna",
+    "xai.grok-4.3": "us.xai.grok-4.6",
+    "xai.grok-4.6": "us.xai.grok-4.6",
+}
+
+
+def normalize_model_id(model_id: str) -> str:
+    """Map persisted legacy IDs to the canonical Bedrock Runtime profile ID."""
+    return MODEL_ID_ALIASES.get(model_id, model_id)
 
 
 @dataclass(frozen=True)
@@ -139,6 +155,7 @@ class ModelCatalog:
                         )
 
     def provider_for(self, model_id: str) -> Optional[str]:
+        model_id = normalize_model_id(model_id)
         spec = self.models_by_id.get(model_id)
         if spec is not None:
             return spec.provider
@@ -150,6 +167,7 @@ class ModelCatalog:
         return None
 
     def family_for(self, model_id: str) -> Optional[str]:
+        model_id = normalize_model_id(model_id)
         spec = self.models_by_id.get(model_id)
         if spec is not None:
             return spec.family
@@ -210,9 +228,10 @@ def resolve_general_subagent_model(
     task_complexity: Optional[str],
 ) -> ModelSelection:
     catalog = get_model_catalog()
+    canonical_parent_model_id = normalize_model_id(parent_model_id)
     complexity = normalize_task_complexity(task_complexity)
-    provider = catalog.provider_for(parent_model_id)
-    family = catalog.family_for(parent_model_id)
+    provider = catalog.provider_for(canonical_parent_model_id)
+    family = catalog.family_for(canonical_parent_model_id)
     if complexity is None or family is None:
         return ModelSelection(
             policy="general_subagent",
@@ -220,13 +239,15 @@ def resolve_general_subagent_model(
             provider=provider,
             family=family,
             source_model_id=parent_model_id,
-            effective_model_id=parent_model_id,
+            effective_model_id=canonical_parent_model_id,
             catalog_revision=catalog.revision,
             applied=False,
         )
 
     spec = catalog.resolve("general_subagent", family, complexity)
-    effective_model_id = spec.model_id if spec is not None else parent_model_id
+    effective_model_id = (
+        spec.model_id if spec is not None else canonical_parent_model_id
+    )
     return ModelSelection(
         policy="general_subagent",
         task_complexity=complexity,

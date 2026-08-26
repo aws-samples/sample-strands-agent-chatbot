@@ -4,6 +4,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { extractUserFromRequest } from '@/lib/auth-utils'
 import { getUserProfile, upsertUserProfile } from '@/lib/dynamodb-client'
+import { normalizeModelId } from '@/lib/model-ids'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -19,15 +20,16 @@ export async function POST(request: NextRequest) {
 
     const body = await request.json()
     const { model_id, temperature } = body
+    const normalizedModelId = normalizeModelId(model_id)
 
     if (userId === 'anonymous') {
       // Anonymous user - save to local file storage (works for both local and AWS)
       const { updateUserModelConfig } = await import('@/lib/local-tool-store')
       updateUserModelConfig(userId, {
-        model_id,
+        model_id: normalizedModelId,
         temperature
       })
-      console.log(`[API] Updated model config for anonymous user via local file: ${model_id}, temp: ${temperature}`)
+      console.log(`[API] Updated model config for anonymous user via local file: ${normalizedModelId}, temp: ${temperature}`)
 
       return NextResponse.json({
         success: true,
@@ -40,21 +42,21 @@ export async function POST(request: NextRequest) {
       // Local: Save to file
       const { updateUserModelConfig } = await import('@/lib/local-tool-store')
       updateUserModelConfig(userId, {
-        model_id,
+        model_id: normalizedModelId,
         temperature
       })
-      console.log(`[API] Updated model config for user ${userId} via local file: ${model_id}, temp: ${temperature}`)
+      console.log(`[API] Updated model config for user ${userId} via local file: ${normalizedModelId}, temp: ${temperature}`)
     } else {
       // AWS: Save to DynamoDB
       const profile = await getUserProfile(userId)
 
       await upsertUserProfile(userId, user.email || '', user.username, {
         ...(profile?.preferences || {}),
-        defaultModel: model_id,
+        defaultModel: normalizedModelId,
         defaultTemperature: temperature
       })
 
-      console.log(`[API] Updated model config for user ${userId} via DynamoDB: ${model_id}, temp: ${temperature}`)
+      console.log(`[API] Updated model config for user ${userId} via DynamoDB: ${normalizedModelId}, temp: ${temperature}`)
     }
 
     return NextResponse.json({
