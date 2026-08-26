@@ -2,9 +2,10 @@
 Tests for agents.model_factory
 
 Covers:
-- build_model routing: Bedrock vs Mantle by model_id
+- build_model routing: Bedrock Converse vs Runtime Responses vs Mantle
 - temperature guard (extended-thinking / reasoning models)
-- Mantle base_url / region selection
+- Bedrock Runtime profile and legacy alias routing
+- Mantle-only Gemma base_url / region selection
 - Bedrock API key resolution (env var and Secrets Manager)
 """
 import os
@@ -17,6 +18,7 @@ from strands.types.exceptions import ContextWindowOverflowException
 from agents.model_factory import (
     build_model,
     model_rejects_temperature,
+    BEDROCK_RESPONSES_MODELS,
     MANTLE_MODELS,
 )
 
@@ -32,16 +34,16 @@ class TestTemperatureGuard:
     @pytest.mark.parametrize("model_id", [
         "us.anthropic.claude-opus-5",
         "us.anthropic.claude-sonnet-5",
-        "openai.gpt-5.6-sol",
-        "openai.gpt-5.6-terra",
-        "openai.gpt-5.6-luna",
+        "us.openai.gpt-5.6-sol",
+        "us.openai.gpt-5.6-terra",
+        "us.openai.gpt-5.6-luna",
+        "us.xai.grok-4.6",
     ])
     def test_rejects(self, model_id):
         assert model_rejects_temperature(model_id) is True
 
     @pytest.mark.parametrize("model_id", [
         "us.anthropic.claude-haiku-4-5-20251001-v1:0",
-        "xai.grok-4.3",
         "google.gemma-4-31b",
     ])
     def test_allows(self, model_id):
@@ -79,6 +81,11 @@ class TestBedrockRouting:
             build_model("us.anthropic.claude-opus-5", temperature=0.7)
             assert "temperature" not in MockBedrock.call_args.kwargs
 
+    def test_no_temperature_for_grok_46(self):
+        with patch.object(mf, "BedrockModel") as MockBedrock:
+            build_model("us.xai.grok-4.6", temperature=0.7)
+            assert "temperature" not in MockBedrock.call_args.kwargs
+
     def test_no_cache_when_disabled(self):
         with patch.object(mf, "BedrockModel") as MockBedrock:
             build_model("us.anthropic.claude-sonnet-5", caching_enabled=False)
@@ -94,26 +101,112 @@ class TestBedrockRouting:
             build_model("us.anthropic.claude-sonnet-5")
             assert "region_name" not in MockBedrock.call_args.kwargs
 
+    @pytest.mark.parametrize("model_id", ["us.xai.grok-4.6"])
+    def test_runtime_profile_models_use_bedrock(self, model_id):
+        with patch.object(mf, "BedrockModel") as MockBedrock:
+            build_model(model_id)
+            assert MockBedrock.call_args.kwargs["model_id"] == model_id
+
+    @pytest.mark.parametrize(("legacy_id", "canonical_id"), [
+        ("xai.grok-4.3", "us.xai.grok-4.6"),
+        ("xai.grok-4.6", "us.xai.grok-4.6"),
+    ])
+    def test_legacy_ids_are_normalized(self, legacy_id, canonical_id):
+        with patch.object(mf, "BedrockModel") as MockBedrock:
+            build_model(legacy_id)
+            assert MockBedrock.call_args.kwargs["model_id"] == canonical_id
+
+
+class TestBedrockRuntimeResponsesRouting:
+    GPT_MODELS = (
+        "us.openai.gpt-5.6-sol",
+        "us.openai.gpt-5.6-terra",
+        "us.openai.gpt-5.6-luna",
+    )
+
+    def test_only_gpt_56_uses_runtime_responses(self):
+        assert BEDROCK_RESPONSES_MODELS == frozenset(self.GPT_MODELS)
+
+    @pytest.mark.parametrize("model_id", GPT_MODELS)
+    @patch.dict(os.environ, {
+        "AWS_BEARER_TOKEN_BEDROCK": "test-key",
+        "AWS_REGION": "us-west-2",
+    })
+    def test_gpt_56_uses_runtime_responses_endpoint(self, model_id):
+        model = build_model(model_id)
+        assert isinstance(model, OpenAIResponsesModel)
+        assert (
+            model.client_args["base_url"]
+            == "https://bedrock-runtime.us-west-2.amazonaws.com/openai/v1"
+        )
+        assert model.client_args["api_key"] == "test-key"
+        assert model.config["model_id"] == model_id
+
+    @pytest.mark.parametrize(("legacy_id", "canonical_id"), [
+        ("openai.gpt-5.6-sol", "us.openai.gpt-5.6-sol"),
+        ("openai.gpt-5.6-terra", "us.openai.gpt-5.6-terra"),
+        ("openai.gpt-5.6-luna", "us.openai.gpt-5.6-luna"),
+    ])
+    @patch.dict(os.environ, {
+        "AWS_BEARER_TOKEN_BEDROCK": "test-key",
+        "AWS_REGION": "us-west-2",
+    })
+    def test_legacy_gpt_ids_use_runtime_responses(self, legacy_id, canonical_id):
+        model = build_model(legacy_id)
+        assert model.config["model_id"] == canonical_id
+        assert "bedrock-runtime.us-west-2.amazonaws.com" in (
+            model.client_args["base_url"]
+        )
+
+    @pytest.mark.parametrize(("file_format", "expected_mime"), [
+        ("txt", "text/plain"),
+        ("pdf", "application/pdf"),
+        (
+            "docx",
+            "application/vnd.openxmlformats-officedocument."
+            "wordprocessingml.document",
+        ),
+        (
+            "xlsx",
+            "application/vnd.openxmlformats-officedocument."
+            "spreadsheetml.sheet",
+        ),
+    ])
+    @patch.dict(os.environ, {
+        "AWS_BEARER_TOKEN_BEDROCK": "test-key",
+        "AWS_REGION": "us-west-2",
+    })
+    def test_document_uses_filename_and_file_data(
+        self,
+        file_format,
+        expected_mime,
+    ):
+        model = build_model("us.openai.gpt-5.6-sol")
+        block = {
+            "document": {
+                "format": file_format,
+                "name": "probe",
+                "source": {"bytes": b"BEDROCK_FILE_OK"},
+            }
+        }
+        out = type(model)._format_request_message_content(block)
+        assert out["type"] == "input_file"
+        assert out["filename"] == f"probe.{file_format}"
+        assert out["file_data"].startswith(f"data:{expected_mime};base64,")
+        assert "file_url" not in out
+
 
 class TestMantleRouting:
     @patch.dict(os.environ, {"AWS_BEARER_TOKEN_BEDROCK": "test-key"})
     def test_mantle_model_built_with_correct_base_url(self):
-        model = build_model("openai.gpt-5.6-sol")
-        assert "bedrock-mantle.us-east-1.api.aws/openai/v1" in model.client_args["base_url"]
+        model = build_model("google.gemma-4-31b")
+        assert "bedrock-mantle.us-east-2.api.aws/openai/v1" in model.client_args["base_url"]
         assert model.client_args["api_key"] == "test-key"
 
-    def test_gpt_56_family_is_pinned_to_us_east_1(self):
-        for model_id in (
-            "openai.gpt-5.6-sol",
-            "openai.gpt-5.6-terra",
-            "openai.gpt-5.6-luna",
-        ):
-            assert MANTLE_MODELS[model_id].region == "us-east-1"
-
-    @patch.dict(os.environ, {"AWS_BEARER_TOKEN_BEDROCK": "test-key"})
-    def test_grok_region_is_west(self):
-        model = build_model("xai.grok-4.3")
-        assert "us-west-2" in model.client_args["base_url"]
+    def test_only_gemma_models_remain_on_mantle(self):
+        assert MANTLE_MODELS
+        assert all(model_id.startswith("google.gemma-4") for model_id in MANTLE_MODELS)
+        assert all(spec.region == "us-east-2" for spec in MANTLE_MODELS.values())
 
     def test_all_mantle_models_have_responses_api(self):
         for spec in MANTLE_MODELS.values():
@@ -122,9 +215,8 @@ class TestMantleRouting:
 
     @patch.dict(os.environ, {"AWS_BEARER_TOKEN_BEDROCK": "test-key"})
     def test_pdf_document_uses_filename_and_file_data(self):
-        # Mantle rejects the SDK default {"type":"input_file","file_url":...} with
-        # "Unsupported file type: 'unknown'". The subclass must emit filename + file_data.
-        model = build_model("openai.gpt-5.6-sol")
+        # Bedrock Responses endpoints require explicit filename + file_data.
+        model = build_model("google.gemma-4-31b")
         block = {"document": {"format": "pdf", "name": "report", "source": {"bytes": b"%PDF-1.4 x"}}}
         out = type(model)._format_request_message_content(block)
         assert out["type"] == "input_file"
@@ -134,7 +226,7 @@ class TestMantleRouting:
 
     @patch.dict(os.environ, {"AWS_BEARER_TOKEN_BEDROCK": "test-key"})
     def test_non_document_content_delegates_to_parent(self):
-        model = build_model("openai.gpt-5.6-sol")
+        model = build_model("google.gemma-4-31b")
         out = type(model)._format_request_message_content({"text": "hi"})
         assert out == {"type": "input_text", "text": "hi"}
 
@@ -148,7 +240,7 @@ class TestMantleRouting:
                 "prompt tokens (1209034) exceed model maximum (1050000)"
             )
 
-        model = build_model("openai.gpt-5.6-sol")
+        model = build_model("google.gemma-4-31b")
         with patch.object(OpenAIResponsesModel, "stream", failing_stream):
             with pytest.raises(ContextWindowOverflowException, match="1209034"):
                 async for _ in model.stream([]):
@@ -162,7 +254,7 @@ class TestMantleRouting:
                 yield None
             raise RuntimeError("upstream connection reset")
 
-        model = build_model("openai.gpt-5.6-sol")
+        model = build_model("google.gemma-4-31b")
         with patch.object(OpenAIResponsesModel, "stream", failing_stream):
             with pytest.raises(RuntimeError, match="connection reset"):
                 async for _ in model.stream([]):

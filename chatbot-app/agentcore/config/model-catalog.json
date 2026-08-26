@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "revision": "2026-08-11.1",
+  "revision": "2026-08-26.2",
   "providerMatchers": {
     "anthropic": [
       "anthropic.",
@@ -45,30 +45,27 @@
       "rejectsTemperature": false
     },
     "gpt.sol.latest": {
-      "id": "openai.gpt-5.6-sol",
+      "id": "us.openai.gpt-5.6-sol",
       "provider": "openai",
       "family": "gpt",
-      "transport": "mantle_responses",
-      "region": "us-east-1",
-      "maxInputTokens": 1050000,
+      "transport": "bedrock_responses",
+      "maxInputTokens": 1000000,
       "rejectsTemperature": true
     },
     "gpt.terra.latest": {
-      "id": "openai.gpt-5.6-terra",
+      "id": "us.openai.gpt-5.6-terra",
       "provider": "openai",
       "family": "gpt",
-      "transport": "mantle_responses",
-      "region": "us-east-1",
-      "maxInputTokens": 1050000,
+      "transport": "bedrock_responses",
+      "maxInputTokens": 1000000,
       "rejectsTemperature": true
     },
     "gpt.luna.latest": {
-      "id": "openai.gpt-5.6-luna",
+      "id": "us.openai.gpt-5.6-luna",
       "provider": "openai",
       "family": "gpt",
-      "transport": "mantle_responses",
-      "region": "us-east-1",
-      "maxInputTokens": 1050000,
+      "transport": "bedrock_responses",
+      "maxInputTokens": 1000000,
       "rejectsTemperature": true
     },
     "gpt.oss.120b": {
@@ -80,13 +77,12 @@
       "rejectsTemperature": false
     },
     "grok.latest": {
-      "id": "xai.grok-4.3",
+      "id": "us.xai.grok-4.6",
       "provider": "xai",
       "family": "grok",
-      "transport": "mantle_responses",
-      "region": "us-west-2",
-      "maxInputTokens": 1048576,
-      "rejectsTemperature": false
+      "transport": "bedrock",
+      "maxInputTokens": 500000,
+      "rejectsTemperature": true
     },
     "gemma.31b.latest": {
       "id": "google.gemma-4-31b",

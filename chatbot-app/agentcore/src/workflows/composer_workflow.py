@@ -1165,7 +1165,7 @@ Please address this feedback in the revised outline.
         logger.info(prompt)
         logger.info("=" * 80)
 
-        # Routes to BedrockModel or a Mantle OpenAI provider based on model_id.
+        # Routes to Bedrock Runtime or a Mantle-only provider based on model_id.
         model = build_model(
             self.model_id,
             temperature=self.temperature,

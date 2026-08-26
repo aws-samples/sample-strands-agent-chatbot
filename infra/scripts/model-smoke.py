@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import sys
@@ -10,30 +11,43 @@ import urllib.error
 import urllib.request
 import uuid
 
-
 ORCHESTRATOR_URL = os.environ["ORCH_URL"]
 ACCESS_TOKEN = os.environ["ACCESS_TOKEN"]
-MODEL_ID = os.environ.get("MODEL_SMOKE_MODEL_ID", "openai.gpt-5.6-terra")
+USER_ID = os.environ["USER_ID"]
+MODEL_ID = os.environ.get("MODEL_SMOKE_MODEL_ID", "us.openai.gpt-5.6-terra")
 
 
 def _thread_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex}_{uuid.uuid4().hex}"[:64]
 
 
-def _invoke(prompt: str, thread_id: str) -> list[dict]:
+def _invoke(
+    prompt: str,
+    thread_id: str,
+    *,
+    files=None,
+) -> list[dict]:
+    content = [{"type": "text", "text": prompt}]
+    for file in files or []:
+        content.append({
+            "type": "binary",
+            "mime_type": file["mime_type"],
+            "data": base64.b64encode(file["data"].encode()).decode(),
+            "filename": file["filename"],
+        })
     payload = {
         "thread_id": thread_id,
         "run_id": f"run_{uuid.uuid4().hex}",
         "messages": [{
             "id": f"msg_{uuid.uuid4().hex}",
             "role": "user",
-            "content": [{"type": "text", "text": prompt}],
+            "content": content,
         }],
         "tools": [],
         "context": [],
         "state": {
             "model_id": MODEL_ID,
-            "user_id": "model-smoke-test",
+            "user_id": USER_ID,
         },
     }
     request = urllib.request.Request(
@@ -87,6 +101,14 @@ def _tool_names(events: list[dict]) -> set[str]:
     }
 
 
+def _response_text(events: list[dict]) -> str:
+    return "".join(
+        str(event.get("delta") or "")
+        for event in events
+        if event.get("type") == "TEXT_MESSAGE_CONTENT"
+    )
+
+
 def _tool_receipt(events: list[dict], tool_name: str) -> dict:
     tool_call_ids = {
         event.get("toolCallId")
@@ -116,6 +138,24 @@ def _tool_receipt(events: list[dict], tool_name: str) -> dict:
 
 
 def main() -> int:
+    file_events = _invoke(
+        "Read the attached text file and return only its verification code.",
+        _thread_id("file_smoke"),
+        files=[{
+            "filename": "responses-smoke.txt",
+            "mime_type": "text/plain",
+            "data": "The verification code is BEDROCK_RUNTIME_RESPONSES_FILE_OK.",
+        }],
+    )
+    _assert_finished(file_events, "GPT file streaming")
+    file_response = _response_text(file_events)
+    if "BEDROCK_RUNTIME_RESPONSES_FILE_OK" not in file_response:
+        raise RuntimeError(
+            "GPT file streaming did not read the attachment: "
+            f"{file_response[-500:]}"
+        )
+    print(f"  GPT file streaming -> completed with {MODEL_ID}")
+
     code_events = _invoke(
         "Delegate to the coding agent: create model-smoke.txt containing exactly "
         "MODEL_SMOKE_OK, verify it, and report completion.",
@@ -151,6 +191,6 @@ def main() -> int:
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001 - CLI must render any smoke failure
         print(f"  model smoke failed: {error}", file=sys.stderr)
         raise SystemExit(1)

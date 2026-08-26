@@ -202,22 +202,22 @@ prompt_api_keys() {
     fi
   fi
 
-  # Bedrock API key (for Mantle OpenAI-compatible models: gpt-5.x, grok, gemma-4)
+  # Bedrock API key (GPT-5.6 Runtime Responses and Mantle-only Gemma 4)
   if _secret_exists "$mantle_secret"; then
     ENABLE_MANTLE_MODELS=true
     echo ""
-    echo "Bedrock Mantle  : already configured (gpt-5.x, grok, gemma-4 enabled)"
+    echo "Bedrock API Key : already configured (GPT-5.6 Responses + Gemma 4 enabled)"
   else
     echo ""
-    echo "Bedrock API Key (enables Mantle models: GPT-5.6, Grok-4.3, Gemma-4)"
+    echo "Bedrock API Key (enables GPT-5.6 Runtime Responses and Gemma 4)"
     echo "  Generate at: https://console.aws.amazon.com/bedrock/home#/api-keys"
     read -rp "  Bedrock API Key (Enter to skip): " key
     if [ -n "${key:-}" ]; then
-      _ensure_secret "$mantle_secret" "Bedrock API key for Mantle OpenAI-compatible models" "$key"
+      _ensure_secret "$mantle_secret" "Bedrock API key for OpenAI-compatible Responses models" "$key"
       ENABLE_MANTLE_MODELS=true
       echo "  -> stored"
     else
-      echo "  (skipped — GPT-5.6, Grok, Gemma-4 will not be available)"
+      echo "  (skipped — GPT-5.6 and Gemma 4 will not be available; Grok 4.6 still uses Bedrock Runtime IAM)"
     fi
   fi
 

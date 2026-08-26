@@ -3,12 +3,15 @@
  *
  * Receives the current messages directly from the frontend (no need to
  * re-load from AgentCore Memory, which avoids actorId / payload format issues).
- * Generates a summary with GPT-5.6 Luna via Bedrock Mantle.
+ * Generates a summary with GPT-5.6 Luna via Bedrock Runtime Converse.
  */
+import { BedrockRuntimeClient, ConverseCommand } from '@aws-sdk/client-bedrock-runtime'
 import { NextRequest, NextResponse } from 'next/server'
 
-const COMPACTION_MODEL_ID = 'openai.gpt-5.6-luna'
-const MANTLE_RESPONSES_URL = 'https://bedrock-mantle.us-east-1.api.aws/openai/v1/responses'
+const COMPACTION_MODEL_ID = 'us.openai.gpt-5.6-luna'
+const bedrockRuntime = new BedrockRuntimeClient({
+  region: process.env.AWS_REGION || 'us-west-2',
+})
 
 export const runtime = 'nodejs'
 
@@ -99,54 +102,24 @@ ${transcript}
 Now produce the summary following the instructions above.`
 }
 
-type MantleContent = {
-  type?: string
-  text?: string
-}
-
-type MantleOutput = {
-  type?: string
-  content?: MantleContent[]
-}
-
-type MantleResponse = {
-  output?: MantleOutput[]
-  error?: { message?: string }
-}
-
 async function generateSummary(prompt: string): Promise<string> {
-  const apiKey = process.env.AWS_BEARER_TOKEN_BEDROCK
-  if (!apiKey) {
-    throw new Error('AWS_BEARER_TOKEN_BEDROCK is not configured')
-  }
-
-  const response = await fetch(MANTLE_RESPONSES_URL, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
+  const response = await bedrockRuntime.send(new ConverseCommand({
+    modelId: COMPACTION_MODEL_ID,
+    messages: [{
+      role: 'user',
+      content: [{ text: prompt }],
+    }],
+    inferenceConfig: {
+      maxTokens: 4096,
     },
-    body: JSON.stringify({
-      model: COMPACTION_MODEL_ID,
-      input: prompt,
-      max_output_tokens: 4096,
-    }),
-  })
+  }))
 
-  const payload = await response.json() as MantleResponse
-  if (!response.ok) {
-    throw new Error(payload.error?.message || `Mantle Responses API returned ${response.status}`)
-  }
-
-  const text = payload.output
-    ?.filter(item => item.type === 'message')
-    .flatMap(item => item.content ?? [])
-    .filter(item => item.type === 'output_text' && item.text)
-    .map(item => item.text)
+  const text = response.output?.message?.content
+    ?.map(block => block.text ?? '')
     .join('') ?? ''
 
   if (!text) {
-    throw new Error('Mantle Responses API returned no summary text')
+    throw new Error('Bedrock Runtime returned no summary text')
   }
   return text
 }

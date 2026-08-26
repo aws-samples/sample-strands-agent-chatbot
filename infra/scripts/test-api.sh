@@ -155,6 +155,6 @@ echo ""
 if [ "${RUN_MODEL_SMOKE:-0}" = "1" ]; then
   echo ""
   echo ">>> Model routing: Code + Research"
-  export ORCH_URL ACCESS_TOKEN
+  export ORCH_URL ACCESS_TOKEN USER_ID
   python3 "$INFRA_DIR/scripts/model-smoke.py"
 fi

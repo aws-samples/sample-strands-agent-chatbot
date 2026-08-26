@@ -475,6 +475,27 @@ def skill_executor(
             "status": "error",
         })
 
+    # Some reasoning models append an annotation to the Research Agent skill
+    # name and omit the sole tool name. Repair only this unambiguous case.
+    if (
+        isinstance(skill_name, str)
+        and skill_name.startswith("research-agent ")
+    ):
+        logger.warning(
+            "Normalizing annotated Research Agent skill name: %s",
+            skill_name,
+        )
+        skill_name = "research-agent"
+    if (
+        skill_name == "research-agent"
+        and not tool_name
+        and not script_name
+    ):
+        logger.warning(
+            "Research Agent tool name was omitted; inferring research_agent"
+        )
+        tool_name = "research_agent"
+
     try:
         # Direct Python callers from older sessions can still pass a serialized
         # object. The public tool schema remains object-only so models do not
@@ -590,6 +611,23 @@ def _execute_tool(
             # Local tool — direct function call
             metadata = target_tool._metadata
             input_model = getattr(metadata, "input_model", None)
+            target_name = canonical_tool_name(target_tool)
+            if target_name == "research_agent" and not str(
+                tool_input.get("plan", "")
+            ).strip():
+                fallback_plan = tool_context.invocation_state.get(
+                    "user_message",
+                    "",
+                )
+                if isinstance(fallback_plan, str) and fallback_plan.strip():
+                    tool_input = {
+                        **tool_input,
+                        "plan": fallback_plan.strip(),
+                    }
+                    logger.warning(
+                        "Research Agent plan was omitted; using the current "
+                        "user message as the research plan"
+                    )
             if isinstance(input_model, type) and hasattr(input_model, "model_validate"):
                 try:
                     validated_input = input_model.model_validate(tool_input)
@@ -632,7 +670,6 @@ def _execute_tool(
                 session_id = tool_context.invocation_state.get("session_id")
                 user_id = tool_context.invocation_state.get("user_id")
                 run_id = tool_context.invocation_state.get("run_id")
-                target_name = canonical_tool_name(target_tool)
                 result = _run_async(_consume_async_generator(
                     result,
                     session_id=session_id,

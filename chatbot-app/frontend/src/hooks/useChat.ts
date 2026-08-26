@@ -13,6 +13,7 @@ import { useMessageQueue, QueuedMessage, QueueHoldReason } from './useMessageQue
 import { getApiUrl } from '@/config/environment'
 import { generateSessionId } from '@/config/session'
 import { apiGet, apiPost } from '@/lib/api-client'
+import { DEFAULT_MODEL_ID, normalizeModelId } from '@/lib/model-ids'
 import { groupChatMessages, type GroupedChatMessage } from '@/lib/chat-message-groups'
 import { deriveTurnControl, type TurnControlState } from '@/lib/turn-control'
 
@@ -130,7 +131,7 @@ const CONCISE_MODE_KEY = 'chat-concise-mode'
 
 // Default preferences when session has no saved preferences
 const DEFAULT_PREFERENCES: SessionPreferences = {
-  lastModel: 'openai.gpt-5.6-terra',
+  lastModel: DEFAULT_MODEL_ID,
   selectedPromptId: 'general',
 }
 
@@ -441,7 +442,7 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
     console.log(`[useChat] ${preferences ? 'Restoring session' : 'Using default'} preferences:`, effectivePreferences)
 
     // Restore model configuration with validation against available models
-    let restoredModel = effectivePreferences.lastModel!
+    let restoredModel = normalizeModelId(effectivePreferences.lastModel!)
     try {
       const modelsResponse = await apiGet<{ models: { id: string }[] }>('model/available-models')
       const validModelIds = modelsResponse.models?.map(m => m.id) || []
@@ -1069,13 +1070,14 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
 
   // Update per-session model config (React state + global default via API)
   const updateModelConfig = useCallback((modelId: string, temperature?: number) => {
-    setCurrentModelId(modelId)
+    const normalizedModelId = normalizeModelId(modelId)
+    setCurrentModelId(normalizedModelId)
     if (temperature !== undefined) {
       setCurrentTemperature(temperature)
     }
     // Also persist as global default for new chats
     apiPost('model/config/update', {
-      model_id: modelId,
+      model_id: normalizedModelId,
       ...(temperature !== undefined && { temperature }),
     }, {
       headers: sessionId ? { 'X-Session-ID': sessionId } : {},

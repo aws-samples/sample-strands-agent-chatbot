@@ -10,7 +10,7 @@ strands-agents[a2a,otel]==1.53.0
 strands-agents-tools[a2a_client]>=0.8.6
 mcp>=1.28.1,<2.0.0
 
-# OpenAI SDK - required for Bedrock Mantle OpenAI-compatible models (gpt-5.x, grok, gemma-4)
+# OpenAI SDK - required for Bedrock Runtime/Mantle Responses models
 openai>=2.49.0
 
 # Voice Chat (BidiAgent)

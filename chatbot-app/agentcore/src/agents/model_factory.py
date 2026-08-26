@@ -1,16 +1,16 @@
 """Model factory - builds the right Strands model provider for a given model_id.
 
-Two execution paths coexist:
-- Native Bedrock (`BedrockModel`): supports prompt caching. Default for any
-  model_id not registered as Mantle-only.
-- Bedrock Mantle OpenAI-compatible (`OpenAIResponsesModel`): for frontier/extra
-  models not available on native Bedrock Converse (gpt-5.x, grok, gemma-4).
-  No prompt caching. Authenticated with a Bedrock API key from Secrets Manager.
+Three execution paths coexist:
+- Bedrock Runtime Converse (`BedrockModel`): default for native and
+  cross-Region inference-profile IDs.
+- Bedrock Runtime OpenAI-compatible Responses (`OpenAIResponsesModel`):
+  GPT-5.6 models, including file inputs that Converse rejects.
+- Bedrock Mantle OpenAI-compatible Responses (`OpenAIResponsesModel`):
+  models not yet available through Bedrock Runtime, currently Gemma 4.
 
-Mantle models differ by region and by API path, so each is registered with its
-own spec. A Mantle stream can intermittently end with a `response.failed` event
-that the Strands SDK silently swallows (producing an empty turn);
-BedrockMantleResponsesModel retries those before any output is streamed downstream.
+Responses models differ by endpoint and region, but share request formatting.
+An empty Responses turn can otherwise be swallowed by the Strands SDK, so the
+adapter retries before any output is streamed downstream.
 """
 
 import logging
@@ -22,7 +22,7 @@ import boto3
 from strands.models import BedrockModel, CacheConfig
 from strands.types.exceptions import ContextWindowOverflowException
 
-from agent.config.model_catalog import get_model_catalog
+from agent.config.model_catalog import get_model_catalog, normalize_model_id
 # Re-exported for callers that already reach for model_factory. The registry
 # itself lives in its own module so the session manager can size compaction
 # without importing the agent stack.
@@ -41,6 +41,21 @@ _CONTEXT_OVERFLOW_MARKERS = (
     "context length exceeded",
     "context window exceeded",
 )
+_DOCUMENT_MIME_TYPES = {
+    "csv": "text/csv",
+    "doc": "application/msword",
+    "docx": (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    ),
+    "html": "text/html",
+    "md": "text/markdown",
+    "pdf": "application/pdf",
+    "txt": "text/plain",
+    "xls": "application/vnd.ms-excel",
+    "xlsx": (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    ),
+}
 
 
 def _is_context_overflow_error(error: BaseException) -> bool:
@@ -65,23 +80,25 @@ class MantleSpec:
     """How to reach a Mantle-only model.
 
     api: "responses" -> /openai/v1 (OpenAIResponsesModel)
-    region: Mantle region serving this model (independent of the app's region;
-            e.g. grok-4.3 is us-west-2 only, gpt-5.6 is served in us-east-1).
+    region: Mantle region serving this model, independent of the app's region.
     """
     api: str
     region: str
 
 
-# Mantle-only models (not callable via native Bedrock Converse). Anything not
-# registered there falls back to BedrockModel. The region is pinned per model: a
-# Mantle model is only served in some regions (grok-4.3 in us-west-2, gpt-5.6
-# in us-east-1), so the base_url region is forced independent of where the
-# app is deployed.
+# Mantle-only models (not callable through Bedrock Runtime). Anything not
+# registered here falls back to BedrockModel. The region is pinned per model.
 MANTLE_MODELS: dict[str, MantleSpec] = {
     spec.model_id: MantleSpec(api="responses", region=str(spec.region))
     for spec in _MODEL_CATALOG.models.values()
     if spec.transport == "mantle_responses"
 }
+
+BEDROCK_RESPONSES_MODELS = frozenset(
+    spec.model_id
+    for spec in _MODEL_CATALOG.models.values()
+    if spec.transport == "bedrock_responses"
+)
 
 
 # Native Bedrock models that are NOT available in every region. Selecting one of
@@ -95,7 +112,7 @@ NATIVE_MODEL_REGION_OVERRIDES: dict[str, str] = {
 
 
 def model_rejects_temperature(model_id: str) -> bool:
-    return model_id in NO_TEMPERATURE_MODELS
+    return normalize_model_id(model_id) in NO_TEMPERATURE_MODELS
 
 
 _bedrock_api_key: Optional[str] = None
@@ -118,7 +135,7 @@ def _get_bedrock_api_key() -> str:
     secret_name = os.environ.get("BEDROCK_API_KEY_SECRET_NAME")
     if not secret_name:
         raise RuntimeError(
-            "Mantle model requested but no Bedrock API key available "
+            "Responses model requested but no Bedrock API key available "
             "(set BEDROCK_API_KEY_SECRET_NAME or AWS_BEARER_TOKEN_BEDROCK)"
         )
     region = os.environ.get("AWS_REGION", "us-west-2")
@@ -127,20 +144,25 @@ def _get_bedrock_api_key() -> str:
     return _bedrock_api_key
 
 
-def _make_bedrock_mantle_responses_model(model_id: str, spec: MantleSpec, max_tokens: int):
-    """Build the OpenAI Responses model configured for Bedrock Mantle."""
+def _make_bedrock_responses_model(
+    model_id: str,
+    *,
+    base_url: str,
+    max_tokens: int,
+    endpoint_label: str,
+):
+    """Build an OpenAI Responses model for a Bedrock-compatible endpoint."""
     import asyncio
     import base64
     import mimetypes
 
     from strands.models.openai_responses import OpenAIResponsesModel
 
-    class BedrockMantleResponsesModel(OpenAIResponsesModel):
+    class BedrockOpenAIResponsesModel(OpenAIResponsesModel):
         """Live streaming preserved. Buffers only the content-less leading events
         (messageStart). On the first content/tool block, flushes the buffer and
-        streams live. If a turn produces no content block at all -- the Mantle
-        `response.failed` event that the SDK swallows into an empty turn -- the
-        buffer is discarded and the call retried. Safe because nothing was yielded
+        streams live. If a turn produces no content block at all, the buffer is
+        discarded and the call retried. This is safe because nothing was yielded
         downstream before the first content block.
         """
 
@@ -178,25 +200,36 @@ def _make_bedrock_mantle_responses_model(model_id: str, spec: MantleSpec, max_to
                 if attempt < self.MAX_RETRIES:
                     attempt += 1
                     logger.warning(
-                        "Mantle empty turn (response.failed) for %s; retry %d/%d",
-                        model_id, attempt, self.MAX_RETRIES,
+                        "%s empty turn for %s; retry %d/%d",
+                        endpoint_label,
+                        model_id,
+                        attempt,
+                        self.MAX_RETRIES,
                     )
                     await asyncio.sleep(self.RETRY_BASE_S * attempt)
                     continue
-                logger.error("Mantle model %s exhausted retries on empty turn", model_id)
+                logger.error(
+                    "%s model %s exhausted retries on empty turn",
+                    endpoint_label,
+                    model_id,
+                )
                 for held in lead_buffer:
                     yield held
                 return
 
         @classmethod
         def _format_request_message_content(cls, content, *, role="user"):
-            # The SDK emits documents as {"type": "input_file", "file_url": <data-url>},
-            # which Mantle rejects with "Unsupported file type: 'unknown'". Mantle
-            # requires the OpenAI-standard shape with an explicit filename + file_data.
+            # Bedrock's OpenAI-compatible Responses endpoints accept the standard
+            # inline file shape with an explicit filename and base64 file_data.
+            # Keep this conversion common to Runtime and Mantle so Strands
+            # document ContentBlocks do not reach Converse.
             if "document" in content:
                 doc = content["document"]
                 fmt = doc["format"]
-                mime = mimetypes.types_map.get(f".{fmt}", "application/octet-stream")
+                mime = _DOCUMENT_MIME_TYPES.get(
+                    fmt,
+                    mimetypes.types_map.get(f".{fmt}", "application/octet-stream"),
+                )
                 data_url = f"data:{mime};base64,{base64.b64encode(doc['source']['bytes']).decode()}"
                 name = doc.get("name", "document")
                 return {
@@ -206,8 +239,7 @@ def _make_bedrock_mantle_responses_model(model_id: str, spec: MantleSpec, max_to
                 }
             return super()._format_request_message_content(content, role=role)
 
-    base_url = f"https://bedrock-mantle.{spec.region}.api.aws/openai/v1"
-    return BedrockMantleResponsesModel(
+    return BedrockOpenAIResponsesModel(
         model_id=model_id,
         params={"max_output_tokens": max_tokens},
         client_args={
@@ -226,13 +258,35 @@ def build_model(
 ):
     """Build the appropriate Strands model for `model_id`.
 
-    Mantle-only models -> BedrockMantleResponsesModel (no caching, no temperature).
-    Everything else -> BedrockModel (caching + boto retry).
+    GPT-5.6 -> Bedrock Runtime OpenAI-compatible Responses API.
+    Mantle-only models -> Bedrock Mantle Responses API.
+    Everything else -> BedrockModel Converse with IAM authentication.
     """
+    model_id = normalize_model_id(model_id)
+
+    if model_id in BEDROCK_RESPONSES_MODELS:
+        region = os.environ.get("AWS_REGION", "us-west-2")
+        logger.info(
+            "Building Bedrock Runtime Responses model %s (region=%s)",
+            model_id,
+            region,
+        )
+        return _make_bedrock_responses_model(
+            model_id,
+            base_url=f"https://bedrock-runtime.{region}.amazonaws.com/openai/v1",
+            max_tokens=max_tokens,
+            endpoint_label="Bedrock Runtime Responses",
+        )
+
     spec = MANTLE_MODELS.get(model_id)
     if spec is not None:
         logger.info("Building Mantle model %s (region=%s)", model_id, spec.region)
-        return _make_bedrock_mantle_responses_model(model_id, spec, max_tokens)
+        return _make_bedrock_responses_model(
+            model_id,
+            base_url=f"https://bedrock-mantle.{spec.region}.api.aws/openai/v1",
+            max_tokens=max_tokens,
+            endpoint_label="Bedrock Mantle Responses",
+        )
 
     from botocore.config import Config
 

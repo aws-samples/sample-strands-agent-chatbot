@@ -27,13 +27,19 @@ def test_native_model_uses_bedrock():
     assert bedrock_model.call_args.kwargs["region_name"] == "us-west-2"
 
 
-@patch.dict(os.environ, {"AWS_BEARER_TOKEN_BEDROCK": "test-key"})
-def test_gpt_56_uses_mantle_responses_in_us_east_1():
-    model = mf.build_model("openai.gpt-5.6-terra", app_region="us-west-2")
+def test_gpt_56_legacy_id_uses_bedrock_runtime_profile():
+    with patch.object(mf, "BedrockModel") as bedrock_model:
+        mf.build_model("openai.gpt-5.6-terra", app_region="us-west-2")
 
-    assert model.config["model_id"] == "openai.gpt-5.6-terra"
-    assert model.client_args["api_key"] == "test-key"
-    assert "bedrock-mantle.us-east-1.api.aws/openai/v1" in model.client_args["base_url"]
+    assert bedrock_model.call_args.kwargs["model_id"] == "us.openai.gpt-5.6-terra"
+    assert bedrock_model.call_args.kwargs["region_name"] == "us-west-2"
+
+
+def test_grok_46_uses_bedrock_runtime_profile():
+    with patch.object(mf, "BedrockModel") as bedrock_model:
+        mf.build_model("us.xai.grok-4.6", app_region="us-west-2")
+
+    assert bedrock_model.call_args.kwargs["model_id"] == "us.xai.grok-4.6"
 
 
 def test_mantle_secret_is_loaded_from_runtime_region():
@@ -59,4 +65,4 @@ def test_mantle_secret_is_loaded_from_runtime_region():
 def test_missing_mantle_credentials_fails_clearly():
     with patch.dict(os.environ, {}, clear=True):
         with pytest.raises(RuntimeError, match="no Bedrock API key"):
-            mf.build_model("openai.gpt-5.6-terra", app_region="us-west-2")
+            mf.build_model("google.gemma-4-31b", app_region="us-west-2")

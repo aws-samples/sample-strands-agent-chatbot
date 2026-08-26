@@ -3,7 +3,7 @@
 Two behaviours are pinned here:
 
 1. The compaction threshold is derived from the model's context window, not a
-   single constant. The picker spans 131k to 1.05M tokens, so one fixed number
+   single constant. The picker spans 131k to 1M tokens, so one fixed number
    either wastes most of a 1M window or fires too late on the smallest model.
 
 2. Load-time truncation of tool output only runs when the conversation is
@@ -85,11 +85,16 @@ class TestMeasuredModelWindows:
         ):
             assert get_max_input_tokens(model_id) == 1_000_000
         for model_id in (
-            "openai.gpt-5.6-sol",
-            "openai.gpt-5.6-terra",
-            "openai.gpt-5.6-luna",
+            "us.openai.gpt-5.6-sol",
+            "us.openai.gpt-5.6-terra",
+            "us.openai.gpt-5.6-luna",
         ):
-            assert get_max_input_tokens(model_id) == 1_050_000
+            assert get_max_input_tokens(model_id) == 1_000_000
+
+    def test_grok_46_window_matches_runtime_profile(self):
+        get_max_input_tokens = _model_factory().get_max_input_tokens
+        assert get_max_input_tokens("us.xai.grok-4.6") == 500_000
+        assert get_max_input_tokens("xai.grok-4.3") == 500_000
 
     def test_small_window_model_is_not_overstated(self):
         # gpt-oss is the smallest window in the picker; the old fixed 100k
@@ -119,12 +124,12 @@ class TestMeasuredModelWindows:
     def test_every_picker_model_is_measured(self):
         # A model in the picker but absent here silently gets the conservative
         # fallback, which quietly over-compacts a large-context model.
-        from agents.model_factory import MANTLE_MODELS
+        from agent.config.model_catalog import get_model_catalog
 
         MODEL_MAX_INPUT_TOKENS = _model_factory().MODEL_MAX_INPUT_TOKENS
 
-        missing = set(MANTLE_MODELS) - set(MODEL_MAX_INPUT_TOKENS)
-        assert not missing, f"Mantle models without a measured window: {missing}"
+        missing = set(get_model_catalog().models_by_id) - set(MODEL_MAX_INPUT_TOKENS)
+        assert not missing, f"Picker models without a measured window: {missing}"
 
 
 def _manager(**overrides):

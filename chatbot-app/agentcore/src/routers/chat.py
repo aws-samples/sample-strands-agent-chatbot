@@ -941,6 +941,7 @@ async def _handle_agui_invocation(body: dict, http_request: Request) -> Streamin
             "selected_artifact_id": selected_artifact_id,
             "auth_token": auth_token,
             "workspace_paths": list(workspace_paths),
+            "user_message": message,
         }
 
         accept = http_request.headers.get("accept", "")

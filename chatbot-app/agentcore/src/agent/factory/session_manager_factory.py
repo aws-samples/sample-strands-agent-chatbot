@@ -112,7 +112,7 @@ class CompactionConfig:
 
         The threshold is derived from the model's measured context window unless
         COMPACTION_TOKEN_THRESHOLD pins it explicitly. Sizing it per model matters
-        because the picker spans 131k to 1.05M tokens: one fixed number either
+        because the picker spans 131k to 1M tokens: one fixed number either
         wastes most of a 1M window or overflows the smallest one.
         """
         return cls(

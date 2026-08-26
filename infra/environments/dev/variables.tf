@@ -32,7 +32,7 @@ variable "enable_google_maps" {
 }
 
 variable "enable_mantle_models" {
-  description = "Wire the Bedrock API key secret into model-calling runtimes so Mantle OpenAI-compatible models (gpt-5.x, grok, gemma-4) can be selected. Requires a Secrets Manager secret at <project_name>/bedrock/api-key."
+  description = "Wire the Bedrock API key secret into model-calling runtimes. Required for GPT-5.6 through Bedrock Runtime Responses and for Mantle-only Gemma 4. Grok 4.6 continues to use Bedrock Runtime IAM authentication. Requires a Secrets Manager secret at <project_name>/bedrock/api-key."
   type        = bool
   default     = false
 }

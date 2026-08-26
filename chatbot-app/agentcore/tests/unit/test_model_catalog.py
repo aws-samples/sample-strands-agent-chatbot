@@ -2,6 +2,7 @@ import pytest
 
 from agent.config.model_catalog import (
     get_model_catalog,
+    normalize_model_id,
     normalize_task_complexity,
     resolve_code_agent_model,
     resolve_general_subagent_model,
@@ -28,19 +29,19 @@ class TestGeneralSubagentSelection:
                 "us.anthropic.claude-opus-5",
             ),
             (
-                "openai.gpt-5.6-terra",
+                "us.openai.gpt-5.6-terra",
                 "low",
-                "openai.gpt-5.6-luna",
+                "us.openai.gpt-5.6-luna",
             ),
             (
-                "openai.gpt-5.6-terra",
+                "us.openai.gpt-5.6-terra",
                 "medium",
-                "openai.gpt-5.6-terra",
+                "us.openai.gpt-5.6-terra",
             ),
             (
-                "openai.gpt-5.6-terra",
+                "us.openai.gpt-5.6-terra",
                 "high",
-                "openai.gpt-5.6-sol",
+                "us.openai.gpt-5.6-sol",
             ),
         ],
     )
@@ -59,7 +60,7 @@ class TestGeneralSubagentSelection:
 
     def test_unknown_provider_keeps_parent_model(self):
         selection = resolve_general_subagent_model("xai.grok-4.3", "high")
-        assert selection.effective_model_id == "xai.grok-4.3"
+        assert selection.effective_model_id == "us.xai.grok-4.6"
         assert selection.applied is False
 
     def test_other_openai_family_keeps_parent_model(self):
@@ -111,6 +112,20 @@ class TestCodeAgentSelection:
 def test_catalog_has_unique_model_ids():
     catalog = get_model_catalog()
     assert len(catalog.models) == len(catalog.models_by_id)
+
+
+def test_gpt_56_models_use_bedrock_runtime_responses():
+    catalog = get_model_catalog()
+    for key in ("gpt.sol.latest", "gpt.terra.latest", "gpt.luna.latest"):
+        assert catalog.models[key].transport == "bedrock_responses"
+
+
+@pytest.mark.parametrize(("legacy_id", "canonical_id"), [
+    ("openai.gpt-5.6-terra", "us.openai.gpt-5.6-terra"),
+    ("xai.grok-4.3", "us.xai.grok-4.6"),
+])
+def test_legacy_model_ids_are_normalized(legacy_id, canonical_id):
+    assert normalize_model_id(legacy_id) == canonical_id
 
 
 def test_invalid_complexity_is_rejected():
