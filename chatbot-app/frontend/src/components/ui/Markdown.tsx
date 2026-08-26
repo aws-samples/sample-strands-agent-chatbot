@@ -205,9 +205,6 @@ const getDomain = (url: string): string => {
 
 const components: Partial<Components> = {
   // Style links - show citation chips for external links
-  a: ({ node, children, href, ...props }: any) => (
-    <CitationLink href={href} {...props}>{children}</CitationLink>
-  ),
   // Citation renderer - displays claim text with a clickable source chip
   cite: ({ node, children, ...props }: any) => {
     const source = props.source || '';
@@ -318,6 +315,12 @@ const customUrlTransform = (url: string): string => {
   if (url.startsWith('s3://')) {
     return url;
   }
+  // Agent-generated file links use this scheme for sandbox paths. The anchor
+  // renderer below converts mounted workspace paths into authenticated
+  // Workspace downloads.
+  if (url.startsWith('sandbox:')) {
+    return url;
+  }
   // Allow standard protocols
   if (url.startsWith('http://') || url.startsWith('https://') ||
       url.startsWith('mailto:') || url.startsWith('tel:') ||
@@ -326,6 +329,31 @@ const customUrlTransform = (url: string): string => {
   }
   // Block other protocols for security
   return '';
+};
+
+export const workspacePathFromHref = (href?: string): string | null => {
+  if (!href) return null;
+  let normalized = href;
+  try {
+    normalized = decodeURIComponent(href);
+  } catch {
+    return null;
+  }
+  if (normalized.startsWith('sandbox:')) {
+    normalized = normalized.slice('sandbox:'.length);
+  }
+  const prefix = '/mnt/workspace/';
+  if (!normalized.startsWith(prefix)) return null;
+  const relativePath = normalized.slice(prefix.length);
+  if (
+    !relativePath
+    || relativePath.split('/').some(segment => (
+      !segment || segment === '.' || segment === '..'
+    ))
+  ) {
+    return null;
+  }
+  return `code-interpreter/${relativePath}`;
 };
 
 // Chart code block pattern: ```chart\n{...}\n```
@@ -454,6 +482,20 @@ const NonMemoizedMarkdown = ({
     () => [rehypeRaw, [rehypeKatex, { throwOnError: false, strict: false }]] as any[],
     [],
   );
+  const markdownComponents = useMemo<Partial<Components>>(() => ({
+    ...components,
+    a: ({ node, children: linkChildren, href, ...props }: any) => {
+      const workspacePath = workspacePathFromHref(href);
+      if (workspacePath) {
+        return <span title="Code Interpreter scratch paths are not downloadable">{linkChildren}</span>;
+      }
+      return (
+        <CitationLink href={href} {...props}>
+          {linkChildren}
+        </CitationLink>
+      );
+    },
+  }), [sessionId]);
 
   // Font size mapping (in pixels)
   const fontSizeMap: Record<string, string> = {
@@ -493,7 +535,7 @@ const NonMemoizedMarkdown = ({
               key={index}
               remarkPlugins={remarkPlugins}
               rehypePlugins={rehypePlugins}
-              components={components}
+              components={markdownComponents}
               urlTransform={customUrlTransform}
             >
               {part.content}

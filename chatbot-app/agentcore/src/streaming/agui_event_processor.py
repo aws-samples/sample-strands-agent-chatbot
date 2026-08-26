@@ -497,6 +497,7 @@ class AGUIStreamEventProcessor:
 
         stream_iterator = None
         next_event_task = None  # Task for async generator polling (used with elicitation bridge)
+        compaction_update_attempted = False
         try:
             multimodal_message = self._create_multimodal_message(message, file_paths)
 
@@ -698,12 +699,9 @@ class AGUIStreamEventProcessor:
                         logger.error(f"[Token Usage] Error extracting token usage: {e}")
                         # Continue without usage data
 
-                    # Documents are fetched by frontend via S3 workspace API - no longer sent from backend
-                    logger.debug("[Final Result] Emitting complete event and closing stream")
-                    yield self.formatter.format_event("complete", message=result_text, images=images, usage=usage)
-                    logger.debug("[Final Result] Complete event emitted, stream ended")
-
-                    # Trigger compaction update using last LLM call's context size
+                    # Persist compaction before yielding the terminal event. A
+                    # client can close the generator immediately after complete,
+                    # so code placed after that yield is not reliable.
                     session_manager = invocation_state.get("session_manager") if invocation_state else None
                     if session_manager and hasattr(session_manager, 'update_after_turn'):
                         context_size = (
@@ -711,10 +709,16 @@ class AGUIStreamEventProcessor:
                             or self.last_llm_input_tokens
                         )
                         if context_size:
+                            compaction_update_attempted = True
                             try:
                                 session_manager.update_after_turn(context_size, agent.agent_id, agent)
                             except Exception as e:
                                 logger.warning(f"[Compaction] update_after_turn failed: {e}")
+
+                    # Documents are fetched by frontend via S3 workspace API - no longer sent from backend
+                    logger.debug("[Final Result] Emitting complete event and closing stream")
+                    yield self.formatter.format_event("complete", message=result_text, images=images, usage=usage)
+                    logger.debug("[Final Result] Complete event emitted, stream ended")
 
                     return
 
@@ -1031,6 +1035,24 @@ class AGUIStreamEventProcessor:
                 )
 
         finally:
+            # Cancellation or an exception can bypass the final-result branch.
+            # Persist any context metric that was already observed.
+            if not compaction_update_attempted:
+                session_manager = invocation_state.get("session_manager") if invocation_state else None
+                context_size = (
+                    getattr(getattr(agent, "event_loop_metrics", None), "latest_context_size", None)
+                    or self.last_llm_input_tokens
+                )
+                if (
+                    context_size
+                    and session_manager
+                    and hasattr(session_manager, "update_after_turn")
+                ):
+                    try:
+                        session_manager.update_after_turn(context_size, agent.agent_id, agent)
+                    except Exception as e:
+                        logger.warning(f"[Compaction] final update_after_turn failed: {e}")
+
             # Cancel any pending next-event task to avoid leaks
             if next_event_task is not None and not next_event_task.done():
                 next_event_task.cancel()

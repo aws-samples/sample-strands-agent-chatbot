@@ -22,6 +22,7 @@ def create_agent(
     auth_token: Optional[str] = None,
     allow_user_federation: bool = True,
     concise_mode: bool = False,
+    tool_free: bool = False,
     **kwargs,
 ) -> BaseAgent:
     request_type = request_type or "skill"
@@ -43,6 +44,7 @@ def create_agent(
             auth_token=auth_token,
             allow_user_federation=allow_user_federation,
             concise_mode=concise_mode,
+            tool_free=tool_free,
         )
 
     if request_type == "voice":

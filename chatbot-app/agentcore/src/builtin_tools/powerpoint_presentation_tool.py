@@ -7,9 +7,13 @@ Tools for creating and editing PowerPoint presentations.
 """
 
 import json
+import hashlib
 import logging
+import math
 import os
 import re
+import subprocess
+from datetime import datetime, timezone
 from typing import Dict, Any
 
 from strands import tool, ToolContext
@@ -18,7 +22,6 @@ from workspace import PowerPointManager
 
 from .lib.ppt_utils import (
     validate_presentation_name,
-    sanitize_presentation_name,
     get_user_session_ids,
     save_ppt_artifact,
     get_file_compatibility_error,
@@ -31,7 +34,6 @@ logger = logging.getLogger(__name__)
 
 # Backward compatibility aliases
 _validate_presentation_name = validate_presentation_name
-_sanitize_presentation_name_for_bedrock = sanitize_presentation_name
 _get_user_session_ids = get_user_session_ids
 _save_ppt_artifact = save_ppt_artifact
 _get_file_compatibility_error_response = get_file_compatibility_error
@@ -45,24 +47,123 @@ def _load_or_error(ppt_manager: PowerPointManager, filename: str):
         return ppt_manager.load_from_s3(filename), None
     except FileNotFoundError:
         docs = ppt_manager.list_s3_documents()
-        available = [d["filename"] for d in docs if d["filename"].endswith(".pptx")]
+        available = [
+            d["filename"]
+            for d in docs
+            if d["filename"].lower().endswith(".pptx")
+        ]
         msg = f"**Presentation not found**: {filename}"
         if available:
             msg += "\n\n**Available:**\n" + "\n".join(f"- {f}" for f in available)
         return None, {"content": [{"text": msg}], "status": "error"}
 
 
-def _validate_names(source: str, output: str):
-    """Validate source/output names and their difference. Returns error dict or None."""
-    ok, msg = _validate_presentation_name(source)
-    if not ok:
-        return {"content": [{"text": f"**Invalid source name**: {source}\n\n{msg}"}], "status": "error"}
-    ok, msg = _validate_presentation_name(output)
-    if not ok:
-        return {"content": [{"text": f"**Invalid output name**: {output}\n\n{msg}"}], "status": "error"}
-    if source == output:
-        return {"content": [{"text": "**Output name must be different from source name**"}], "status": "error"}
-    return None
+def _existing_presentation_filename(presentation_name: str) -> str:
+    """Preserve the exact uploaded filename while rejecting unsafe paths."""
+    name = presentation_name.strip()
+    if name.lower().endswith(".pptx"):
+        filename = name
+    else:
+        filename = f"{name}.pptx"
+    if (
+        not name
+        or name.startswith(".")
+        or "/" in name
+        or "\\" in name
+        or any(ord(char) < 32 or ord(char) == 127 for char in name)
+    ):
+        raise ValueError("Invalid existing presentation name")
+    return filename
+
+
+def _validate_slide_updates(slide_updates: list, slide_count: int) -> None:
+    """Validate the complete edit batch before mutating the package."""
+    allowed_actions = {
+        "set_text": {"text"},
+        "replace_text": {"find", "replace"},
+        "replace_image": {"image_name"},
+    }
+    seen_slides = set()
+    for update_index, update in enumerate(slide_updates):
+        if not isinstance(update, dict):
+            raise ValueError(f"slide_updates[{update_index}] must be an object")
+        slide_index = update.get("slide_index")
+        if not isinstance(slide_index, int) or not 0 <= slide_index < slide_count:
+            raise ValueError(
+                f"slide_index {slide_index!r} out of range (0-{slide_count - 1})"
+            )
+        if slide_index in seen_slides:
+            raise ValueError(
+                f"slide_index {slide_index} appears more than once; combine its operations"
+            )
+        seen_slides.add(slide_index)
+
+        operations = update.get("operations")
+        if not isinstance(operations, list) or not operations:
+            raise ValueError(
+                f"slide_updates[{update_index}].operations must be a non-empty list"
+            )
+        for operation_index, operation in enumerate(operations):
+            if not isinstance(operation, dict):
+                raise ValueError(
+                    f"slide_updates[{update_index}].operations[{operation_index}] "
+                    "must be an object"
+                )
+            action = operation.get("action")
+            if action not in allowed_actions:
+                raise ValueError(
+                    f"Unsupported action {action!r}; allowed: "
+                    f"{sorted(allowed_actions)}"
+                )
+            element_id = operation.get("element_id")
+            if not isinstance(element_id, int) or element_id < 0:
+                raise ValueError("element_id must be a non-negative integer")
+            for field in allowed_actions[action]:
+                if not isinstance(operation.get(field), str):
+                    raise ValueError(f"{action}.{field} must be a string")
+            if action == "replace_text" and not operation["find"]:
+                raise ValueError("replace_text.find must not be empty")
+            if action == "replace_image" and not operation["image_name"]:
+                raise ValueError("replace_image.image_name must not be empty")
+
+
+def _available_system_fonts() -> set[str] | None:
+    try:
+        result = subprocess.run(
+            ["fc-list", "--format", "%{family}\n"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=True,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return None
+    fonts = set()
+    for line in result.stdout.splitlines():
+        fonts.update(
+            name.strip().casefold() for name in line.split(",") if name.strip()
+        )
+    return fonts
+
+
+def _is_current_deck_spec(spec: Any, source_sha256: str) -> bool:
+    required_keys = {
+        "schema_version",
+        "source_sha256",
+        "slide_size",
+        "theme",
+        "explicit_fonts",
+        "layouts",
+        "slides",
+    }
+    return (
+        isinstance(spec, dict)
+        and required_keys.issubset(spec)
+        and spec["schema_version"] == 1
+        and spec["source_sha256"] == source_sha256
+        and isinstance(spec["theme"], dict)
+        and isinstance(spec["slides"], list)
+    )
 
 
 def _save_and_respond(
@@ -93,87 +194,116 @@ def _save_and_respond(
     return build_success_response(success_msg, meta)
 
 
+def _load_edit_or_error(ppt_manager: PowerPointManager, edit_id: str):
+    try:
+        draft_bytes, edit_state = ppt_manager.load_edit(edit_id)
+        return draft_bytes, edit_state, None
+    except FileNotFoundError:
+        return None, None, {
+            "content": [{
+                "text": (
+                    f"**Edit draft not found**: {edit_id}\n\n"
+                    "Call `begin_presentation_edit` for the source presentation."
+                )
+            }],
+            "status": "error",
+        }
+
+
+def _save_edit_and_respond(
+    ppt_manager: PowerPointManager,
+    edit_id: str,
+    edit_state: Dict[str, Any],
+    output_bytes: bytes,
+    success_msg: str,
+    extra_meta: Dict[str, Any] | None = None,
+):
+    """Conditionally replace one hidden draft without creating an artifact."""
+    draft_etag = ppt_manager.save_edit(
+        edit_id,
+        output_bytes,
+        edit_state["draft_etag"],
+    )
+    metadata = {
+        "edit_id": edit_id,
+        "draft_etag": draft_etag,
+        "source_filename": edit_state["source_filename"],
+        "tool_type": "powerpoint_edit_draft",
+    }
+    if extra_meta:
+        metadata.update(extra_meta)
+    return build_success_response(success_msg, metadata)
+
+
 # ── Tools ─────────────────────────────────────────────────────────────────────
 
 @tool
 def get_slide_design_reference(topic: str = "all") -> Dict[str, Any]:
-    """Get design guidelines for creating professional presentations with PptxGenJS.
+    """Get compact design-system guidance for new PptxGenJS presentations.
 
-    Returns color palettes, typography pairings, layout ideas, and common mistakes
-    to avoid when generating slide code.
+    Use this only for new decks or intentional redesigns. Existing decks should
+    derive their design system with inspect_presentation instead.
 
     Args:
         topic: "colors" | "typography" | "layouts" | "pitfalls" | "all"
     """
     guidelines = {
-        "colors": """## Color Palettes (pick one per presentation)
+        "colors": """## Color System
 
-| Theme             | Primary       | Secondary     | Accent        |
-|-------------------|---------------|---------------|---------------|
-| Midnight Executive| `1E2761` navy | `CADCFC` ice  | `FFFFFF` white|
-| Forest & Moss     | `2C5F2D` forest| `97BC62` moss | `F5F5F5` cream|
-| Coral Energy      | `F96167` coral| `F9E795` gold | `2F3C7E` navy |
-| Warm Terracotta   | `B85042` terra| `E7E8D1` sand | `A7BEAE` sage |
-| Ocean Gradient    | `065A82` deep | `1C7293` teal | `21295C` night|
-| Charcoal Minimal  | `36454F` char | `F2F2F2` off-w| `212121` black|
-| Teal Trust        | `028090` teal | `00A896` sea  | `02C39A` mint |
-| Cherry Bold       | `990011` cherry| `FCF6F5` off-w| `2F3C7E` navy |
+Derive colors from the subject, brand assets, and intended use. Define semantic
+tokens before drawing: background, surface, text, muted text, primary accent, and
+at most one signal color. Use a neutral-dominant system with strong contrast.
 
 Rules:
-- 60-70% dominant color, 1-2 supporting, 1 sharp accent
-- Dark backgrounds for title/conclusion, light for content slides
-- NEVER use "#" prefix with hex colors in PptxGenJS (corrupts file)
-- NEVER encode opacity in hex string — use `opacity` property instead""",
+- Reuse identical tokens across slides and charts
+- Encode meaning with labels or shape as well as color
+- Use light and dark surfaces only when they support hierarchy
+- Verify foreground/background contrast after rendering
+- PptxGenJS hex values are six digits without `#`
+- Use transparency/opacity properties, never eight-digit color strings""",
 
-        "typography": """## Typography Pairings
+        "typography": """## Typography System
 
-| Header Font   | Body Font   |
-|---------------|-------------|
-| Georgia       | Calibri     |
-| Arial Black   | Arial       |
-| Cambria       | Calibri     |
-| Trebuchet MS  | Calibri     |
-
-| Element        | Size      |
-|----------------|-----------|
-| Slide title    | 36-44pt bold |
-| Section header | 20-24pt bold |
-| Body text      | 14-16pt   |
-| Captions       | 10-12pt   |
+Use fonts installed in the target environment. Define one heading face, one body
+face, and a small reusable type scale. Preserve established sizes for repeated
+slide functions.
 
 Rules:
-- 0.5" minimum margins from slide edges
-- 0.3-0.5" between content blocks
-- Use `charSpacing` not `letterSpacing` (silently ignored)
-- Use `breakLine: true` between array text items""",
+- Use takeaway titles when the slide makes an argument
+- Left-align paragraphs; center only intentionally grouped content
+- Keep body text readable at presentation distance
+- Split dense slides instead of shrinking below the established body size
+- Use `charSpacing`, not `letterSpacing`
+- Use `breakLine: true` between rich-text array lines
+- Validate missing fonts and inspect renderer substitution""",
 
-        "layouts": """## Layout Ideas per Slide
+        "layouts": """## Functional Layouts
 
-Every slide needs a visual element — image, shape, icon, or chart.
+Choose geometry by slide function:
+- Opening: literal title, restrained visual, minimal metadata
+- Context: annotated image, map, timeline, or compact evidence
+- Argument: one claim with two or three supporting proof points
+- Data: one chart with a takeaway title and direct labels
+- Comparison: aligned columns with a consistent comparison basis
+- Process: ordered stages with direction and ownership
+- Decision: options, criteria, recommendation, and consequence
+- Closing: decision/request and next action
 
-- **Title slide**: Dark full-bleed background, large centered title, subtitle
-- **Content**: Two-column (text left, visual right)
-- **Stats**: Large number callouts (60-72pt) with small labels
-- **Process**: Numbered steps with colored circles or arrows
-- **Quote**: Large italic text, colored accent shape, attribution
-- **Comparison**: Side-by-side columns with color-coded headers
-- **Image**: Half-bleed image with text overlay
-- **Section divider**: Bold color background, single centered heading
-
-Use varied layouts — avoid repeating the same pattern slide after slide.""",
+Use masters for repeated chrome and repeat exact grid coordinates for repeated
+functions. Vary composition only when content needs a different function.""",
 
         "pitfalls": """## Common Mistakes to Avoid
 
-1. **NEVER `#` prefix with hex colors** → corrupts file
-2. **NEVER 8-char opacity hex** (e.g. `00000020`) → use `opacity: 0.12` instead
-3. **NEVER unicode bullets** `•` → use `bullet: true`
-4. **NEVER reuse option objects** across addShape calls → PptxGenJS mutates in-place
-5. **NEVER accent lines under titles** → hallmark of AI-generated slides; use whitespace instead
-6. **Don't repeat same layout** → vary columns, cards, callouts across slides
-7. **Don't center body text** → left-align paragraphs; center only titles
-8. **Don't use negative shadow offset** → use `angle: 270` with positive offset for upward shadow
-9. **Don't use ROUNDED_RECTANGLE with accent borders** → use RECTANGLE instead
-10. **Don't create text-only slides** → add shapes, images, or icons""",
+1. Starting slide code before writing the narrative and slide plan
+2. Using generic palette recipes unrelated to the subject or source
+3. Treating decorative shapes as meaningful visuals
+4. Reusing option objects across calls; PptxGenJS mutates them
+5. Using `#` or eight-digit opacity hex values
+6. Using Unicode bullet characters instead of `bullet: true`
+7. Shrinking text to fit instead of editing or splitting content
+8. Stretching images instead of cropping or containing them
+9. Trusting successful generation without structural validation and rendering
+10. Repeating a layout regardless of each slide's functional purpose""",
     }
 
     if topic == "all":
@@ -196,7 +326,11 @@ def list_my_powerpoint_presentations(tool_context: ToolContext) -> Dict[str, Any
     try:
         user_id, session_id = _get_user_session_ids(tool_context)
         ppt_manager = PowerPointManager(user_id, session_id)
-        documents = ppt_manager.list_s3_documents()
+        documents = [
+            document
+            for document in ppt_manager.list_s3_documents()
+            if document["filename"].lower().endswith(".pptx")
+        ]
         workspace_list = ppt_manager.format_file_list(documents)
         return build_success_response(workspace_list, {
             "count": len(documents),
@@ -205,6 +339,345 @@ def list_my_powerpoint_presentations(tool_context: ToolContext) -> Dict[str, Any
     except Exception as e:
         logger.error(f"list_my_powerpoint_presentations error: {e}", exc_info=True)
         return {"content": [{"text": f"**Error listing presentations:** {str(e)}"}], "status": "error"}
+
+
+@tool(context=True)
+def begin_presentation_edit(
+    presentation_name: str,
+    tool_context: ToolContext,
+    restart: bool = False,
+) -> Dict[str, Any]:
+    """Open one hidden, reusable draft for a source presentation.
+
+    Uploaded sources remain immutable. Repeated calls for an unchanged source
+    return the existing draft unless ``restart`` is true.
+
+    Args:
+        presentation_name: Exact source filename from the PowerPoint list; the
+            .pptx extension is optional
+        restart: Discard the current draft and restart from the source
+    """
+    try:
+        filename = _existing_presentation_filename(presentation_name)
+        user_id, session_id = _get_user_session_ids(tool_context)
+        ppt_manager = PowerPointManager(user_id, session_id)
+        edit_state = ppt_manager.begin_edit(filename, restart=restart)
+        action = "Resumed" if edit_state["reused"] else "Opened"
+        return build_success_response(
+            (
+                f"**{action} PowerPoint edit**: {filename}\n\n"
+                f"- Edit ID: `{edit_state['edit_id']}`\n"
+                "- The uploaded source remains unchanged.\n"
+                "- Use this edit ID for every mutation, validation, and preview."
+            ),
+            {
+                "edit_id": edit_state["edit_id"],
+                "source_filename": filename,
+                "reused": edit_state["reused"],
+                "tool_type": "powerpoint_edit_draft",
+                "user_id": user_id,
+                "session_id": session_id,
+            },
+        )
+    except Exception as e:
+        logger.error("begin_presentation_edit error: %s", e, exc_info=True)
+        return {
+            "content": [{"text": f"**Error opening presentation edit:** {str(e)}"}],
+            "status": "error",
+        }
+
+
+@tool(context=True)
+def finalize_presentation_edit(
+    edit_id: str,
+    output_name: str,
+    tool_context: ToolContext,
+) -> Dict[str, Any]:
+    """Validate a hidden draft and publish exactly one PowerPoint artifact.
+
+    Args:
+        edit_id: Edit ID returned by begin_presentation_edit
+        output_name: Final presentation name WITHOUT extension
+    """
+    try:
+        valid_name, error_msg = _validate_presentation_name(output_name)
+        if not valid_name:
+            return {
+                "content": [{
+                    "text": f"**Invalid output name**: {output_name}\n\n{error_msg}"
+                }],
+                "status": "error",
+            }
+
+        user_id, session_id = _get_user_session_ids(tool_context)
+        ppt_manager = PowerPointManager(user_id, session_id)
+        draft_bytes, edit_state, err = _load_edit_or_error(ppt_manager, edit_id)
+        if err:
+            return err
+
+        output_filename = f"{output_name}.pptx"
+        if output_filename == edit_state["source_filename"]:
+            return {
+                "content": [{
+                    "text": (
+                        "**Output name must differ from the immutable source**\n\n"
+                        f"Source: {edit_state['source_filename']}"
+                    )
+                }],
+                "status": "error",
+            }
+        try:
+            ppt_manager.resolve_presentation(output_filename)
+            return {
+                "content": [{
+                    "text": (
+                        f"**Already exists**: {output_filename}\n\n"
+                        "Choose a final output name that is not already in Workspace."
+                    )
+                }],
+                "status": "error",
+            }
+        except FileNotFoundError:
+            pass
+
+        with PptxEngine(draft_bytes) as engine:
+            validation = engine.validate()
+        if not validation["valid"]:
+            return {
+                "content": [{
+                    "text": (
+                        "**Draft failed structural validation**\n\n"
+                        f"Errors: {validation['error_count']}. "
+                        "Fix the draft before finalizing."
+                    )
+                }],
+                "status": "error",
+                "metadata": {"edit_id": edit_id, "validation": validation},
+            }
+
+        success_msg = (
+            f"**Finalized**: {output_filename}\n\n"
+            f"Published from `{edit_id}` with "
+            f"{validation['warning_count']} review warning(s)."
+        )
+        response = _save_and_respond(
+            ppt_manager,
+            tool_context,
+            output_filename,
+            draft_bytes,
+            "finalize_presentation_edit",
+            user_id,
+            session_id,
+            success_msg,
+            {"edit_id": edit_id, "validation": validation},
+        )
+        try:
+            ppt_manager.discard_edit(edit_id)
+        except Exception as cleanup_error:
+            logger.warning(
+                "Published %s but could not remove draft %s: %s",
+                output_filename,
+                edit_id,
+                cleanup_error,
+            )
+        return response
+    except Exception as e:
+        logger.error("finalize_presentation_edit error: %s", e, exc_info=True)
+        return {
+            "content": [{"text": f"**Error finalizing presentation:** {str(e)}"}],
+            "status": "error",
+        }
+
+
+@tool(context=True)
+def discard_presentation_edit(
+    edit_id: str,
+    tool_context: ToolContext,
+) -> Dict[str, Any]:
+    """Discard a hidden PowerPoint draft without changing its source."""
+    try:
+        user_id, session_id = _get_user_session_ids(tool_context)
+        PowerPointManager(user_id, session_id).discard_edit(edit_id)
+        return build_success_response(
+            f"**Discarded PowerPoint edit**: `{edit_id}`",
+            {"edit_id": edit_id, "tool_type": "powerpoint_edit_draft"},
+        )
+    except Exception as e:
+        logger.error("discard_presentation_edit error: %s", e, exc_info=True)
+        return {
+            "content": [{"text": f"**Error discarding presentation edit:** {str(e)}"}],
+            "status": "error",
+        }
+
+
+@tool(context=True)
+def inspect_presentation(
+    presentation_name: str,
+    tool_context: ToolContext,
+    persist_spec: bool = True,
+    refresh_spec: bool = False,
+) -> Dict[str, Any]:
+    """Inspect source structure and derive a compact, reusable deck specification.
+
+    Run this before editing an existing presentation or template. The source must
+    exist in the session PowerPoint workspace; this tool never creates a substitute.
+
+    Args:
+        presentation_name: Exact presentation filename; extension optional
+        persist_spec: Store the derived deck spec beside the source for later turns
+        refresh_spec: Ignore a matching persisted spec and inspect the package again
+    """
+    try:
+        filename = _existing_presentation_filename(presentation_name)
+        user_id, session_id = _get_user_session_ids(tool_context)
+        ppt_manager = PowerPointManager(user_id, session_id)
+        source_bytes, err = _load_or_error(ppt_manager, filename)
+        if err:
+            return err
+
+        spec_filename = f".deck-spec-{filename}.json"
+        source_sha256 = hashlib.sha256(source_bytes).hexdigest()
+        spec = None
+        spec_source = "generated"
+        if persist_spec and not refresh_spec:
+            try:
+                persisted_spec = json.loads(
+                    ppt_manager.load_from_s3(spec_filename).decode("utf-8")
+                )
+                if _is_current_deck_spec(persisted_spec, source_sha256):
+                    spec = persisted_spec
+                    spec_source = "persisted"
+            except (FileNotFoundError, UnicodeDecodeError, json.JSONDecodeError):
+                pass
+
+        if spec is None:
+            with PptxEngine(source_bytes) as engine:
+                spec = engine.get_deck_spec()
+            spec.update({
+                "source_filename": filename,
+                "source_sha256": source_sha256,
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+            })
+
+        if persist_spec and spec_source == "generated":
+            ppt_manager.save_to_s3(
+                spec_filename,
+                json.dumps(spec, indent=2, ensure_ascii=True).encode("utf-8"),
+                metadata={"type": "deck_spec", "source": filename},
+            )
+
+        summary = (
+            f"**Inspected source**: {filename}\n\n"
+            f"- Slides: {len(spec['slides'])}\n"
+            f"- Layouts: {len(spec['layouts'])}\n"
+            f"- Size: {spec['slide_size']['width_inches']} × "
+            f"{spec['slide_size']['height_inches']} inches\n"
+            f"- Theme: {spec['theme'].get('name') or 'unnamed'}\n"
+            f"- Explicit fonts: "
+            f"{', '.join(spec['explicit_fonts']) or 'none'}\n"
+            f"- Spec source: {spec_source}"
+        )
+        if persist_spec:
+            summary += f"\n- Persisted spec: {spec_filename}"
+        return build_success_response(summary, {
+            "filename": filename,
+            "deck_spec_filename": spec_filename if persist_spec else None,
+            "deck_spec_source": spec_source,
+            "deck_spec": spec,
+            "tool_type": "powerpoint_presentation",
+            "user_id": user_id,
+            "session_id": session_id,
+        })
+    except Exception as e:
+        logger.error(f"inspect_presentation error: {e}", exc_info=True)
+        return {"content": [{"text": f"**Error inspecting presentation:** {str(e)}"}], "status": "error"}
+
+
+@tool(context=True)
+def validate_presentation(
+    presentation_name: str,
+    tool_context: ToolContext,
+) -> Dict[str, Any]:
+    """Validate PPTX package integrity, geometry, placeholders, and font availability.
+
+    Structural errors are deterministic. Geometry and overflow findings are
+    conservative warnings and must be confirmed with rendered previews.
+
+    Args:
+        presentation_name: Exact presentation filename; extension optional
+    """
+    try:
+        filename = _existing_presentation_filename(presentation_name)
+        user_id, session_id = _get_user_session_ids(tool_context)
+        ppt_manager = PowerPointManager(user_id, session_id)
+        source_bytes, err = _load_or_error(ppt_manager, filename)
+        if err:
+            return err
+
+        with PptxEngine(source_bytes) as engine:
+            report = engine.validate()
+            if report["valid"]:
+                deck_spec = engine.get_deck_spec()
+                required_fonts = set(deck_spec["explicit_fonts"])
+                required_fonts.update(
+                    font
+                    for font in deck_spec["theme"]["fonts"].values()
+                    if font
+                )
+                explicit_fonts = sorted(required_fonts, key=str.casefold)
+            else:
+                explicit_fonts = []
+
+        available_fonts = _available_system_fonts()
+        if available_fonts is None:
+            report["font_check"] = {
+                "status": "unavailable",
+                "message": "System font catalog is unavailable; verify fonts in PowerPoint.",
+            }
+        else:
+            missing_fonts = [
+                font for font in explicit_fonts
+                if font.casefold() not in available_fonts
+            ]
+            report["font_check"] = {
+                "status": "warning" if missing_fonts else "ok",
+                "explicit_fonts": explicit_fonts,
+                "missing_fonts": missing_fonts,
+                "message": (
+                    "Missing fonts may be substituted by the renderer."
+                    if missing_fonts
+                    else "All explicitly named fonts are installed."
+                ),
+            }
+            if missing_fonts:
+                report["warning_count"] += 1
+                report["warnings"].append({
+                    "code": "missing_fonts",
+                    "fonts": missing_fonts,
+                    "message": "Missing fonts may be substituted by the renderer.",
+                })
+
+        status = "passed" if report["valid"] else "failed"
+        summary = (
+            f"**Validation {status}**: {filename}\n\n"
+            f"- Structural errors: {report['error_count']}\n"
+            f"- Review warnings: {report['warning_count']}\n"
+            f"- Font check: {report['font_check']['status']}\n\n"
+            "Render and visually inspect affected slides before delivery."
+        )
+        response = build_success_response(summary, {
+            "filename": filename,
+            "validation": report,
+            "tool_type": "powerpoint_presentation",
+            "user_id": user_id,
+            "session_id": session_id,
+        })
+        if not report["valid"]:
+            response["status"] = "error"
+        return response
+    except Exception as e:
+        logger.error(f"validate_presentation error: {e}", exc_info=True)
+        return {"content": [{"text": f"**Error validating presentation:** {str(e)}"}], "status": "error"}
 
 
 @tool(context=True)
@@ -217,11 +690,10 @@ def get_presentation_layouts(
     Returns layout names to use with add_slide. Call this before adding slides.
 
     Args:
-        presentation_name: Presentation name WITHOUT extension (e.g., "sales-deck")
+        presentation_name: Exact presentation filename; extension optional
     """
     try:
-        sanitized = _sanitize_presentation_name_for_bedrock(presentation_name)
-        filename = f"{sanitized}.pptx"
+        filename = _existing_presentation_filename(presentation_name)
         user_id, session_id = _get_user_session_ids(tool_context)
         ppt_manager = PowerPointManager(user_id, session_id)
 
@@ -260,13 +732,12 @@ def analyze_presentation(
     Role Tags: [TITLE] [BODY] [SUBTITLE] [FOOTER] (empty = regular shape)
 
     Args:
-        presentation_name: Presentation name WITHOUT extension
+        presentation_name: Exact presentation filename; extension optional
         slide_index: Optional 0-based slide index. None = analyze all slides.
         include_notes: Include speaker notes in output (default False)
     """
     try:
-        sanitized = _sanitize_presentation_name_for_bedrock(presentation_name)
-        filename = f"{sanitized}.pptx"
+        filename = _existing_presentation_filename(presentation_name)
         user_id, session_id = _get_user_session_ids(tool_context)
         ppt_manager = PowerPointManager(user_id, session_id)
 
@@ -333,15 +804,14 @@ def analyze_presentation(
 
 @tool(context=True)
 def update_slide_content(
-    presentation_name: str,
+    edit_id: str,
     slide_updates: list,
-    output_name: str,
     tool_context: ToolContext,
 ) -> Dict[str, Any]:
     """Update one or more slides with operations in a single call.
 
     Args:
-        presentation_name: Source presentation name WITHOUT extension
+        edit_id: Edit ID returned by begin_presentation_edit
         slide_updates: List of slide update dicts:
             [
                 {
@@ -353,36 +823,28 @@ def update_slide_content(
                     ]
                 }
             ]
-        output_name: Output name WITHOUT extension (must differ from source)
-
     Notes:
         - set_text: Multi-line text via \\n creates multiple paragraphs
         - replace_image: image_name is a filename from your image workspace (S3)
         - Batch all changes into ONE call to avoid parallel data loss
     """
     try:
-        err = _validate_names(presentation_name, output_name)
-        if err:
-            return err
         if not slide_updates or not isinstance(slide_updates, list):
             return {"content": [{"text": "**Invalid slide_updates**: must be a non-empty list"}], "status": "error"}
 
-        source_filename = f"{presentation_name}.pptx"
-        output_filename = f"{output_name}.pptx"
         user_id, session_id = _get_user_session_ids(tool_context)
         ppt_manager = PowerPointManager(user_id, session_id)
 
-        source_bytes, err = _load_or_error(ppt_manager, source_filename)
+        source_bytes, edit_state, err = _load_edit_or_error(ppt_manager, edit_id)
         if err:
             return err
 
         working_bytes = source_bytes
         with PptxEngine(working_bytes) as engine:
             order = engine.get_slide_order()
+            _validate_slide_updates(slide_updates, len(order))
             for update in slide_updates:
                 idx = update["slide_index"]
-                if not (0 <= idx < len(order)):
-                    raise ValueError(f"slide_index {idx} out of range (0-{len(order)-1})")
                 slide_filename = order[idx]["filename"]
                 for op in update.get("operations", []):
                     action = op.get("action")
@@ -398,18 +860,15 @@ def update_slide_content(
                         img_bytes = img_manager.load_from_s3(image_name)
                         ext = image_name.rsplit(".", 1)[-1].lower() if "." in image_name else "png"
                         engine.replace_image(slide_filename, eid, img_bytes, ext)
-                    else:
-                        logger.warning(f"Unknown action '{action}' skipped")
             working_bytes = engine.pack()
 
         total_ops = sum(len(u.get("operations", [])) for u in slide_updates)
         success_msg = (
-            f"**Updated**: {output_filename}\n\n"
+            f"**Updated draft**: `{edit_id}`\n\n"
             f"Applied {total_ops} operation(s) across {len(slide_updates)} slide(s)."
         )
-        return _save_and_respond(
-            ppt_manager, tool_context, output_filename, working_bytes,
-            "update_slide_content", user_id, session_id, success_msg,
+        return _save_edit_and_respond(
+            ppt_manager, edit_id, edit_state, working_bytes, success_msg,
             {"slide_count": len(slide_updates), "operation_count": total_ops},
         )
     except Exception as e:
@@ -419,10 +878,9 @@ def update_slide_content(
 
 @tool(context=True)
 def add_slide(
-    presentation_name: str,
+    edit_id: str,
     layout_name: str,
     position: int,
-    output_name: str,
     tool_context: ToolContext,
 ) -> Dict[str, Any]:
     """Add a new blank slide at the given position.
@@ -431,22 +889,15 @@ def add_slide(
     Use update_slide_content() afterwards to populate the slide with content.
 
     Args:
-        presentation_name: Source presentation name WITHOUT extension
+        edit_id: Edit ID returned by begin_presentation_edit
         layout_name: Exact layout name from get_presentation_layouts()
         position: Insert position (0-based). Use -1 to append at end.
-        output_name: Output name WITHOUT extension (must differ from source)
     """
     try:
-        err = _validate_names(presentation_name, output_name)
-        if err:
-            return err
-
-        source_filename = f"{presentation_name}.pptx"
-        output_filename = f"{output_name}.pptx"
         user_id, session_id = _get_user_session_ids(tool_context)
         ppt_manager = PowerPointManager(user_id, session_id)
 
-        source_bytes, err = _load_or_error(ppt_manager, source_filename)
+        source_bytes, edit_state, err = _load_edit_or_error(ppt_manager, edit_id)
         if err:
             return err
 
@@ -457,13 +908,12 @@ def add_slide(
             output_bytes = engine.pack()
 
         success_msg = (
-            f"**Added slide**: {output_filename}\n\n"
+            f"**Added slide to draft**: `{edit_id}`\n\n"
             f"Layout: \"{layout_name}\" → Slide {new_index + 1} (index {new_index})\n\n"
             f"Use `update_slide_content` with slide_index={new_index} to add content."
         )
-        return _save_and_respond(
-            ppt_manager, tool_context, output_filename, output_bytes,
-            "add_slide", user_id, session_id, success_msg,
+        return _save_edit_and_respond(
+            ppt_manager, edit_id, edit_state, output_bytes, success_msg,
             {"new_slide_index": new_index, "layout_name": layout_name},
         )
     except Exception as e:
@@ -473,31 +923,24 @@ def add_slide(
 
 @tool(context=True)
 def delete_slides(
-    presentation_name: str,
+    edit_id: str,
     slide_indices: list,
-    output_name: str,
     tool_context: ToolContext,
 ) -> Dict[str, Any]:
     """Delete slides by 0-based indices.
 
     Args:
-        presentation_name: Source presentation name WITHOUT extension
+        edit_id: Edit ID returned by begin_presentation_edit
         slide_indices: List of 0-based indices to delete (e.g., [2, 5, 10])
-        output_name: Output name WITHOUT extension (must differ from source)
     """
     try:
-        err = _validate_names(presentation_name, output_name)
-        if err:
-            return err
         if not slide_indices or not isinstance(slide_indices, list):
             return {"content": [{"text": "**Invalid slide_indices**: must be a non-empty list"}], "status": "error"}
 
-        source_filename = f"{presentation_name}.pptx"
-        output_filename = f"{output_name}.pptx"
         user_id, session_id = _get_user_session_ids(tool_context)
         ppt_manager = PowerPointManager(user_id, session_id)
 
-        source_bytes, err = _load_or_error(ppt_manager, source_filename)
+        source_bytes, edit_state, err = _load_edit_or_error(ppt_manager, edit_id)
         if err:
             return err
 
@@ -508,13 +951,12 @@ def delete_slides(
             output_bytes = engine.pack()
 
         success_msg = (
-            f"**Deleted slides**: {output_filename}\n\n"
+            f"**Deleted slides from draft**: `{edit_id}`\n\n"
             f"Removed {total_before - total_after} slide(s). "
             f"Remaining: {total_after}"
         )
-        return _save_and_respond(
-            ppt_manager, tool_context, output_filename, output_bytes,
-            "delete_slides", user_id, session_id, success_msg,
+        return _save_edit_and_respond(
+            ppt_manager, edit_id, edit_state, output_bytes, success_msg,
             {"deleted_count": total_before - total_after, "remaining_count": total_after},
         )
     except Exception as e:
@@ -524,31 +966,23 @@ def delete_slides(
 
 @tool(context=True)
 def move_slide(
-    presentation_name: str,
+    edit_id: str,
     from_index: int,
     to_index: int,
-    output_name: str,
     tool_context: ToolContext,
 ) -> Dict[str, Any]:
     """Move a slide from one position to another.
 
     Args:
-        presentation_name: Source presentation name WITHOUT extension
+        edit_id: Edit ID returned by begin_presentation_edit
         from_index: Source position (0-based)
         to_index: Target position (0-based)
-        output_name: Output name WITHOUT extension (must differ from source)
     """
     try:
-        err = _validate_names(presentation_name, output_name)
-        if err:
-            return err
-
-        source_filename = f"{presentation_name}.pptx"
-        output_filename = f"{output_name}.pptx"
         user_id, session_id = _get_user_session_ids(tool_context)
         ppt_manager = PowerPointManager(user_id, session_id)
 
-        source_bytes, err = _load_or_error(ppt_manager, source_filename)
+        source_bytes, edit_state, err = _load_edit_or_error(ppt_manager, edit_id)
         if err:
             return err
 
@@ -557,12 +991,11 @@ def move_slide(
             output_bytes = engine.pack()
 
         success_msg = (
-            f"**Moved slide**: {output_filename}\n\n"
+            f"**Moved slide in draft**: `{edit_id}`\n\n"
             f"Slide {from_index + 1} → position {to_index + 1}"
         )
-        return _save_and_respond(
-            ppt_manager, tool_context, output_filename, output_bytes,
-            "move_slide", user_id, session_id, success_msg,
+        return _save_edit_and_respond(
+            ppt_manager, edit_id, edit_state, output_bytes, success_msg,
             {"from_index": from_index, "to_index": to_index},
         )
     except Exception as e:
@@ -572,31 +1005,23 @@ def move_slide(
 
 @tool(context=True)
 def duplicate_slide(
-    presentation_name: str,
+    edit_id: str,
     source_index: int,
-    output_name: str,
     tool_context: ToolContext,
     insert_position: int = -1,
 ) -> Dict[str, Any]:
     """Duplicate an existing slide.
 
     Args:
-        presentation_name: Source presentation name WITHOUT extension
+        edit_id: Edit ID returned by begin_presentation_edit
         source_index: Slide to duplicate (0-based)
-        output_name: Output name WITHOUT extension (must differ from source)
         insert_position: Where to insert duplicate (0-based, -1 = append after source)
     """
     try:
-        err = _validate_names(presentation_name, output_name)
-        if err:
-            return err
-
-        source_filename = f"{presentation_name}.pptx"
-        output_filename = f"{output_name}.pptx"
         user_id, session_id = _get_user_session_ids(tool_context)
         ppt_manager = PowerPointManager(user_id, session_id)
 
-        source_bytes, err = _load_or_error(ppt_manager, source_filename)
+        source_bytes, edit_state, err = _load_edit_or_error(ppt_manager, edit_id)
         if err:
             return err
 
@@ -609,12 +1034,11 @@ def duplicate_slide(
             output_bytes = engine.pack()
 
         success_msg = (
-            f"**Duplicated slide**: {output_filename}\n\n"
+            f"**Duplicated slide in draft**: `{edit_id}`\n\n"
             f"Slide {source_index + 1} → new slide at position {new_index + 1} (index {new_index})"
         )
-        return _save_and_respond(
-            ppt_manager, tool_context, output_filename, output_bytes,
-            "duplicate_slide", user_id, session_id, success_msg,
+        return _save_edit_and_respond(
+            ppt_manager, edit_id, edit_state, output_bytes, success_msg,
             {"source_index": source_index, "new_index": new_index},
         )
     except Exception as e:
@@ -624,31 +1048,23 @@ def duplicate_slide(
 
 @tool(context=True)
 def update_slide_notes(
-    presentation_name: str,
+    edit_id: str,
     slide_index: int,
     notes_text: str,
-    output_name: str,
     tool_context: ToolContext,
 ) -> Dict[str, Any]:
     """Update speaker notes for a specific slide.
 
     Args:
-        presentation_name: Source presentation name WITHOUT extension
+        edit_id: Edit ID returned by begin_presentation_edit
         slide_index: Slide index (0-based)
         notes_text: New notes content (use \\n for multi-line)
-        output_name: Output name WITHOUT extension (must differ from source)
     """
     try:
-        err = _validate_names(presentation_name, output_name)
-        if err:
-            return err
-
-        source_filename = f"{presentation_name}.pptx"
-        output_filename = f"{output_name}.pptx"
         user_id, session_id = _get_user_session_ids(tool_context)
         ppt_manager = PowerPointManager(user_id, session_id)
 
-        source_bytes, err = _load_or_error(ppt_manager, source_filename)
+        source_bytes, edit_state, err = _load_edit_or_error(ppt_manager, edit_id)
         if err:
             return err
 
@@ -659,10 +1075,12 @@ def update_slide_notes(
             engine.update_notes(order[slide_index]["filename"], notes_text)
             output_bytes = engine.pack()
 
-        success_msg = f"**Updated notes**: {output_filename}\n\nSlide {slide_index + 1} notes updated."
-        return _save_and_respond(
-            ppt_manager, tool_context, output_filename, output_bytes,
-            "update_slide_notes", user_id, session_id, success_msg,
+        success_msg = (
+            f"**Updated notes in draft**: `{edit_id}`\n\n"
+            f"Slide {slide_index + 1} notes updated."
+        )
+        return _save_edit_and_respond(
+            ppt_manager, edit_id, edit_state, output_bytes, success_msg,
             {"slide_index": slide_index},
         )
     except Exception as e:
@@ -756,6 +1174,63 @@ def create_presentation(
         return {"content": [{"text": f"**Error:** {str(e)}"}], "status": "error"}
 
 
+def _render_presentation_images(
+    pptx_bytes: bytes,
+    filename: str,
+    slide_numbers: list[int],
+    dpi: int,
+    max_slides: int | None = None,
+):
+    import tempfile
+    from pdf2image import convert_from_path, pdfinfo_from_path
+
+    with tempfile.TemporaryDirectory() as tmp:
+        pptx_path = os.path.join(tmp, filename)
+        with open(pptx_path, "wb") as file_handle:
+            file_handle.write(pptx_bytes)
+
+        result = subprocess.run(
+            ["soffice", "--headless", "--convert-to", "pdf", "--outdir", tmp, pptx_path],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"PDF conversion failed: {result.stderr.strip()}")
+
+        pdf_path = os.path.join(tmp, filename.replace(".pptx", ".pdf"))
+        if not os.path.exists(pdf_path):
+            raise RuntimeError(
+                "PDF file was not created; LibreOffice may have failed silently."
+            )
+
+        total_slides = pdfinfo_from_path(pdf_path).get("Pages", 1)
+        targets = slide_numbers or list(range(1, total_slides + 1))
+        invalid = [slide for slide in targets if slide < 1 or slide > total_slides]
+        if invalid:
+            raise ValueError(
+                f"Invalid slide number(s): {invalid}. "
+                f"Presentation has {total_slides} slides."
+            )
+        if max_slides is not None and len(targets) > max_slides:
+            raise ValueError(
+                f"Selected {len(targets)} slides; this view supports at most "
+                f"{max_slides}. Request smaller slide-number batches."
+            )
+
+        rendered = []
+        for slide_number in targets:
+            images = convert_from_path(
+                pdf_path,
+                first_page=slide_number,
+                last_page=slide_number,
+                dpi=dpi,
+            )
+            if images:
+                rendered.append((slide_number, images[0]))
+        return rendered, total_slides
+
+
 @tool(context=True)
 def preview_presentation_slides(
     presentation_name: str,
@@ -771,13 +1246,10 @@ def preview_presentation_slides(
         presentation_name: Presentation name without extension
         slide_numbers: 1-indexed slide numbers to preview. Empty list [] = all slides.
     """
-    import subprocess
-    import tempfile
     import io
-    from pdf2image import convert_from_path, pdfinfo_from_path
 
     user_id, session_id = _get_user_session_ids(tool_context)
-    filename = f"{presentation_name}.pptx"
+    filename = _existing_presentation_filename(presentation_name)
     logger.info(f"preview_presentation_slides: {filename}, slides {slide_numbers}")
 
     try:
@@ -786,68 +1258,154 @@ def preview_presentation_slides(
         if err:
             return err
 
-        with tempfile.TemporaryDirectory() as tmp:
-            pptx_path = os.path.join(tmp, filename)
-            with open(pptx_path, "wb") as f:
-                f.write(pptx_bytes)
+        rendered, total_slides = _render_presentation_images(
+            pptx_bytes, filename, slide_numbers, dpi=150
+        )
+        target_slides = [slide_number for slide_number, _ in rendered]
+        content = [{
+            "text": f"**{filename}** — {len(target_slides)} of {total_slides} slide(s)"
+        }]
 
-            result = subprocess.run(
-                ["soffice", "--headless", "--convert-to", "pdf", "--outdir", tmp, pptx_path],
-                capture_output=True, text=True, timeout=120,
+        for slide_num, image in rendered:
+            max_dim = 1800
+            if image.width > max_dim or image.height > max_dim:
+                ratio = min(max_dim / image.width, max_dim / image.height)
+                image = image.resize(
+                    (int(image.width * ratio), int(image.height * ratio)),
+                    resample=image.Resampling.LANCZOS
+                    if hasattr(image, "Resampling")
+                    else 1,
+                )
+            buffer = io.BytesIO()
+            image.save(buffer, format="PNG")
+            content.append({"text": f"**Slide {slide_num}**"})
+            content.append({
+                "image": {
+                    "format": "png",
+                    "source": {"bytes": buffer.getvalue()},
+                }
+            })
+
+        text_blocks = [block for block in content if "text" in block]
+        image_blocks = [block for block in content if "image" in block]
+        return build_image_response(text_blocks, image_blocks, {
+            "filename": filename,
+            "slide_numbers": target_slides,
+            "total_slides": total_slides,
+            "tool_type": "powerpoint_presentation",
+            "user_id": user_id,
+            "session_id": session_id,
+        })
+    except Exception as e:
+        logger.error(f"preview_presentation_slides error: {e}", exc_info=True)
+        return {"content": [{"text": f"**Error:** {str(e)}"}], "status": "error"}
+
+
+@tool(context=True)
+def preview_presentation_montage(
+    presentation_name: str,
+    slide_numbers: list[int],
+    tool_context: ToolContext,
+    columns: int = 4,
+) -> Dict[str, Any]:
+    """Render up to 24 slides as one contact sheet for deck-level visual review.
+
+    Use this for the first visual pass, then call preview_presentation_slides only
+    for slides that need detailed inspection. Slide numbers are 1-based.
+
+    Args:
+        presentation_name: Presentation name without extension
+        slide_numbers: 1-based slide numbers. Empty list [] selects all slides.
+        columns: Contact-sheet columns, from 2 through 6
+    """
+    import io
+    from PIL import Image, ImageDraw
+
+    user_id, session_id = _get_user_session_ids(tool_context)
+    filename = _existing_presentation_filename(presentation_name)
+    try:
+        if not 2 <= columns <= 6:
+            return {
+                "content": [{"text": "**Invalid columns**: choose a value from 2 to 6"}],
+                "status": "error",
+            }
+        ppt_manager = PowerPointManager(user_id, session_id)
+        pptx_bytes, err = _load_or_error(ppt_manager, filename)
+        if err:
+            return err
+
+        rendered, total_slides = _render_presentation_images(
+            pptx_bytes, filename, slide_numbers, dpi=100, max_slides=24
+        )
+        if not rendered:
+            return {"content": [{"text": "**No slides rendered**"}], "status": "error"}
+
+        label_height = 28
+        cell_width = max(image.width for _, image in rendered)
+        cell_height = max(image.height for _, image in rendered) + label_height
+        rows = math.ceil(len(rendered) / columns)
+        montage = Image.new(
+            "RGB",
+            (cell_width * columns, cell_height * rows),
+            color="white",
+        )
+        draw = ImageDraw.Draw(montage)
+        for item_index, (slide_number, image) in enumerate(rendered):
+            column = item_index % columns
+            row = item_index // columns
+            x = column * cell_width
+            y = row * cell_height
+            draw.text((x + 8, y + 7), f"Slide {slide_number}", fill="black")
+            montage.paste(image.convert("RGB"), (x, y + label_height))
+
+        max_dimension = 1800
+        if montage.width > max_dimension or montage.height > max_dimension:
+            ratio = min(
+                max_dimension / montage.width,
+                max_dimension / montage.height,
             )
-            if result.returncode != 0:
-                return {"content": [{"text": f"PDF conversion failed\n\n{result.stderr}"}], "status": "error"}
+            montage = montage.resize(
+                (int(montage.width * ratio), int(montage.height * ratio)),
+                resample=Image.Resampling.LANCZOS
+                if hasattr(Image, "Resampling")
+                else 1,
+            )
 
-            pdf_path = os.path.join(tmp, filename.replace(".pptx", ".pdf"))
-            if not os.path.exists(pdf_path):
-                return {"content": [{"text": "PDF file not created — LibreOffice conversion may have failed silently."}], "status": "error"}
-
-            pdf_info = pdfinfo_from_path(pdf_path)
-            total_slides = pdf_info.get("Pages", 1)
-
-            if not slide_numbers:
-                target_slides = list(range(1, total_slides + 1))
-            else:
-                invalid = [s for s in slide_numbers if s < 1 or s > total_slides]
-                if invalid:
-                    return {"content": [{"text": f"Invalid slide number(s): {invalid}. Presentation has {total_slides} slides."}], "status": "error"}
-                target_slides = slide_numbers
-
-            content = [{"text": f"**{filename}** — {len(target_slides)} of {total_slides} slide(s)"}]
-
-            for slide_num in target_slides:
-                images = convert_from_path(pdf_path, first_page=slide_num, last_page=slide_num, dpi=150)
-                if images:
-                    img = images[0]
-                    # Bedrock multi-image limit: 2000px per dimension. Cap at 1800px with margin.
-                    max_dim = 1800
-                    if img.width > max_dim or img.height > max_dim:
-                        ratio = min(max_dim / img.width, max_dim / img.height)
-                        img = img.resize(
-                            (int(img.width * ratio), int(img.height * ratio)),
-                            resample=img.Resampling.LANCZOS if hasattr(img, "Resampling") else 1
-                        )
-                    buf = io.BytesIO()
-                    img.save(buf, format="PNG")
-                    content.append({"text": f"**Slide {slide_num}**"})
-                    content.append({"image": {"format": "png", "source": {"bytes": buf.getvalue()}}})
-
-            text_blocks = [b for b in content if "text" in b]
-            image_blocks = [b for b in content if "image" in b]
-            return build_image_response(text_blocks, image_blocks, {
+        buffer = io.BytesIO()
+        montage.save(buffer, format="PNG")
+        target_slides = [slide_number for slide_number, _ in rendered]
+        return build_image_response(
+            [{
+                "text": (
+                    f"**{filename} montage** — {len(target_slides)} of "
+                    f"{total_slides} slide(s)"
+                )
+            }],
+            [{
+                "image": {
+                    "format": "png",
+                    "source": {"bytes": buffer.getvalue()},
+                }
+            }],
+            {
                 "filename": filename,
                 "slide_numbers": target_slides,
                 "total_slides": total_slides,
                 "tool_type": "powerpoint_presentation",
                 "user_id": user_id,
                 "session_id": session_id,
-            })
+            },
+        )
     except Exception as e:
-        logger.error(f"preview_presentation_slides error: {e}", exc_info=True)
+        logger.error(f"preview_presentation_montage error: {e}", exc_info=True)
         return {"content": [{"text": f"**Error:** {str(e)}"}], "status": "error"}
 
+
 register_skill("powerpoint-presentations", tools=[
-    get_slide_design_reference, list_my_powerpoint_presentations, get_presentation_layouts,
-    analyze_presentation, create_presentation, update_slide_content, add_slide,
-    delete_slides, move_slide, duplicate_slide, update_slide_notes, preview_presentation_slides,
+    get_slide_design_reference, list_my_powerpoint_presentations, inspect_presentation,
+    begin_presentation_edit, finalize_presentation_edit, discard_presentation_edit,
+    validate_presentation, get_presentation_layouts, analyze_presentation,
+    create_presentation, update_slide_content, add_slide, delete_slides, move_slide,
+    duplicate_slide, update_slide_notes, preview_presentation_montage,
+    preview_presentation_slides,
 ])

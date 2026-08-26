@@ -5,6 +5,62 @@ The `pres` instance (PptxGenJS, `LAYOUT_WIDE`) is already in scope. Start with `
 > Layout dimensions for `LAYOUT_WIDE`: **13.3" × 7.5"**
 > Other layouts: `LAYOUT_16x9` 10"×5.625" · `LAYOUT_16x10` 10"×6.25" · `LAYOUT_4x3` 10"×7.5"
 
+## Presentation Setup
+
+Set document metadata and theme before adding content:
+
+```javascript
+pres.author = "Organization";
+pres.company = "Organization";
+pres.subject = "Launch decision";
+pres.title = "Product Launch Plan";
+pres.lang = "en-US";
+pres.theme = {
+  headFontFace: "Aptos Display",
+  bodyFontFace: "Aptos",
+  lang: "en-US"
+};
+```
+
+Use a slide master for repeated chrome and stable geometry. Define it before the
+first `addSlide` call, then create slides by master name:
+
+```javascript
+pres.defineSlideMaster({
+  title: "CONTENT",
+  background: { color: "F7F8FA" },
+  objects: [
+    {
+      rect: {
+        x: 0, y: 0, w: 0.12, h: 7.5,
+        fill: { color: "007A78" },
+        line: { color: "007A78" }
+      }
+    },
+    {
+      text: {
+        text: "CONFIDENTIAL",
+        options: {
+          x: 10.8, y: 7.08, w: 1.9, h: 0.2,
+          fontFace: "Aptos", fontSize: 8, color: "5B6773",
+          align: "right", margin: 0
+        }
+      }
+    }
+  ],
+  slideNumber: {
+    x: 12.75, y: 7.08, w: 0.25, h: 0.2,
+    fontFace: "Aptos", fontSize: 8, color: "5B6773",
+    align: "right", margin: 0
+  }
+});
+
+let slide = pres.addSlide("CONTENT");
+```
+
+Create one master per repeated functional layout, not one master per slide.
+Keep content in slide code and repeated visual furniture in masters.
+
 ---
 
 ## Text & Formatting

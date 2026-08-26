@@ -1,37 +1,40 @@
-# PowerPoint Editing Guide
+# Source-Preserving PowerPoint Editing
 
-## Editing Existing Presentations
+Read this reference for uploaded decks and templates.
 
-### Step 1: Analyze Structure
+## Preservation Contract
 
-Always call `analyze_presentation` first to get element IDs and positions.
+- Verify the exact source with `list_my_powerpoint_presentations`.
+- Derive and persist its deck spec with `inspect_presentation`.
+- Never replace an edit request with a newly generated approximation.
+- Never overwrite the source filename.
+- Call `begin_presentation_edit` once and mutate only its hidden draft.
+- Preserve masters, layouts, themes, relationships, notes, and unaffected elements.
+- Fail when an operation cannot be applied exactly.
 
-```json
-{ "presentation_name": "my-deck", "slide_index": 0 }
-```
+## Atomic Edit Procedure
 
-The response includes:
-- `element_id`: Unique identifier for each element (shape)
-- `text`: Current text content
-- `position`: Left, top, width, height in EMU (English Metric Units)
-- `placeholder_idx`: Placeholder index (for template-based slides)
-
-### Step 2: Build Update Operations
-
-`update_slide_content` accepts a list of `slide_updates`, each targeting a specific slide:
+1. Call `begin_presentation_edit` and retain the returned `edit_id`.
+2. Call `analyze_presentation` for each target slide.
+3. Record the target element IDs and current text/image types.
+4. Build all related operations as one batch.
+5. Call `update_slide_content` with the same `edit_id`.
+6. Call `validate_presentation` with `presentation_name=edit_id`.
+7. Render the affected slides using the same `edit_id`.
+8. Call `finalize_presentation_edit` once.
 
 ```json
 {
-  "presentation_name": "my-deck",
-  "output_name": "my-deck-v2",
+  "edit_id": "edit-0123456789abcdef01234567",
   "slide_updates": [
     {
       "slide_index": 0,
       "operations": [
         {
-          "action": "set_text",
+          "action": "replace_text",
           "element_id": 2,
-          "text": "New Title"
+          "find": "Q3",
+          "replace": "Q4"
         }
       ]
     }
@@ -39,63 +42,46 @@ The response includes:
 }
 ```
 
-### Available Actions
+## Operations
 
-| Action | Required Fields | Description |
-|--------|----------------|-------------|
-| `set_text` | `element_id`, `text` | Replace all text in a shape |
-| `replace_text` | `element_id`, `old_text`, `new_text` | Replace specific text within a shape (preserves formatting) |
-| `replace_image` | `element_id`, `image_path` | Replace an existing image with a new one |
+| Action | Required fields | Behavior |
+|---|---|---|
+| `set_text` | `element_id`, `text` | Replace all text while retaining the shape's base formatting |
+| `replace_text` | `element_id`, `find`, `replace` | Replace exact text, including text split across runs |
+| `replace_image` | `element_id`, `image_name` | Replace the media behind an existing picture shape |
 
-### EMU Unit Reference
+`replace_text` uses `find` and `replace`, not `old_text` and `new_text`. An empty
+`find` or a string that does not exist is an error.
 
-1 inch = 914400 EMU. Common slide dimensions (16:9):
-- Slide width: 12192000 EMU (13.333 inches)
-- Slide height: 6858000 EMU (7.5 inches)
+## Template Procedure
 
-### When editing actions aren't enough
+1. Inspect the template and montage.
+2. Map required slide functions to representative template slides.
+3. Duplicate representatives before deleting anything.
+4. Replace content while retaining the source geometry.
+5. Reorder the completed slides.
+6. Delete unused examples.
+7. Validate and render the complete deck.
 
-If you need to add completely new visual elements or restructure a slide:
-- Use `create_presentation` with PptxGenJS to build a new deck from scratch
-- Use `add_slide` to append a blank slide, then `set_text` to populate existing placeholder shapes
+Prefer duplication over approximate reconstruction. Use `add_slide` only when the
+template has a suitable blank layout and no representative slide is appropriate.
 
-## Batch Editing Rules
+## Unsupported Structural Changes
 
-- **Always batch** all slide updates into a single `update_slide_content` call.
-- Multiple slides can be updated in one call by adding multiple entries to `slide_updates`.
-- **Never** call `update_slide_content` multiple times in sequence on the same file — the second call would overwrite the first.
-- The `output_name` must differ from `presentation_name`. Use a versioning convention like `-v2`, `-v3`.
+The atomic edit API updates existing text and pictures. If a requested edit needs
+new arbitrary shapes, charts, or geometry:
 
-## Common Patterns
+1. First determine whether a representative source slide can be duplicated.
+2. If not, state the limitation instead of silently recreating the entire deck.
+3. Use a new-deck PptxGenJS workflow only when the user accepts loss of source fidelity.
 
-### Replace all text on a slide
+## Version Discipline
 
-```json
-{
-  "slide_updates": [
-    {
-      "slide_index": 0,
-      "operations": [
-        { "action": "set_text", "element_id": 2, "text": "Updated Title" },
-        { "action": "set_text", "element_id": 3, "text": "Updated Subtitle" }
-      ]
-    }
-  ]
-}
-```
+Do not create visible intermediate versions. One source has one hidden draft:
 
-### Replace specific text (preserve formatting)
+`deck.pptx` (immutable input) → `edit-…` (hidden draft) → `deck-revised.pptx`
+(published output)
 
-```json
-{
-  "slide_updates": [
-    {
-      "slide_index": 1,
-      "operations": [
-        { "action": "replace_text", "element_id": 3, "old_text": "Q3", "new_text": "Q4" }
-      ]
-    }
-  ]
-}
-```
-
+Every mutation uses the same `edit_id`. S3 conditional writes reject a stale
+draft update rather than silently losing work. `finalize_presentation_edit`
+publishes the only user-visible result and removes the draft.

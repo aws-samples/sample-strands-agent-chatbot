@@ -56,6 +56,26 @@ _EXPORTS = {
         ".powerpoint_presentation_tool",
         "list_my_powerpoint_presentations",
     ),
+    "inspect_presentation": (
+        ".powerpoint_presentation_tool",
+        "inspect_presentation",
+    ),
+    "begin_presentation_edit": (
+        ".powerpoint_presentation_tool",
+        "begin_presentation_edit",
+    ),
+    "finalize_presentation_edit": (
+        ".powerpoint_presentation_tool",
+        "finalize_presentation_edit",
+    ),
+    "discard_presentation_edit": (
+        ".powerpoint_presentation_tool",
+        "discard_presentation_edit",
+    ),
+    "validate_presentation": (
+        ".powerpoint_presentation_tool",
+        "validate_presentation",
+    ),
     "get_presentation_layouts": (
         ".powerpoint_presentation_tool",
         "get_presentation_layouts",
@@ -83,6 +103,10 @@ _EXPORTS = {
     "preview_presentation_slides": (
         ".powerpoint_presentation_tool",
         "preview_presentation_slides",
+    ),
+    "preview_presentation_montage": (
+        ".powerpoint_presentation_tool",
+        "preview_presentation_montage",
     ),
     "execute_code": (".code_interpreter_tool", "execute_code"),
     "execute_command": (".code_interpreter_tool", "execute_command"),
