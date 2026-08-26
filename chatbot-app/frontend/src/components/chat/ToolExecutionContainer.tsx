@@ -518,7 +518,12 @@ export const ToolExecutionContainer = React.memo<ToolExecutionContainerProps>(({
     }
   };
 
-  const handleWorkspaceDownload = async (toolUseId: string, toolResult?: string, toolName?: string) => {
+  const handleWorkspaceDownload = async (
+    toolUseId: string,
+    toolResult?: string,
+    toolName?: string,
+    metadata?: Record<string, any>,
+  ) => {
     if (downloadingFiles.has(toolUseId) || !toolResult || !sessionId) return
     setDownloadingFiles(prev => new Set(prev).add(toolUseId))
     try {
@@ -530,31 +535,17 @@ export const ToolExecutionContainer = React.memo<ToolExecutionContainerProps>(({
       } catch { /* auth optional */ }
       headers['X-Session-ID'] = sessionId
 
-      let paths: string[] = []
-
       if (toolName === 'execute_code') {
-        const match = toolResult.match(/File saved:\s*(\S+)/)
-        if (match) {
-          paths = [match[1]]
+        const file = Array.isArray(metadata?.files) ? metadata.files[0] : undefined
+        if (!file?.fileId || file.state !== 'READY') {
+          throw new Error('Published file is not ready')
         }
-      } else {
-        const parsed = JSON.parse(toolResult)
-        if (parsed.status === 'ok' && parsed.path) {
-          paths = [parsed.path]
-        }
-      }
-
-      if (paths.length === 0) throw new Error('No file path in result')
-
-      if (paths.length === 1) {
-        const response = await fetch(getApiUrl('workspace/download'), {
+        const response = await fetch(getApiUrl(`session-files/${file.fileId}/download`), {
           method: 'POST',
           headers,
-          body: JSON.stringify({ path: paths[0], sessionId }),
         })
         if (!response.ok) throw new Error(`Download failed: ${response.status}`)
         const { url, filename } = await response.json()
-
         const link = document.createElement('a')
         link.href = url
         link.download = filename
@@ -562,33 +553,29 @@ export const ToolExecutionContainer = React.memo<ToolExecutionContainerProps>(({
         document.body.appendChild(link)
         link.click()
         document.body.removeChild(link)
-      } else {
-        const JSZip = (await import('jszip')).default
-        const zip = new JSZip()
-        for (const path of paths) {
-          const response = await fetch(getApiUrl('workspace/download'), {
-            method: 'POST',
-            headers,
-            body: JSON.stringify({ path, sessionId }),
-          })
-          if (!response.ok) continue
-          const { url, filename } = await response.json()
-          const fileResponse = await fetch(url)
-          if (fileResponse.ok) {
-            zip.file(filename, await fileResponse.blob())
-          }
-        }
-        const zipBlob = await zip.generateAsync({ type: 'blob' })
-        const objectUrl = URL.createObjectURL(zipBlob)
-        const link = document.createElement('a')
-        link.href = objectUrl
-        link.download = `workspace_${toolUseId.slice(0, 8)}.zip`
-        link.style.display = 'none'
-        document.body.appendChild(link)
-        link.click()
-        document.body.removeChild(link)
-        URL.revokeObjectURL(objectUrl)
+        return
       }
+
+      // Explicit legacy adapter for workspace_write. New producers must return
+      // SessionFile metadata instead of a workspace path.
+      const parsed = JSON.parse(toolResult)
+      if (parsed.status !== 'ok' || !parsed.path) {
+        throw new Error('No workspace path in result')
+      }
+      const response = await fetch(getApiUrl('workspace/download'), {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ path: parsed.path, sessionId }),
+      })
+      if (!response.ok) throw new Error(`Download failed: ${response.status}`)
+      const { url, filename } = await response.json()
+      const link = document.createElement('a')
+      link.href = url
+      link.download = filename
+      link.style.display = 'none'
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
     } catch (error) {
       console.error('Workspace download failed:', error)
       alert(`Download failed: ${error instanceof Error ? error.message : 'Unknown error'}`)
@@ -635,11 +622,22 @@ export const ToolExecutionContainer = React.memo<ToolExecutionContainerProps>(({
         </button>
       )}
       {CI_WORKSPACE_TOOLS.includes(toolExecution.toolName) &&
-        toolExecution.isComplete && !toolExecution.isCancelled && toolExecution.toolResult && (() => {
-          return /File saved:\s*\S+/.test(toolExecution.toolResult || '')
+        toolExecution.isComplete && !toolExecution.isCancelled && (() => {
+          const file = Array.isArray(toolExecution.metadata?.files)
+            ? toolExecution.metadata.files[0]
+            : undefined
+          return file?.fileId && file.state === 'READY'
         })() && (
         <button
-          onClick={(e) => { e.stopPropagation(); handleWorkspaceDownload(toolExecution.id, toolExecution.toolResult, toolExecution.toolName); }}
+          onClick={(e) => {
+            e.stopPropagation()
+            handleWorkspaceDownload(
+              toolExecution.id,
+              toolExecution.toolResult,
+              toolExecution.toolName,
+              toolExecution.metadata,
+            )
+          }}
           disabled={downloadingFiles.has(toolExecution.id)}
           className="ml-auto flex items-center gap-1.5 px-3 py-1.5 text-caption font-medium text-primary border border-primary/40 hover:border-primary hover:bg-primary/10 rounded-full transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         >

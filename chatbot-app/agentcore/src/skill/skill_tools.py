@@ -12,6 +12,7 @@ import json
 import logging
 import os
 from datetime import timedelta
+from typing import Any
 
 from strands import tool
 from strands.types.tools import ToolContext
@@ -23,6 +24,31 @@ logger = logging.getLogger(__name__)
 # Module-level registry reference, set by SkillChatAgent during init
 _registry = None
 _DEFAULT_SKILL_RESULT_MAX_CHARS = 100_000
+
+
+def _normalize_executor_input(
+    value: dict[str, Any] | str | None,
+    parameter_name: str,
+) -> dict[str, Any]:
+    """Return a structured executor input without repairing malformed payloads."""
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str):
+        raise ValueError(f"{parameter_name} must be a JSON object")
+
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"{parameter_name} must be valid JSON object syntax "
+            f"(invalid JSON at character {exc.pos})"
+        ) from exc
+
+    if not isinstance(parsed, dict):
+        raise ValueError(f"{parameter_name} must decode to a JSON object")
+    return parsed
 
 
 def _skill_result_max_chars() -> int:
@@ -413,9 +439,9 @@ def skill_executor(
     tool_context: ToolContext,
     skill_name: str,
     tool_name: str = None,
-    tool_input = None,
+    tool_input: dict[str, Any] | None = None,
     script_name: str = None,
-    script_input = None,
+    script_input: dict[str, Any] | None = None,
 ) -> str:
     """Execute a tool or script from an activated skill.
 
@@ -449,24 +475,20 @@ def skill_executor(
             "status": "error",
         })
 
-    # Normalize tool_input / script_input: LLM sometimes passes a JSON string instead of a dict
-    def _coerce_to_dict(value):
-        if value is None or isinstance(value, dict):
-            return value
-        if isinstance(value, str):
-            # Strip trailing XML artifacts the LLM may append (e.g. "\n</invoke>")
-            cleaned = value.strip()
-            if '</invoke>' in cleaned:
-                cleaned = cleaned[:cleaned.rfind('</invoke>')].rstrip()
-            try:
-                parsed = json.loads(cleaned)
-                return parsed if isinstance(parsed, dict) else {}
-            except Exception:
-                return {}
-        return {}
-
-    tool_input = _coerce_to_dict(tool_input)
-    script_input = _coerce_to_dict(script_input)
+    try:
+        # Direct Python callers from older sessions can still pass a serialized
+        # object. The public tool schema remains object-only so models do not
+        # need to construct nested, escaped JSON.
+        tool_input = _normalize_executor_input(tool_input, "tool_input")
+        script_input = _normalize_executor_input(script_input, "script_input")
+    except ValueError as exc:
+        return json.dumps({
+            "error": str(exc),
+            "code": "INVALID_SKILL_INPUT",
+            "skill": skill_name,
+            "tool": tool_name or script_name,
+            "status": "error",
+        })
 
     # Validation: must specify either tool_name or script_name, not both
     if tool_name and script_name:
@@ -566,8 +588,30 @@ def _execute_tool(
 
         else:
             # Local tool — direct function call
-            call_kwargs = dict(tool_input)
-            context_param = target_tool._metadata._context_param
+            metadata = target_tool._metadata
+            input_model = getattr(metadata, "input_model", None)
+            if isinstance(input_model, type) and hasattr(input_model, "model_validate"):
+                try:
+                    validated_input = input_model.model_validate(tool_input)
+                    call_kwargs = validated_input.model_dump()
+                except Exception as exc:
+                    logger.warning(
+                        "Rejected invalid input for %s/%s: %s",
+                        skill_name,
+                        tool_name,
+                        exc,
+                    )
+                    return json.dumps({
+                        "error": f"Invalid input for tool '{tool_name}': {exc}",
+                        "code": "INVALID_TOOL_INPUT",
+                        "skill": skill_name,
+                        "tool": tool_name,
+                        "status": "error",
+                    })
+            else:
+                call_kwargs = dict(tool_input)
+
+            context_param = metadata._context_param
             if context_param:
                 target_context = ToolContext(
                     tool_use=tool_context.tool_use,

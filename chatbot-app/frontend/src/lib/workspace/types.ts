@@ -19,6 +19,8 @@ export interface WorkspaceEntry {
   modifiedAt?: string
   mimeType?: string
   previewKind?: WorkspacePreviewKind
+  fileId?: string
+  state?: string
 }
 
 export interface WorkspacePage {

@@ -7,6 +7,7 @@ interface CognitoUser {
   userId: string
   email?: string
   username?: string
+  tokenExpiresAt?: number
 }
 
 let verifier: ReturnType<typeof CognitoJwtVerifier.create> | null = null
@@ -53,13 +54,15 @@ export async function extractUserFromRequest(request: Request): Promise<CognitoU
     const email = typeof payload.email === 'string' ? payload.email : undefined
     const usernameClaim = payload['cognito:username'] || payload.username
     const username = typeof usernameClaim === 'string' ? usernameClaim : undefined
+    const tokenExpiresAt = typeof payload.exp === 'number' ? payload.exp : undefined
 
     console.log(`[Auth] Authenticated user: ${userId} (${email || username || 'no email'})`)
 
     return {
       userId,
       email,
-      username
+      username,
+      tokenExpiresAt,
     }
   } catch (error) {
     console.warn('[Auth] JWT verification failed:', error instanceof Error ? error.message : error)
