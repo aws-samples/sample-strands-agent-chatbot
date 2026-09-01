@@ -316,7 +316,7 @@ class CompactingSessionManager(AgentCoreMemorySessionManager):
 
         from agent.mailbox import get_mailbox_repository
 
-        current_epoch = get_mailbox_repository().get_conversation_epoch(
+        conversation_fence = get_mailbox_repository().get_conversation_fence(
             self.user_id or self.config.actor_id,
             session_id,
         )
@@ -330,9 +330,13 @@ class CompactingSessionManager(AgentCoreMemorySessionManager):
         events = [
             event
             for event in events
-            if (
-                (event_epoch := self._event_conversation_epoch(event)) is None
-                or event_epoch >= current_epoch
+            if conversation_fence.allows(
+                self._event_conversation_epoch(event),
+                (
+                    event.get("eventTimestamp")
+                    or event.get("eventTime")
+                    or event.get("event_time")
+                ),
             )
         ]
         messages = self.converter.events_to_messages(events)

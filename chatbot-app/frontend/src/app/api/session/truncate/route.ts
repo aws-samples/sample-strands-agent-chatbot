@@ -13,6 +13,7 @@
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { extractUserFromRequest } from '@/lib/auth-utils'
+import { conversationEventTimestamp } from '@/lib/session-events'
 
 const IS_LOCAL = process.env.NEXT_PUBLIC_AGENTCORE_LOCAL === 'true'
 const AWS_REGION = process.env.AWS_REGION || process.env.NEXT_PUBLIC_AWS_REGION || 'us-west-2'
@@ -125,11 +126,15 @@ export async function POST(request: NextRequest) {
       // Positional approach: find the event and delete it + everything after
       const fromIndex = chronologicalEvents.findIndex((e: any) => e.eventId === fromEventId)
       if (fromIndex >= 0) {
-        const cutoffEventTime = chronologicalEvents[fromIndex]?.eventTime
-        cutoffMs = cutoffEventTime ? new Date(cutoffEventTime).getTime() : NaN
+        const cutoffEventTime = conversationEventTimestamp(
+          chronologicalEvents[fromIndex],
+        )
+        cutoffMs = cutoffEventTime instanceof Date
+          ? cutoffEventTime.getTime()
+          : new Date(cutoffEventTime || '').getTime()
         if (!Number.isFinite(cutoffMs)) {
           return NextResponse.json(
-            { success: false, error: 'Target event has no usable eventTime' },
+            { success: false, error: 'Target event has no usable timestamp' },
             { status: 409 },
           )
         }
@@ -155,7 +160,10 @@ export async function POST(request: NextRequest) {
       // Timestamp fallback: delete events with eventTime >= fromTimestamp
       for (const event of chronologicalEvents) {
         if (!event.eventId) continue
-        const eventMs = (event as any).eventTime ? new Date((event as any).eventTime).getTime() : NaN
+        const eventTimestamp = conversationEventTimestamp(event)
+        const eventMs = eventTimestamp instanceof Date
+          ? eventTimestamp.getTime()
+          : new Date(eventTimestamp || '').getTime()
         if (!isNaN(eventMs) && eventMs >= fromTimestamp) {
           toDelete.push({ eventId: event.eventId, actorId: userId })
         }

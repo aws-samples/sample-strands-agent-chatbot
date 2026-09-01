@@ -29,6 +29,13 @@ function eventMetadataString(event: any, key: string): string | undefined {
   return undefined
 }
 
+function eventTimestampString(event: any): string {
+  const value = event?.eventTimestamp ?? event?.eventTime
+  if (value instanceof Date) return value.toISOString()
+  if (typeof value === 'string') return value
+  return new Date().toISOString()
+}
+
 async function getMemoryId(): Promise<string | null> {
   // Use environment variable if available
   const envMemoryId = process.env.MEMORY_ID || process.env.NEXT_PUBLIC_MEMORY_ID
@@ -150,14 +157,14 @@ export async function GET(request: NextRequest) {
         console.log(`[API] Retrieved ${pageEvents.length} events (total: ${allEvents.length})${nextToken ? ', fetching more...' : ''}`)
       } while (nextToken)
 
-      const { getSessionConversationEpoch } = await import('@/lib/session-events')
-      const conversationEpoch = await getSessionConversationEpoch(userId, sessionId)
-      const events = allEvents.filter(event => {
-        const rawEpoch = eventMetadataString(event, 'conversationEpoch')
-        if (rawEpoch === undefined) return true
-        const eventEpoch = Number(rawEpoch)
-        return Number.isFinite(eventEpoch) && eventEpoch >= conversationEpoch
-      })
+      const {
+        getSessionConversationFence,
+        isConversationEventVisible,
+      } = await import('@/lib/session-events')
+      const conversationFence = await getSessionConversationFence(userId, sessionId)
+      const events = allEvents.filter(event =>
+        isConversationEventVisible(event, conversationFence)
+      )
       console.log(`[API] Retrieved ${events.length} total events from AgentCore Memory`)
 
       // Convert AgentCore Memory events to chat messages
@@ -248,7 +255,7 @@ export async function GET(request: NextRequest) {
             ...(logicalMessageId && { logicalMessageId }),
             ...(event.eventId && { eventId: event.eventId }),
             ...(originEventId && { originEventId }),
-            timestamp: event.eventTime || new Date().toISOString()
+            timestamp: eventTimestampString(event)
           }
           // Extract SDK-persisted metadata (usage + metrics) from message.metadata
           if (parsed.message.metadata?.usage) {
@@ -286,7 +293,7 @@ export async function GET(request: NextRequest) {
                   ...(logicalMessageId && { logicalMessageId }),
                   ...(event.eventId && { eventId: event.eventId }),
                   ...(originEventId && { originEventId }),
-                  timestamp: event.eventTime || new Date().toISOString()
+                  timestamp: eventTimestampString(event)
                 }
                 if (blobMessageData.message.metadata?.usage) {
                   message.tokenUsage = blobMessageData.message.metadata.usage
