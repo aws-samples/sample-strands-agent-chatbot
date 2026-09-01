@@ -522,7 +522,7 @@ describe('Frontend Workspace File Fetching (useStreamEvents)', async () => {
     beforeEach(() => {
       originalFetch = global.fetch
       mockFetch = vi.fn()
-      global.fetch = mockFetch
+      global.fetch = mockFetch as typeof global.fetch
     })
 
     afterEach(() => {

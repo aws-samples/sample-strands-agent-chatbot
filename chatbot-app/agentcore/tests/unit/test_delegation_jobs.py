@@ -91,10 +91,11 @@ def test_idempotency_conflict_rejects_different_request(monkeypatch):
 
 
 def test_cancel_marks_non_terminal_job(monkeypatch):
-    async def run_stub(_record, _factory):
-        return None
-
-    monkeypatch.setattr(delegation_jobs, "_run", run_stub)
+    monkeypatch.setattr(
+        delegation_jobs,
+        "start_job_execution",
+        lambda *_args, **_kwargs: {"status": "accepted"},
+    )
     receipt = delegation_jobs.start_job(
         user_id="u1",
         session_id="s1",
@@ -241,18 +242,19 @@ def test_local_storage_rejects_path_traversal():
 
 
 def test_local_storage_rejects_session_symlink_escape(tmp_path):
+    session_id = "symlink-escape-session"
     outside = tmp_path.parent / f"{tmp_path.name}-outside"
     outside.mkdir()
     storage_root = tmp_path / "delegation_jobs"
     storage_root.mkdir(exist_ok=True)
-    session_key = hashlib.sha256(b"s1").hexdigest()
+    session_key = hashlib.sha256(session_id.encode()).hexdigest()
     (storage_root / session_key).symlink_to(
         outside,
         target_is_directory=True,
     )
 
     with pytest.raises(ValueError, match="cannot be a symlink"):
-        delegation_jobs.get_job("u1", "s1", "job1")
+        delegation_jobs.get_job("u1", session_id, "job1")
 
     assert not (outside / "delegation_jobs").exists()
 

@@ -104,7 +104,7 @@
       "mermaid": "^10.9.8"
     },
     "@babel/core": "^7.29.6",
-    "vite": "^7.3.4",
+    "vite": "^8.0.0",
     "sharp": "$sharp",
     "@next/bundle-analyzer": {
       "webpack-bundle-analyzer": {
@@ -121,8 +121,8 @@
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.5",
     "@types/uuid": "^10.0.0",
-    "@vitejs/plugin-react": "^4.5.2",
-    "eslint": "^9",
+    "@vitejs/plugin-react": "^6.1.1",
+    "eslint": "^10",
     "eslint-config-next": "16.3.3",
     "jsdom": "^30.0.1",
     "postcss": "^8.5.18",
@@ -130,7 +130,7 @@
     "tailwindcss": "^4.3.2",
     "tailwindcss-animate": "^1.0.7",
     "typescript": "^5",
-    "vitest": "^3.2.6",
+    "vitest": "^4.1.11",
     "ws": "^8.21.3"
   }
 }
