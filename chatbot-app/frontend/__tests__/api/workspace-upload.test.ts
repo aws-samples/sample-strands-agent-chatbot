@@ -10,9 +10,9 @@ vi.mock('@/lib/auth-utils', () => ({
 }))
 
 vi.mock('@/lib/workspace/s3-repository', () => ({
-  S3WorkspaceRepository: vi.fn().mockImplementation(() => ({
-    createUpload: mocks.createUpload,
-  })),
+  S3WorkspaceRepository: class S3WorkspaceRepository {
+    createUpload = mocks.createUpload
+  },
   WorkspacePathError: class WorkspacePathError extends Error {},
 }))
 
