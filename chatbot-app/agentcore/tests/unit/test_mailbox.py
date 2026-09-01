@@ -65,18 +65,49 @@ def test_deleted_session_rejects_new_events_and_leases(tmp_path):
 def test_truncate_epoch_rejects_stale_events_and_accepts_current_work(tmp_path):
     repository = FileMailboxRepository(tmp_path)
     stale = event("stale")
+    cutoff = NOW - timedelta(minutes=5)
 
     assert repository.advance_conversation_epoch(
         "user-1",
         "session-1",
+        cutoff=cutoff,
         now=NOW,
     ) == 1
+    fence = repository.get_conversation_fence("user-1", "session-1")
+    assert fence.current_epoch == 1
+    assert fence.cutoff_by_epoch == {0: cutoff.isoformat()}
     with pytest.raises(SessionSupersededError):
         repository.enqueue(stale)
 
     current = event("current")
     current.conversation_epoch = 1
     assert repository.enqueue(current) is True
+
+
+def test_repeated_truncate_clamps_all_older_epoch_cutoffs(tmp_path):
+    repository = FileMailboxRepository(tmp_path)
+    first_cutoff = NOW - timedelta(minutes=5)
+    earlier_cutoff = NOW - timedelta(minutes=10)
+
+    repository.advance_conversation_epoch(
+        "user-1",
+        "session-1",
+        cutoff=first_cutoff,
+        now=NOW,
+    )
+    repository.advance_conversation_epoch(
+        "user-1",
+        "session-1",
+        cutoff=earlier_cutoff,
+        now=NOW + timedelta(seconds=1),
+    )
+
+    fence = repository.get_conversation_fence("user-1", "session-1")
+    assert fence.current_epoch == 2
+    assert fence.cutoff_by_epoch == {
+        0: earlier_cutoff.isoformat(),
+        1: earlier_cutoff.isoformat(),
+    }
 
 
 def test_truncate_epoch_fences_claimed_event_and_cancels_it(tmp_path):

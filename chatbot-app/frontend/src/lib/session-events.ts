@@ -49,8 +49,79 @@ export interface SessionAttentionState {
   lastSeenAttentionAt?: string
 }
 
+export interface ConversationFence {
+  conversationEpoch: number
+  cutoffByEpoch: Record<string, string>
+  truncatedAt?: string
+}
+
 function sessionKey(userId: string, sessionId: string): string {
   return `USER#${userId}#SESSION#${sessionId}`
+}
+
+function conversationFenceFromState(
+  state: Record<string, any> | undefined,
+): ConversationFence {
+  const rawCutoffs = state?.conversationEpochCutoffs
+  const cutoffByEpoch: Record<string, string> = {}
+  if (rawCutoffs && typeof rawCutoffs === 'object' && !Array.isArray(rawCutoffs)) {
+    for (const [epoch, cutoff] of Object.entries(rawCutoffs)) {
+      if (/^\d+$/.test(epoch) && typeof cutoff === 'string') {
+        cutoffByEpoch[epoch] = cutoff
+      }
+    }
+  }
+  return {
+    conversationEpoch: Number(state?.conversationEpoch || 0),
+    cutoffByEpoch,
+    ...(typeof state?.truncatedAt === 'string' && {
+      truncatedAt: state.truncatedAt,
+    }),
+  }
+}
+
+function eventMetadataString(event: any, key: string): string | undefined {
+  const value = event?.metadata?.[key]
+  if (typeof value === 'string') return value
+  if (typeof value?.stringValue === 'string') return value.stringValue
+  return undefined
+}
+
+export function conversationEventTimestamp(
+  event: any,
+): string | Date | undefined {
+  return event?.eventTimestamp ?? event?.eventTime
+}
+
+export function isConversationEventVisible(
+  event: any,
+  fence: ConversationFence,
+): boolean {
+  const rawEpoch = eventMetadataString(event, 'conversationEpoch')
+  if (rawEpoch === undefined) return true
+
+  const eventEpoch = Number(rawEpoch)
+  if (!Number.isInteger(eventEpoch) || eventEpoch < 0) return false
+  if (eventEpoch === fence.conversationEpoch) return true
+  if (eventEpoch > fence.conversationEpoch) return false
+
+  const cutoff =
+    fence.cutoffByEpoch[String(eventEpoch)] ||
+    (
+      eventEpoch === fence.conversationEpoch - 1
+        ? fence.truncatedAt
+        : undefined
+    )
+  if (!cutoff) return false
+
+  const timestamp = conversationEventTimestamp(event)
+  const eventMs = timestamp instanceof Date
+    ? timestamp.getTime()
+    : new Date(timestamp || '').getTime()
+  const cutoffMs = new Date(cutoff).getTime()
+  return Number.isFinite(eventMs) &&
+    Number.isFinite(cutoffMs) &&
+    eventMs < cutoffMs
 }
 
 function localMailboxPath(userId: string, sessionId: string): string {
@@ -149,18 +220,37 @@ export async function getSessionConversationEpoch(
   userId: string,
   sessionId: string,
 ): Promise<number> {
+  return (await getSessionConversationFence(userId, sessionId)).conversationEpoch
+}
+
+export async function getSessionConversationFence(
+  userId: string,
+  sessionId: string,
+): Promise<ConversationFence> {
   if (IS_LOCAL || userId === 'anonymous') {
     const targetPath = localMailboxPath(userId, sessionId)
-    if (!fs.existsSync(targetPath)) return 0
+    if (!fs.existsSync(targetPath)) {
+      return { conversationEpoch: 0, cutoffByEpoch: {} }
+    }
     const data = JSON.parse(fs.readFileSync(targetPath, 'utf-8'))
-    return Number(data.state?.conversationEpoch || 0)
+    return conversationFenceFromState(data.state)
   }
-  if (!TABLE_NAME) return 0
-  return readConversationEpoch(
-    new DynamoDBClient({ region: AWS_REGION }),
-    userId,
-    sessionId,
+  if (!TABLE_NAME) return { conversationEpoch: 0, cutoffByEpoch: {} }
+  const response = await new DynamoDBClient({ region: AWS_REGION }).send(
+    new GetItemCommand({
+      TableName: TABLE_NAME,
+      Key: {
+        sessionKey: { S: sessionKey(userId, sessionId) },
+        recordKey: { S: 'STATE' },
+      },
+      ConsistentRead: true,
+      ProjectionExpression:
+        'conversationEpoch, conversationEpochCutoffs, truncatedAt',
+    }),
   )
+  return response.Item
+    ? conversationFenceFromState(unmarshall(response.Item))
+    : { conversationEpoch: 0, cutoffByEpoch: {} }
 }
 
 async function queryPrefix(

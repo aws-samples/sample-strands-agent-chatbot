@@ -68,12 +68,80 @@ def _is_condition_failure(error: Exception) -> bool:
     return any(reason.get("Code") == "ConditionalCheckFailed" for reason in reasons)
 
 
+def _clamp_conversation_cutoffs(
+    existing: Dict[int, str],
+    previous_epoch: int,
+    cutoff: datetime,
+) -> Dict[str, str]:
+    cutoff_utc = (
+        cutoff.replace(tzinfo=timezone.utc)
+        if cutoff.tzinfo is None
+        else cutoff.astimezone(timezone.utc)
+    )
+    result: Dict[str, str] = {}
+    for epoch, value in existing.items():
+        parsed = ConversationFence._parse_time(value)
+        result[str(epoch)] = (
+            value
+            if parsed is not None and parsed < cutoff_utc
+            else _iso(cutoff_utc)
+        )
+    result[str(previous_epoch)] = _iso(cutoff_utc)
+    return result
+
+
 @dataclass(frozen=True)
 class MailboxLease:
     owner: str
     epoch: int
     expires_at: int
     conversation_epoch: int = 0
+
+
+@dataclass(frozen=True)
+class ConversationFence:
+    current_epoch: int = 0
+    cutoff_by_epoch: Dict[int, str] = field(default_factory=dict)
+    truncated_at: Optional[str] = None
+
+    @staticmethod
+    def _parse_time(value: Any) -> Optional[datetime]:
+        if isinstance(value, datetime):
+            return (
+                value.replace(tzinfo=timezone.utc)
+                if value.tzinfo is None
+                else value.astimezone(timezone.utc)
+            )
+        if not isinstance(value, str):
+            return None
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return (
+                parsed.replace(tzinfo=timezone.utc)
+                if parsed.tzinfo is None
+                else parsed.astimezone(timezone.utc)
+            )
+        except ValueError:
+            return None
+
+    def allows(self, event_epoch: Optional[int], event_time: Any) -> bool:
+        if event_epoch is None:
+            return True
+        if event_epoch == self.current_epoch:
+            return True
+        if event_epoch > self.current_epoch or event_epoch < 0:
+            return False
+
+        cutoff = self.cutoff_by_epoch.get(event_epoch)
+        if cutoff is None and event_epoch == self.current_epoch - 1:
+            cutoff = self.truncated_at
+        cutoff_time = self._parse_time(cutoff)
+        message_time = self._parse_time(event_time)
+        return bool(
+            cutoff_time is not None
+            and message_time is not None
+            and message_time < cutoff_time
+        )
 
 
 class SessionDeletedError(RuntimeError):
@@ -298,11 +366,20 @@ class MailboxRepository(ABC):
         """Return the fencing epoch for the current visible conversation."""
 
     @abstractmethod
+    def get_conversation_fence(
+        self,
+        user_id: str,
+        session_id: str,
+    ) -> ConversationFence:
+        """Return the current epoch and retained-prefix cutoff for each old epoch."""
+
+    @abstractmethod
     def advance_conversation_epoch(
         self,
         user_id: str,
         session_id: str,
         *,
+        cutoff: Optional[datetime] = None,
         now: Optional[datetime] = None,
     ) -> int:
         """Fence work created before a truncate and return the new epoch."""
@@ -551,45 +628,96 @@ class DynamoDBMailboxRepository(MailboxRepository):
         return bool(response.get("Item"))
 
     def get_conversation_epoch(self, user_id: str, session_id: str) -> int:
+        return self.get_conversation_fence(user_id, session_id).current_epoch
+
+    def get_conversation_fence(
+        self,
+        user_id: str,
+        session_id: str,
+    ) -> ConversationFence:
         response = self.client.get_item(
             TableName=self.table_name,
             Key=self._key(user_id, session_id, "STATE"),
             ConsistentRead=True,
-            ProjectionExpression="conversationEpoch",
+            ProjectionExpression=(
+                "conversationEpoch, conversationEpochCutoffs, truncatedAt"
+            ),
         )
         item = response.get("Item")
         if not item:
-            return 0
-        return int(self._deserialize(item).get("conversationEpoch", 0))
+            return ConversationFence()
+        state = self._deserialize(item)
+        raw_cutoffs = state.get("conversationEpochCutoffs") or {}
+        cutoffs = {
+            int(epoch): value
+            for epoch, value in raw_cutoffs.items()
+            if str(epoch).isdigit() and isinstance(value, str)
+        }
+        return ConversationFence(
+            current_epoch=int(state.get("conversationEpoch", 0)),
+            cutoff_by_epoch=cutoffs,
+            truncated_at=state.get("truncatedAt"),
+        )
 
     def advance_conversation_epoch(
         self,
         user_id: str,
         session_id: str,
         *,
+        cutoff: Optional[datetime] = None,
         now: Optional[datetime] = None,
     ) -> int:
         current = now or utc_now()
-        response = self.client.update_item(
-            TableName=self.table_name,
-            Key=self._key(user_id, session_id, "STATE"),
-            UpdateExpression=(
-                "SET conversationEpoch = if_not_exists(conversationEpoch, :zero) + :one, "
-                "leaseEpoch = if_not_exists(leaseEpoch, :zero) + :one, "
-                "truncatedAt = :updated, updatedAt = :updated "
-                "REMOVE leaseOwner, leaseUntil, latestAttentionCursor, "
-                "latestAttentionAt, lastSeenAttentionCursor, lastSeenAttentionAt"
-            ),
-            ConditionExpression="attribute_not_exists(deletedAt)",
-            ExpressionAttributeValues=self._serialize({
-                ":zero": 0,
-                ":one": 1,
-                ":updated": _iso(current),
-            }),
-            ReturnValues="ALL_NEW",
-        )
-        attributes = self._deserialize(response["Attributes"])
-        next_epoch = int(attributes["conversationEpoch"])
+        next_epoch = 0
+        for attempt in range(5):
+            fence = self.get_conversation_fence(user_id, session_id)
+            previous_epoch = fence.current_epoch
+            cutoffs = _clamp_conversation_cutoffs(
+                fence.cutoff_by_epoch,
+                previous_epoch,
+                cutoff or current,
+            )
+            condition = "conversationEpoch = :previous"
+            if previous_epoch == 0:
+                condition = (
+                    "(attribute_not_exists(conversationEpoch) "
+                    "OR conversationEpoch = :previous)"
+                )
+            try:
+                response = self.client.update_item(
+                    TableName=self.table_name,
+                    Key=self._key(user_id, session_id, "STATE"),
+                    UpdateExpression=(
+                        "SET conversationEpoch = :next, "
+                        "conversationEpochCutoffs = :cutoffs, "
+                        "leaseEpoch = if_not_exists(leaseEpoch, :zero) + :one, "
+                        "truncatedAt = :updated, updatedAt = :updated "
+                        "REMOVE leaseOwner, leaseUntil, latestAttentionCursor, "
+                        "latestAttentionAt, lastSeenAttentionCursor, "
+                        "lastSeenAttentionAt"
+                    ),
+                    ConditionExpression=(
+                        "attribute_not_exists(deletedAt) AND "
+                        f"{condition}"
+                    ),
+                    ExpressionAttributeValues=self._serialize({
+                        ":previous": previous_epoch,
+                        ":next": previous_epoch + 1,
+                        ":cutoffs": cutoffs,
+                        ":zero": 0,
+                        ":one": 1,
+                        ":updated": _iso(current),
+                    }),
+                    ReturnValues="ALL_NEW",
+                )
+                attributes = self._deserialize(response["Attributes"])
+                next_epoch = int(attributes["conversationEpoch"])
+                break
+            except Exception as error:
+                if not _is_condition_failure(error) or attempt == 4:
+                    raise
+        if not next_epoch:
+            raise RuntimeError("Failed to advance conversation epoch")
         terminal_ttl = int(
             (current + timedelta(days=TERMINAL_TTL_DAYS)).timestamp()
         )
@@ -1233,15 +1361,33 @@ class FileMailboxRepository(MailboxRepository):
             )
 
     def get_conversation_epoch(self, user_id: str, session_id: str) -> int:
+        return self.get_conversation_fence(user_id, session_id).current_epoch
+
+    def get_conversation_fence(
+        self,
+        user_id: str,
+        session_id: str,
+    ) -> ConversationFence:
         with self._lock:
             state = self._load(user_id, session_id)["state"]
-            return int(state.get("conversationEpoch", 0))
+            raw_cutoffs = state.get("conversationEpochCutoffs") or {}
+            cutoffs = {
+                int(epoch): value
+                for epoch, value in raw_cutoffs.items()
+                if str(epoch).isdigit() and isinstance(value, str)
+            }
+            return ConversationFence(
+                current_epoch=int(state.get("conversationEpoch", 0)),
+                cutoff_by_epoch=cutoffs,
+                truncated_at=state.get("truncatedAt"),
+            )
 
     def advance_conversation_epoch(
         self,
         user_id: str,
         session_id: str,
         *,
+        cutoff: Optional[datetime] = None,
         now: Optional[datetime] = None,
     ) -> int:
         current = now or utc_now()
@@ -1252,9 +1398,18 @@ class FileMailboxRepository(MailboxRepository):
                 raise SessionDeletedError(
                     f"Session {session_id} has been deleted"
                 )
-            state["conversationEpoch"] = int(
-                state.get("conversationEpoch", 0)
-            ) + 1
+            previous_epoch = int(state.get("conversationEpoch", 0))
+            state["conversationEpoch"] = previous_epoch + 1
+            raw_cutoffs = state.get("conversationEpochCutoffs") or {}
+            state["conversationEpochCutoffs"] = _clamp_conversation_cutoffs(
+                {
+                    int(epoch): value
+                    for epoch, value in raw_cutoffs.items()
+                    if str(epoch).isdigit() and isinstance(value, str)
+                },
+                previous_epoch,
+                cutoff or current,
+            )
             state["leaseEpoch"] = int(state.get("leaseEpoch", 0)) + 1
             state["truncatedAt"] = _iso(current)
             state["updatedAt"] = _iso(current)

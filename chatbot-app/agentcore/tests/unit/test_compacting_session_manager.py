@@ -174,19 +174,35 @@ class TestMailboxPersistenceScope:
         assert metadata["visibility"]["stringValue"] == "conversation"
 
     def test_list_messages_filters_stale_mailbox_epochs(self, manager):
+        from agent.mailbox import ConversationFence
+
         repository = MagicMock()
-        repository.get_conversation_epoch.return_value = 3
+        repository.get_conversation_fence.return_value = ConversationFence(
+            current_epoch=3,
+            cutoff_by_epoch={
+                2: "2026-08-31T12:00:00+00:00",
+            },
+        )
         manager.config.filter_restored_tool_context = False
         manager.memory_client.list_events.return_value = [
             {"eventId": "foreground"},
             {
+                "eventId": "retained-prefix",
+                "eventTimestamp": "2026-08-31T11:59:59+00:00",
+                "metadata": {
+                    "conversationEpoch": {"stringValue": "2"},
+                },
+            },
+            {
                 "eventId": "stale",
+                "eventTime": "2026-08-31T12:00:01+00:00",
                 "metadata": {
                     "conversationEpoch": {"stringValue": "2"},
                 },
             },
             {
                 "eventId": "current",
+                "eventTime": "2026-08-31T12:00:02+00:00",
                 "metadata": {
                     "conversationEpoch": {"stringValue": "3"},
                 },
@@ -203,8 +219,8 @@ class TestMailboxPersistenceScope:
         ):
             messages = manager.list_messages("session-1", "default")
 
-        assert messages == ["foreground", "current"]
-        repository.get_conversation_epoch.assert_called_once_with(
+        assert messages == ["foreground", "retained-prefix", "current"]
+        repository.get_conversation_fence.assert_called_once_with(
             "user-1",
             "session-1",
         )

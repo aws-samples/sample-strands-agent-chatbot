@@ -4,6 +4,7 @@ import { createHash, randomUUID } from 'crypto'
 import {
   BatchWriteItemCommand,
   DynamoDBClient,
+  GetItemCommand,
   QueryCommand,
   UpdateItemCommand,
   type WriteRequest,
@@ -63,6 +64,25 @@ function writeLocalMailbox(targetPath: string, data: Record<string, any>) {
   fs.renameSync(temporaryPath, targetPath)
 }
 
+function clampConversationEpochCutoffs(
+  rawCutoffs: Record<string, unknown> | undefined,
+  previousEpoch: number,
+  cutoff: string,
+): Record<string, string> {
+  const cutoffMs = Date.parse(cutoff)
+  const result: Record<string, string> = {}
+  for (const [epoch, existing] of Object.entries(rawCutoffs || {})) {
+    if (!/^\d+$/.test(epoch) || typeof existing !== 'string') continue
+    const existingMs = Date.parse(existing)
+    result[epoch] =
+      Number.isFinite(existingMs) && existingMs < cutoffMs
+        ? existing
+        : cutoff
+  }
+  result[String(previousEpoch)] = cutoff
+  return result
+}
+
 function advanceLocalConversationEpoch(
   userId: string,
   sessionId: string,
@@ -77,10 +97,17 @@ function advanceLocalConversationEpoch(
         sessionEvents: {},
       }
   const updatedAt = new Date().toISOString()
-  const nextEpoch = Number(data.state?.conversationEpoch || 0) + 1
+  const previousEpoch = Number(data.state?.conversationEpoch || 0)
+  const nextEpoch = previousEpoch + 1
+  const conversationEpochCutoffs = clampConversationEpochCutoffs(
+    data.state?.conversationEpochCutoffs,
+    previousEpoch,
+    cutoff,
+  )
   data.state = {
     ...(data.state || {}),
     conversationEpoch: nextEpoch,
+    conversationEpochCutoffs,
     leaseEpoch: Number(data.state?.leaseEpoch || 0) + 1,
     truncatedAt: updatedAt,
     updatedAt,
@@ -294,29 +321,63 @@ export async function advanceSessionConversationEpoch(
 
   const client = new DynamoDBClient({ region: AWS_REGION })
   const updatedAt = new Date().toISOString()
-  const state = await client.send(new UpdateItemCommand({
-    TableName: TABLE_NAME,
-    Key: marshall({
-      sessionKey: sessionKey(userId, sessionId),
-      recordKey: 'STATE',
-    }),
-    UpdateExpression:
-      'SET conversationEpoch = if_not_exists(conversationEpoch, :zero) + :one, ' +
-      'leaseEpoch = if_not_exists(leaseEpoch, :zero) + :one, ' +
-      'truncatedAt = :updated, updatedAt = :updated ' +
-      'REMOVE leaseOwner, leaseUntil, latestAttentionCursor, ' +
-      'latestAttentionAt, lastSeenAttentionCursor, lastSeenAttentionAt',
-    ConditionExpression: 'attribute_not_exists(deletedAt)',
-    ExpressionAttributeValues: marshall({
-      ':zero': 0,
-      ':one': 1,
-      ':updated': updatedAt,
-    }),
-    ReturnValues: 'ALL_NEW',
-  }))
-  const nextEpoch = Number(
-    state.Attributes ? unmarshall(state.Attributes).conversationEpoch : 0,
-  )
+  const stateKey = marshall({
+    sessionKey: sessionKey(userId, sessionId),
+    recordKey: 'STATE',
+  })
+  let nextEpoch = 0
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const existing = await client.send(new GetItemCommand({
+      TableName: TABLE_NAME,
+      Key: stateKey,
+      ConsistentRead: true,
+    }))
+    const current = existing.Item ? unmarshall(existing.Item) : {}
+    if (current.deletedAt) {
+      throw new Error('Session has been deleted')
+    }
+    const previousEpoch = Number(current.conversationEpoch || 0)
+    const conversationEpochCutoffs = clampConversationEpochCutoffs(
+      current.conversationEpochCutoffs,
+      previousEpoch,
+      cutoff,
+    )
+    try {
+      const state = await client.send(new UpdateItemCommand({
+        TableName: TABLE_NAME,
+        Key: stateKey,
+        UpdateExpression:
+          'SET conversationEpoch = :next, ' +
+          'conversationEpochCutoffs = :cutoffs, ' +
+          'leaseEpoch = if_not_exists(leaseEpoch, :zero) + :one, ' +
+          'truncatedAt = :updated, updatedAt = :updated ' +
+          'REMOVE leaseOwner, leaseUntil, latestAttentionCursor, ' +
+          'latestAttentionAt, lastSeenAttentionCursor, lastSeenAttentionAt',
+        ConditionExpression:
+          'attribute_not_exists(deletedAt) AND ' +
+          (
+            previousEpoch === 0
+              ? '(attribute_not_exists(conversationEpoch) OR conversationEpoch = :previous)'
+              : 'conversationEpoch = :previous'
+          ),
+        ExpressionAttributeValues: marshall({
+          ':previous': previousEpoch,
+          ':next': previousEpoch + 1,
+          ':cutoffs': conversationEpochCutoffs,
+          ':zero': 0,
+          ':one': 1,
+          ':updated': updatedAt,
+        }),
+        ReturnValues: 'ALL_NEW',
+      }))
+      nextEpoch = Number(
+        state.Attributes ? unmarshall(state.Attributes).conversationEpoch : 0,
+      )
+      break
+    } catch (error) {
+      if (!isConditionalFailure(error) || attempt === 4) throw error
+    }
+  }
   if (!nextEpoch) {
     throw new Error('Failed to advance conversation epoch')
   }

@@ -13,6 +13,7 @@ export interface ParsedMessage {
 
 export interface AgentCoreEvent {
   eventId?: string
+  eventTimestamp?: string | Date
   eventTime?: string
   payload?: Array<{
     conversational?: {
@@ -28,6 +29,13 @@ export interface ParseResult {
   success: boolean
   message?: ParsedMessage
   error?: string
+}
+
+function eventTimestampString(event: AgentCoreEvent): string {
+  const value = event.eventTimestamp ?? event.eventTime
+  if (value instanceof Date) return value.toISOString()
+  if (typeof value === 'string') return value
+  return new Date().toISOString()
 }
 
 /**
@@ -66,7 +74,7 @@ export function parseConversationalEvent(
   const message: ParsedMessage = {
     ...parsed.message,
     id: event.eventId || `msg-${sessionId}-${msgIndex}`,
-    timestamp: event.eventTime || new Date().toISOString()
+    timestamp: eventTimestampString(event)
   }
 
   return { success: true, message }
@@ -113,7 +121,7 @@ export function parseBlobEvent(
   const message: ParsedMessage = {
     ...blobMessageData.message,
     id: event.eventId || `msg-${sessionId}-${msgIndex}`,
-    timestamp: event.eventTime || new Date().toISOString()
+    timestamp: eventTimestampString(event)
   }
 
   return { success: true, message }

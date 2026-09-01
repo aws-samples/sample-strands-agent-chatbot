@@ -955,7 +955,10 @@ export const useChat = (props?: UseChatProps): UseChatReturn => {
     })
 
     try {
-      await apiTruncateSession(params)
+      const truncated = await apiTruncateSession(params)
+      if (!truncated) {
+        throw new Error('Backend truncation failed')
+      }
       setSessionEventRefreshVersion(version => version + 1)
       console.log('[truncate] Backend truncation complete')
     } catch (error) {
